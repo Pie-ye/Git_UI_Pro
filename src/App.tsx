@@ -65,6 +65,8 @@ const PROJECT_LIST_STATUS_BATCH_SIZE = 3;
 const PROJECT_SELECTION_LOAD_DELAY_MS = 180;
 const PROJECT_DATA_CACHE_TTL_MS = 20_000;
 const GRAPH_HISTORY_CACHE_TTL_MS = 20_000;
+const REMOTE_PROJECT_DATA_CACHE_TTL_MS = 120_000;
+const REMOTE_GRAPH_HISTORY_CACHE_TTL_MS = 120_000;
 const RESET_OPERATION_TIMEOUT_MS = 45_000;
 const GIT_DOWNLOAD_URL = "https://git-scm.com/downloads";
 
@@ -254,7 +256,11 @@ export function App() {
     });
   }
 
-  function applyProjectDataSnapshot(project: GitProject, snapshot: ProjectDataSnapshot, options: { clearTabs?: boolean; cached?: boolean } = {}) {
+  function applyProjectDataSnapshot(
+    project: GitProject,
+    snapshot: ProjectDataSnapshot,
+    options: { clearTabs?: boolean; cached?: "fresh" | "stale" } = {}
+  ) {
     applyProjectStatus(project.id, snapshot.status);
     setCommits(snapshot.history);
     setGraphHistoryRefs(snapshot.historyRefs);
@@ -263,18 +269,20 @@ export function App() {
     if (options.clearTabs) {
       clearWorktreeEditorTabs();
     }
-    if (options.cached) {
+    if (options.cached === "stale") {
       rememberStatus(`已恢复 ${project.name} 的最近状态，正在后台刷新...`);
+    } else if (options.cached === "fresh") {
+      rememberStatus(`已恢复 ${project.name} 的最近状态。`);
     }
   }
 
-  function readFreshProjectDataCache(projectId: string, filter: GitHistoryFilter) {
-    const snapshot = projectDataCacheRef.current.get(projectCacheKey(projectId, filter));
-    if (!snapshot || Date.now() - snapshot.loadedAt > PROJECT_DATA_CACHE_TTL_MS) {
-      return undefined;
-    }
+  function readProjectDataCache(projectId: string, filter: GitHistoryFilter) {
+    return projectDataCacheRef.current.get(projectCacheKey(projectId, filter));
+  }
 
-    return snapshot;
+  function isProjectDataCacheFresh(project: GitProject, snapshot: ProjectDataSnapshot) {
+    const ttl = project.remote ? REMOTE_PROJECT_DATA_CACHE_TTL_MS : PROJECT_DATA_CACHE_TTL_MS;
+    return Date.now() - snapshot.loadedAt <= ttl;
   }
 
   function writeProjectDataCache(project: GitProject, filter: GitHistoryFilter, snapshot: Omit<ProjectDataSnapshot, "loadedAt">) {
@@ -284,13 +292,13 @@ export function App() {
     });
   }
 
-  function readFreshGraphHistoryCache(projectId: string, filter: GitHistoryFilter) {
-    const snapshot = graphHistoryCacheRef.current.get(projectCacheKey(projectId, filter));
-    if (!snapshot || Date.now() - snapshot.loadedAt > GRAPH_HISTORY_CACHE_TTL_MS) {
-      return undefined;
-    }
+  function readGraphHistoryCache(projectId: string, filter: GitHistoryFilter) {
+    return graphHistoryCacheRef.current.get(projectCacheKey(projectId, filter));
+  }
 
-    return snapshot;
+  function isGraphHistoryCacheFresh(project: GitProject, snapshot: GraphHistorySnapshot) {
+    const ttl = project.remote ? REMOTE_GRAPH_HISTORY_CACHE_TTL_MS : GRAPH_HISTORY_CACHE_TTL_MS;
+    return Date.now() - snapshot.loadedAt <= ttl;
   }
 
   function writeGraphHistoryCache(project: GitProject, filter: GitHistoryFilter, snapshot: Omit<GraphHistorySnapshot, "loadedAt">) {
@@ -310,6 +318,19 @@ export function App() {
       if (key.startsWith(`${projectId}:`)) {
         graphHistoryCacheRef.current.delete(key);
       }
+    }
+  }
+
+  function updateCachedProjectChanges(projectId: string, status: GitProject["status"], worktreeState: WorktreeState) {
+    for (const [key, snapshot] of projectDataCacheRef.current.entries()) {
+      if (!key.startsWith(`${projectId}:`)) {
+        continue;
+      }
+      projectDataCacheRef.current.set(key, {
+        ...snapshot,
+        status: status ?? snapshot.status,
+        worktree: worktreeState
+      });
     }
   }
 
@@ -406,20 +427,41 @@ export function App() {
     }
 
     setGraphHistoryFilter(nextHistoryFilter);
-    setGraphHistoryRefs([]);
+    setSelectedCommitHash("");
+
+    const cachedSnapshot = readProjectDataCache(selectedProject.id, nextHistoryFilter);
+    const cacheIsFresh = cachedSnapshot ? isProjectDataCacheFresh(selectedProject, cachedSnapshot) : false;
+    if (cachedSnapshot) {
+      applyProjectDataSnapshot(selectedProject, cachedSnapshot, {
+        clearTabs: true,
+        cached: cacheIsFresh ? "fresh" : "stale"
+      });
+      setGraphLoading(false);
+    } else {
+      setCommits([]);
+      setGraphHistoryRefs([]);
+      setWorktree(emptyWorktree);
+      clearWorktreeEditorTabs();
+    }
+
+    if (cacheIsFresh) {
+      return;
+    }
 
     selectedProjectLoadTimerRef.current = window.setTimeout(() => {
       if (projectLoadRequestRef.current !== requestId) {
         return;
       }
 
-      const cachedSnapshot = readFreshProjectDataCache(selectedProject.id, nextHistoryFilter);
       if (!cachedSnapshot) {
         setGraphLoading(true);
-        setCommits([]);
       }
-      setSelectedCommitHash("");
-      void loadProjectData(selectedProject, requestId, nextHistoryFilter, { preferCache: true, clearTabs: true });
+      void loadProjectData(selectedProject, requestId, nextHistoryFilter, {
+        preferCache: true,
+        clearTabs: !cachedSnapshot,
+        background: Boolean(cachedSnapshot),
+        preserveOnError: Boolean(cachedSnapshot)
+      });
     }, PROJECT_SELECTION_LOAD_DELAY_MS);
 
     return () => window.clearTimeout(selectedProjectLoadTimerRef.current);
@@ -576,7 +618,12 @@ export function App() {
     project: GitProject,
     requestId = nextProjectLoadRequestId(),
     historyFilter = graphHistoryFilter,
-    options: { preferCache?: boolean; clearTabs?: boolean } = {}
+    options: {
+      preferCache?: boolean;
+      clearTabs?: boolean;
+      background?: boolean;
+      preserveOnError?: boolean;
+    } = {}
   ) {
     try {
       if (!options.preferCache) {
@@ -584,14 +631,9 @@ export function App() {
       }
 
       if (isCurrentProjectLoad(requestId)) {
-        if (options.preferCache) {
-          const cachedSnapshot = readFreshProjectDataCache(project.id, historyFilter);
-          if (cachedSnapshot) {
-            applyProjectDataSnapshot(project, cachedSnapshot, { clearTabs: options.clearTabs, cached: true });
-          }
+        if (!options.background) {
+          rememberStatus(`正在加载 ${project.name} 的 Git 状态...`);
         }
-
-        rememberStatus(`正在加载 ${project.name} 的 Git 状态...`);
       }
 
       const [status, history, historyRefs, worktreeState] = await Promise.all([
@@ -622,10 +664,12 @@ export function App() {
         return;
       }
 
-      setCommits([]);
-      setGraphHistoryRefs([]);
-      setWorktree(emptyWorktree);
-      clearWorktreeEditorTabs();
+      if (!options.preserveOnError) {
+        setCommits([]);
+        setGraphHistoryRefs([]);
+        setWorktree(emptyWorktree);
+        clearWorktreeEditorTabs();
+      }
       notifyError(error instanceof Error ? error.message : "加载项目失败");
     } finally {
       if (isCurrentProjectLoad(requestId)) {
@@ -655,14 +699,20 @@ export function App() {
     const requestId = nextProjectLoadRequestId();
     setGraphHistoryFilter(filter);
     setSelectedCommitHash("");
-    setGraphLoading(true);
-    const cachedHistory = readFreshGraphHistoryCache(selectedProject.id, filter);
+    const cachedHistory = readGraphHistoryCache(selectedProject.id, filter);
+    const cacheIsFresh = cachedHistory ? isGraphHistoryCacheFresh(selectedProject, cachedHistory) : false;
     if (cachedHistory) {
       setCommits(cachedHistory.history);
       setGraphHistoryRefs(cachedHistory.historyRefs);
-      rememberStatus("已恢复最近一次图表结果，正在后台刷新...");
+      setGraphLoading(false);
+      rememberStatus(cacheIsFresh ? "已恢复最近一次图表结果。" : "已恢复最近一次图表结果，正在后台刷新...");
     } else {
+      setGraphLoading(true);
       rememberStatus("正在按新的图表引用加载提交...");
+    }
+
+    if (cacheIsFresh) {
+      return;
     }
 
     try {
@@ -695,6 +745,8 @@ export function App() {
       if (selectedProjectIdRef.current !== project.id) {
         return;
       }
+
+      updateCachedProjectChanges(project.id, status, worktreeState);
 
       if (status) {
         setProjects((current) => {
