@@ -1,6 +1,7 @@
 import { Copy, GitBranch, Minus, Square, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { WindowState } from "../types/electron";
+import { AppUpdateControl } from "./AppUpdateControl";
 
 interface AppChromeProps {
   onCommand: (command: string) => void;
@@ -38,6 +39,7 @@ export function AppChrome({ onCommand }: AppChromeProps) {
           <GitBranch size={14} />
           <span>Git UI Pro</span>
         </div>
+        <AppUpdateControl />
         <div className="app-chrome-drag-region" />
         <div className="app-window-controls" aria-label="窗口控制">
           <button type="button" title="最小化" onClick={() => runCommand("window:minimize")}>

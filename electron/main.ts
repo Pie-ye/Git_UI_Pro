@@ -4,9 +4,11 @@ import { existsSync } from "node:fs";
 import * as pty from "@homebridge/node-pty-prebuilt-multiarch";
 import { ConfigStore, type RemoteProjectInput } from "./configStore";
 import { buildSshArgs, GitService, normalizeRepositoryTarget, shellQuote, sshDestination, type RepositoryLocation } from "./gitService";
+import { UpdateService, type UpdateState } from "./updateService";
 
 let mainWindow: BrowserWindow | null = null;
 let configStore: ConfigStore;
+let updateService: UpdateService;
 const gitService = new GitService();
 const terminalSessions = new Map<string, TerminalSession>();
 let terminalSessionSeed = 0;
@@ -75,6 +77,10 @@ function registerIpc(): void {
   });
 
   ipcMain.handle("window:getState", () => getWindowState());
+  ipcMain.handle("update:getState", () => updateService.getState());
+  ipcMain.handle("update:check", () => updateService.checkForUpdates());
+  ipcMain.handle("update:download", () => updateService.downloadUpdate());
+  ipcMain.handle("update:install", () => updateService.installUpdate());
   ipcMain.handle("terminal:start", (event, repositoryPath: RepositoryLocation) => startTerminalSession(event.sender, repositoryPath));
   ipcMain.handle("terminal:write", (_event, sessionId: string, data: string) => writeTerminalSession(sessionId, data));
   ipcMain.handle("terminal:resize", (_event, sessionId: string, cols: number, rows: number) => resizeTerminalSession(sessionId, cols, rows));
@@ -214,6 +220,14 @@ function emitWindowState(): void {
   mainWindow.webContents.send("window:state", getWindowState());
 }
 
+function emitUpdateState(state: UpdateState): void {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) {
+    return;
+  }
+
+  mainWindow.webContents.send("update:state", state);
+}
+
 function registerWindowStateEvents(window: BrowserWindow): void {
   const emit = () => emitWindowState();
   window.on("maximize", emit);
@@ -321,9 +335,11 @@ if (!hasSingleInstanceLock) {
 
   app.whenReady().then(async () => {
     configStore = new ConfigStore(app.getPath("userData"));
+    updateService = new UpdateService(emitUpdateState);
     configureApplicationMenu();
     registerIpc();
     await createWindow();
+    updateService.start();
 
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) {
@@ -339,6 +355,10 @@ if (!hasSingleInstanceLock) {
     if (process.platform !== "darwin") {
       app.quit();
     }
+  });
+
+  app.on("before-quit", () => {
+    updateService?.stop();
   });
 }
 

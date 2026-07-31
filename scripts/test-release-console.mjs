@@ -1,16 +1,22 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 import {
   buildCommitMessage,
+  collectArtifacts,
   compareVersions,
   detectProvider,
+  expectedWindowsUpdateArtifacts,
   mergeReleaseNotes,
   parseStatusPorcelain,
   parseVersion,
   recommendVersions,
   resolveNpmInvocation,
-  startReleaseConsole
+  startReleaseConsole,
+  validateWindowsUpdateArtifacts
 } from "./release-console.mjs";
 
 test("解析并推荐稳定版本号", () => {
@@ -83,6 +89,41 @@ test("当前环境解析出的 npm 调用可以正常启动", () => {
   });
   assert.equal(result.status, 0, result.stderr || result.error?.message);
   assert.match(result.stdout.trim(), /^\d+\.\d+\.\d+/);
+});
+
+test("收集 Windows 正式版自动更新所需的三项产物", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "git-ui-pro-release-"));
+  const version = "0.1.13";
+  const expected = expectedWindowsUpdateArtifacts(version);
+  try {
+    await Promise.all([
+      writeFile(path.join(directory, expected.installer), "installer"),
+      writeFile(path.join(directory, expected.blockmap), "blockmap"),
+      writeFile(path.join(directory, expected.metadata), "version: 0.1.13"),
+      writeFile(path.join(directory, "Git-UI-Pro-Portable-0.1.13-x64.exe"), "portable"),
+      writeFile(path.join(directory, "Git-UI-Pro-Setup-0.1.12-x64.exe"), "stale")
+    ]);
+
+    const artifacts = await collectArtifacts(version, directory);
+    assert.deepEqual(
+      artifacts.map((artifact) => artifact.name).sort(),
+      Object.values(expected).sort()
+    );
+    assert.equal(validateWindowsUpdateArtifacts(version, artifacts).valid, true);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("缺少 blockmap 或 latest.yml 时拒绝发布 Windows 正式版", () => {
+  const version = "0.1.13";
+  const expected = expectedWindowsUpdateArtifacts(version);
+  const validation = validateWindowsUpdateArtifacts(version, [
+    { name: expected.installer, size: 1 }
+  ]);
+
+  assert.equal(validation.valid, false);
+  assert.deepEqual(validation.missing, [expected.blockmap, expected.metadata]);
 });
 
 test("发布控制台仅凭令牌返回仓库状态", async () => {

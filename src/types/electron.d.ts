@@ -30,12 +30,47 @@ export interface WindowState {
   isFullScreen: boolean;
 }
 
+export type UpdatePhase =
+  | "unsupported"
+  | "idle"
+  | "checking"
+  | "up-to-date"
+  | "available"
+  | "downloading"
+  | "downloaded"
+  | "installing"
+  | "error";
+
+export interface UpdateProgress {
+  percent: number;
+  transferred: number;
+  total: number;
+  bytesPerSecond: number;
+}
+
+export interface UpdateState {
+  phase: UpdatePhase;
+  currentVersion: string;
+  availableVersion?: string;
+  releaseName?: string;
+  releaseNotes?: string;
+  releaseDate?: string;
+  releaseUrl?: string;
+  progress?: UpdateProgress;
+  error?: string;
+}
+
 export interface GitUIBridge {
   runAppCommand: (command: string) => Promise<boolean>;
   openExternal: (url: string) => Promise<boolean>;
   setNativeTheme: (themeSource: "system" | "light" | "dark") => Promise<boolean>;
   getWindowState: () => Promise<WindowState>;
   onWindowStateChange: (callback: (state: WindowState) => void) => () => void;
+  getUpdateState: () => Promise<UpdateState>;
+  checkForUpdates: () => Promise<UpdateState>;
+  downloadUpdate: () => Promise<UpdateState>;
+  installUpdate: () => Promise<boolean>;
+  onUpdateState: (callback: (state: UpdateState) => void) => () => void;
   getGitVersion: () => Promise<GitOperationResult>;
   startTerminal: (repository: RepositoryTarget) => Promise<TerminalSessionInfo>;
   writeTerminal: (sessionId: string, data: string) => Promise<boolean>;

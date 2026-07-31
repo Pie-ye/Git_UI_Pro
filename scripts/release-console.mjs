@@ -720,17 +720,38 @@ async function getReleaseContext(status, job) {
   return { branch: status.branch, gitee, github };
 }
 
-async function collectArtifacts(version) {
-  if (!existsSync(releaseDir)) {
+export function expectedWindowsUpdateArtifacts(version) {
+  const baseName = `Git-UI-Pro-Setup-${version}-x64.exe`;
+  return {
+    installer: baseName,
+    blockmap: `${baseName}.blockmap`,
+    metadata: "latest.yml"
+  };
+}
+
+export function validateWindowsUpdateArtifacts(version, artifacts) {
+  const expected = expectedWindowsUpdateArtifacts(version);
+  const names = new Set(artifacts.map((artifact) => artifact.name));
+  const missing = Object.values(expected).filter((name) => !names.has(name));
+  return {
+    valid: missing.length === 0,
+    missing,
+    expected
+  };
+}
+
+export async function collectArtifacts(version, directory = releaseDir) {
+  if (!existsSync(directory)) {
     return [];
   }
-  const entries = await readdir(releaseDir);
+  const expectedNames = new Set(Object.values(expectedWindowsUpdateArtifacts(version)));
+  const entries = await readdir(directory);
   const artifacts = [];
   for (const name of entries) {
-    if (!name.includes(version) || (!name.endsWith(".exe") && !name.endsWith(".blockmap"))) {
+    if (!expectedNames.has(name)) {
       continue;
     }
-    const filePath = path.join(releaseDir, name);
+    const filePath = path.join(directory, name);
     const fileStat = await stat(filePath);
     if (fileStat.isFile()) {
       artifacts.push({ name, size: fileStat.size });
@@ -794,8 +815,9 @@ async function executeRelease(job) {
     const buildScript = job.payload.buildMode === "signed" ? "dist:win:signed" : "dist:win";
     await runNpm(["run", buildScript, "--", "--publish", "never"], { job });
     job.artifacts = await collectArtifacts(job.version);
-    if (!job.artifacts.some((artifact) => artifact.name.endsWith(".exe"))) {
-      throw new Error(`打包完成，但 release/ 中没有找到 ${job.version} 的 Windows 安装包`);
+    const artifactValidation = validateWindowsUpdateArtifacts(job.version, job.artifacts);
+    if (!artifactValidation.valid) {
+      throw new Error(`打包完成，但 release/ 缺少 Windows 正式版更新产物：${artifactValidation.missing.join("、")}`);
     }
     for (const artifact of job.artifacts) {
       addLog(job, "success", `产物：${artifact.name}`);

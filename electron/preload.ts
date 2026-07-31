@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 import type { RepositoryTarget } from "./gitService";
+import type { UpdateState } from "./updateService";
 
 type WindowState = {
   isMaximized: boolean;
@@ -15,6 +16,15 @@ contextBridge.exposeInMainWorld("gitUI", {
     const listener = (_event: IpcRendererEvent, state: WindowState) => callback(state);
     ipcRenderer.on("window:state", listener);
     return () => ipcRenderer.removeListener("window:state", listener);
+  },
+  getUpdateState: (): Promise<UpdateState> => ipcRenderer.invoke("update:getState"),
+  checkForUpdates: (): Promise<UpdateState> => ipcRenderer.invoke("update:check"),
+  downloadUpdate: (): Promise<UpdateState> => ipcRenderer.invoke("update:download"),
+  installUpdate: (): Promise<boolean> => ipcRenderer.invoke("update:install"),
+  onUpdateState: (callback: (state: UpdateState) => void) => {
+    const listener = (_event: IpcRendererEvent, state: UpdateState) => callback(state);
+    ipcRenderer.on("update:state", listener);
+    return () => ipcRenderer.removeListener("update:state", listener);
   },
   getGitVersion: () => ipcRenderer.invoke("git:getVersion"),
   startTerminal: (repositoryPath: RepositoryTarget) => ipcRenderer.invoke("terminal:start", repositoryPath),
