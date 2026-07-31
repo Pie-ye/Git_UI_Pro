@@ -1025,10 +1025,11 @@ input[type="radio"]:focus-visible {
 }
 
 .app-chrome-titlebar {
-  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  grid-template-columns: max-content max-content minmax(0, 1fr) max-content;
 }
 
 .app-update-control {
+  grid-column: 2;
   position: relative;
   display: flex;
   align-items: center;
