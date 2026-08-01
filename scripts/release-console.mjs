@@ -36,6 +36,9 @@ const packageLockPath = path.join(rootDir, "package-lock.json");
 const releaseDir = path.join(rootDir, "release");
 const gitCommand = "git";
 const maxLogEntries = 2_000;
+const remoteCheckRetryDelays = [800, 1_800];
+const remoteProbeTimeoutMs = 30_000;
+const remoteFetchTimeoutMs = 120_000;
 
 const iconComponents = {
   Check,
@@ -262,8 +265,48 @@ function commandLabel(command, args) {
   return [path.basename(command).replace(/\.cmd$/i, ""), ...args].map(quoteArgument).join(" ");
 }
 
-async function runProcess(command, args, options = {}) {
-  const { job, displayCommand = command, displayArgs = args, allowFailure = false, env = {} } = options;
+export function isTransientGitNetworkFailure(output) {
+  const detail = String(output);
+  if (/(?:authentication failed|repository not found|permission denied|could not read username|couldn't find remote ref|http (?:401|403)|ssl certificate problem|certificate (?:verify|validation) failed|certificate has expired|sec_e_untrusted_root)/i.test(detail)) {
+    return false;
+  }
+
+  return /(?:schannel:.*(?:failed to receive handshake|ssl\/tls connection failed|recv failure|send failure)|gnutls(?:_handshake| recv error).*?(?:pull function|non-properly terminated)|ssl_error_syscall|failed to connect|could not resolve host|connection (?:was )?(?:refused|reset|timed out)|no route to host|operation timed out|empty reply from server|recv failure|send failure|remote end hung up unexpectedly|unexpected disconnect|unexpected eof|early eof)/i.test(detail);
+}
+
+function waitForRetry(delayMs) {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+function terminateProcessTree(child) {
+  if (!child.pid) {
+    return;
+  }
+
+  if (process.platform === "win32") {
+    const killer = spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
+      stdio: "ignore",
+      windowsHide: true
+    });
+    killer.on("error", () => child.kill());
+    killer.on("close", (code) => {
+      if (code !== 0 && child.exitCode === null) {
+        child.kill();
+      }
+    });
+    killer.unref();
+    return;
+  }
+
+  try {
+    process.kill(-child.pid, "SIGTERM");
+  } catch {
+    child.kill();
+  }
+}
+
+export async function runProcess(command, args, options = {}) {
+  const { job, displayCommand = command, displayArgs = args, allowFailure = false, env = {}, timeoutMs = 0 } = options;
   if (job) {
     addLog(job, "command", `$ ${commandLabel(displayCommand, displayArgs)}`);
   }
@@ -278,10 +321,13 @@ async function runProcess(command, args, options = {}) {
         ...env
       },
       shell: false,
-      windowsHide: true
+      windowsHide: true,
+      detached: timeoutMs > 0 && process.platform !== "win32"
     });
     let stdout = "";
     let stderr = "";
+    let timedOut = false;
+    let timeoutHandle = null;
     const stdoutWriter = createLineWriter((line) => {
       if (job) {
         addLog(job, "output", line);
@@ -305,28 +351,83 @@ async function runProcess(command, args, options = {}) {
       }
       stderrWriter.push(chunk);
     });
-    child.on("error", reject);
+    child.on("error", (error) => {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+      reject(error);
+    });
     child.on("close", (code) => {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
       stdoutWriter.flush();
       stderrWriter.flush();
       const result = {
         code: code ?? 1,
         stdout: stdout.replace(/\r?\n$/, ""),
-        stderr: stderr.replace(/\r?\n$/, "")
+        stderr: stderr.replace(/\r?\n$/, ""),
+        timedOut
       };
-      if (result.code === 0 || allowFailure) {
+      if ((result.code === 0 && !result.timedOut) || allowFailure) {
         resolve(result);
         return;
       }
 
-      const detail = result.stderr.trim() || result.stdout.trim() || `退出码 ${result.code}`;
+      const detail = result.timedOut
+        ? `命令执行超过 ${Math.round(timeoutMs / 1_000)} 秒`
+        : result.stderr.trim() || result.stdout.trim() || `退出码 ${result.code}`;
       reject(new Error(`${commandLabel(displayCommand, displayArgs)} 执行失败：${detail}`));
     });
+
+    if (timeoutMs > 0) {
+      timeoutHandle = setTimeout(() => {
+        timedOut = true;
+        terminateProcessTree(child);
+      }, timeoutMs);
+    }
   });
 }
 
 async function runGit(args, options = {}) {
   return runProcess(gitCommand, args, options);
+}
+
+export async function runGitWithNetworkRetry(args, options = {}) {
+  const {
+    job,
+    retryLabel = "远端",
+    displayArgs = args,
+    timeoutMs = remoteProbeTimeoutMs,
+    retryDelays = remoteCheckRetryDelays,
+    runCommand = runGit,
+    wait = waitForRetry,
+    ...runOptions
+  } = options;
+  const attempts = retryDelays.length + 1;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const result = await runCommand(args, { ...runOptions, job, timeoutMs, allowFailure: true });
+    if (result.code === 0 && !result.timedOut) {
+      return result;
+    }
+
+    const detail = result.timedOut
+      ? `命令执行超过 ${Math.round(timeoutMs / 1_000)} 秒`
+      : result.stderr.trim() || result.stdout.trim() || `退出码 ${result.code}`;
+    const transient = result.timedOut || isTransientGitNetworkFailure(`${result.stderr}\n${result.stdout}`);
+    if (!transient || attempt === attempts - 1) {
+      const retrySummary = transient ? `（已自动尝试 ${attempts} 次，请检查网络或代理后重新发布）` : "";
+      throw new Error(`${commandLabel(gitCommand, displayArgs)} 执行失败：${detail}${retrySummary}`);
+    }
+
+    const delayMs = retryDelays[attempt];
+    if (job) {
+      addLog(job, "warning", `${retryLabel}连接暂时中断，${delayMs / 1_000} 秒后自动重试（${attempt + 2}/${attempts}）`);
+    }
+    await wait(delayMs);
+  }
+
+  throw new Error(`${commandLabel(gitCommand, displayArgs)} 执行失败`);
 }
 
 async function runNpm(args, options = {}) {
@@ -669,7 +770,11 @@ function parseLsRemote(output) {
 
 async function checkRemote(remote, branch, tag, localHead, job) {
   addLog(job, "info", `检查 ${remote.name} 的分支和标签`);
-  const result = await runGit(["ls-remote", "--heads", "--tags", remote.name], { job });
+  const result = await runGitWithNetworkRetry(["ls-remote", "--heads", "--tags", remote.name], {
+    job,
+    retryLabel: `${remote.name} `,
+    timeoutMs: remoteProbeTimeoutMs
+  });
   const refs = parseLsRemote(result.stdout);
   if (refs.has(`refs/tags/${tag}`) || refs.has(`refs/tags/${tag}^{}`)) {
     throw new Error(`${remote.name} 已存在标签 ${tag}，请改用更高版本号`);
@@ -696,7 +801,11 @@ async function checkRemote(remote, branch, tag, localHead, job) {
 
   let ancestorResult = await runGit(["merge-base", "--is-ancestor", remoteHead, localHead], { allowFailure: true });
   if (ancestorResult.code > 1) {
-    await runGit(["fetch", "--no-tags", remote.name, `refs/heads/${branch}`], { job });
+    await runGitWithNetworkRetry(["fetch", "--no-tags", remote.name, `refs/heads/${branch}`], {
+      job,
+      retryLabel: `${remote.name} `,
+      timeoutMs: remoteFetchTimeoutMs
+    });
     ancestorResult = await runGit(["merge-base", "--is-ancestor", "FETCH_HEAD", localHead], { allowFailure: true });
   }
   if (ancestorResult.code !== 0) {

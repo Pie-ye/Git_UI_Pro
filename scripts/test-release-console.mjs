@@ -10,11 +10,14 @@ import {
   compareVersions,
   detectProvider,
   expectedWindowsUpdateArtifacts,
+  isTransientGitNetworkFailure,
   mergeReleaseNotes,
   parseStatusPorcelain,
   parseVersion,
   recommendVersions,
   resolveNpmInvocation,
+  runGitWithNetworkRetry,
+  runProcess,
   startReleaseConsole,
   validateWindowsUpdateArtifacts
 } from "./release-console.mjs";
@@ -65,6 +68,93 @@ test("识别 GitHub 与 Gitee 远端", () => {
   assert.equal(detectProvider("https://github.com/example/repo.git"), "github");
   assert.equal(detectProvider("git@gitee.com:example/repo.git"), "gitee");
   assert.equal(detectProvider("https://git.example.com/repo.git"), "other");
+});
+
+test("只将临时 Git 网络故障识别为可重试错误", () => {
+  assert.equal(
+    isTransientGitNetworkFailure("fatal: unable to access 'https://github.com/example/repo.git/': schannel: failed to receive handshake, SSL/TLS connection failed"),
+    true
+  );
+  assert.equal(isTransientGitNetworkFailure("fatal: unable to access repository: Failed to connect to github.com"), true);
+  assert.equal(isTransientGitNetworkFailure("GnuTLS recv error (-110): The TLS connection was non-properly terminated."), true);
+  assert.equal(isTransientGitNetworkFailure("fatal: unable to access repository: Connection refused"), true);
+  assert.equal(isTransientGitNetworkFailure("remote: Repository not found.\nfatal: Authentication failed"), false);
+  assert.equal(isTransientGitNetworkFailure("error: RPC failed; HTTP 401 curl 22"), false);
+  assert.equal(isTransientGitNetworkFailure("error: RPC failed; HTTP 403 curl 22"), false);
+  assert.equal(isTransientGitNetworkFailure("SSL certificate problem: certificate has expired"), false);
+  assert.equal(isTransientGitNetworkFailure("fatal: couldn't find remote ref refs/heads/master"), false);
+});
+
+test("临时网络故障恢复后停止重试", async () => {
+  const results = [
+    { code: 1, stdout: "", stderr: "Connection was reset", timedOut: false },
+    { code: 1, stdout: "", stderr: "", timedOut: true },
+    { code: 0, stdout: "ok", stderr: "", timedOut: false }
+  ];
+  const waits = [];
+  const job = { logs: [] };
+  let calls = 0;
+  const result = await runGitWithNetworkRetry(["ls-remote", "github"], {
+    job,
+    retryLabel: "github ",
+    retryDelays: [0, 0],
+    runCommand: async () => results[calls++],
+    wait: async (delayMs) => waits.push(delayMs)
+  });
+
+  assert.equal(result.stdout, "ok");
+  assert.equal(calls, 3);
+  assert.deepEqual(waits, [0, 0]);
+  assert.deepEqual(
+    job.logs.map((entry) => entry.message),
+    ["github 连接暂时中断，0 秒后自动重试（2/3）", "github 连接暂时中断，0 秒后自动重试（3/3）"]
+  );
+});
+
+test("非网络错误不会重试，连续网络错误最多尝试三次", async () => {
+  let calls = 0;
+  await assert.rejects(
+    runGitWithNetworkRetry(["ls-remote", "github"], {
+      retryDelays: [0, 0],
+      runCommand: async () => {
+        calls += 1;
+        return { code: 1, stdout: "", stderr: "Authentication failed", timedOut: false };
+      },
+      wait: async () => {}
+    }),
+    /Authentication failed/
+  );
+  assert.equal(calls, 1);
+
+  calls = 0;
+  await assert.rejects(
+    runGitWithNetworkRetry(["ls-remote", "github"], {
+      retryDelays: [0, 0],
+      runCommand: async () => {
+        calls += 1;
+        return { code: 1, stdout: "", stderr: "Connection timed out", timedOut: false };
+      },
+      wait: async () => {}
+    }),
+    /已自动尝试 3 次/
+  );
+  assert.equal(calls, 3);
+});
+
+test("命令超时会终止包含子进程的进程树", { timeout: 10_000 }, async () => {
+  const childScript = [
+    'const { spawn } = require("node:child_process");',
+    'spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "inherit" });',
+    "setInterval(() => {}, 1000);"
+  ].join("");
+  const startedAt = Date.now();
+  const result = await runProcess(process.execPath, ["-e", childScript], {
+    allowFailure: true,
+    timeoutMs: 500
+  });
+
+  assert.equal(result.timedOut, true);
+  assert.ok(Date.now() - startedAt < 5_000, "进程树应在超时后及时退出");
 });
 
 test("Windows 通过 Node 执行 npm CLI，避免直接 spawn npm.cmd", () => {
