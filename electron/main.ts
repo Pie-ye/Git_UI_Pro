@@ -12,6 +12,7 @@ let updateService: UpdateService;
 const gitService = new GitService();
 const terminalSessions = new Map<string, TerminalSession>();
 let terminalSessionSeed = 0;
+let verifiedRemoteProject: { fingerprint: string; repositoryRoot: string; expiresAt: number } | null = null;
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 type AppThemeSource = "system" | "light" | "dark";
@@ -78,7 +79,10 @@ function registerIpc(): void {
 
   ipcMain.handle("window:getState", () => getWindowState());
   ipcMain.handle("update:getState", () => updateService.getState());
+  ipcMain.handle("update:listReleases", (_event, force: boolean | undefined) => updateService.getReleaseHistory(Boolean(force)));
   ipcMain.handle("update:check", () => updateService.checkForUpdates());
+  ipcMain.handle("update:prepareRollback", (_event, version: string) => updateService.prepareRollback(version));
+  ipcMain.handle("update:cancelRollback", () => updateService.cancelRollback());
   ipcMain.handle("update:download", () => updateService.downloadUpdate());
   ipcMain.handle("update:install", () => updateService.installUpdate());
   ipcMain.handle("terminal:start", (event, repositoryPath: RepositoryLocation) => startTerminalSession(event.sender, repositoryPath));
@@ -113,14 +117,30 @@ function registerIpc(): void {
     return configStore.addProject(repositoryRoot);
   });
 
-  ipcMain.handle("projects:testRemote", (_event, input: RemoteProjectInput) => gitService.testRemoteRepository(input));
+  ipcMain.handle("projects:testRemote", async (_event, input: RemoteProjectInput) => {
+    const result = await gitService.testRemoteRepository(input);
+    verifiedRemoteProject = result.ok && result.repositoryRoot
+      ? {
+          fingerprint: remoteProjectFingerprint(input),
+          repositoryRoot: result.repositoryRoot,
+          expiresAt: Date.now() + 60_000
+        }
+      : null;
+    return result;
+  });
 
   ipcMain.handle("projects:addRemote", async (_event, input: RemoteProjectInput) => {
-    const result = await gitService.testRemoteRepository(input);
-    if (!result.ok || !result.repositoryRoot) {
-      throw new Error([result.messageZh ?? "无法连接远程 Git 仓库。", result.stderr.trim()].filter(Boolean).join("\n"));
+    const fingerprint = remoteProjectFingerprint(input);
+    const verified = verifiedRemoteProject?.fingerprint === fingerprint && verifiedRemoteProject.expiresAt > Date.now()
+      ? verifiedRemoteProject
+      : null;
+    const result = verified ? null : await gitService.testRemoteRepository(input);
+    const repositoryRoot = verified?.repositoryRoot ?? result?.repositoryRoot;
+    if (!repositoryRoot || (result && !result.ok)) {
+      throw new Error([result?.messageZh ?? "无法连接远程 Git 仓库。", result?.stderr.trim()].filter(Boolean).join("\n"));
     }
-    return configStore.addRemoteProject(input, result.repositoryRoot);
+    verifiedRemoteProject = null;
+    return configStore.addRemoteProject(input, repositoryRoot);
   });
 
   ipcMain.handle("projects:scan", async (_event, rootPath: string) => {
@@ -465,6 +485,16 @@ function terminalShell(): { command: string; args: string[]; label: string } {
     args: [],
     label: path.basename(shell)
   };
+}
+
+function remoteProjectFingerprint(input: RemoteProjectInput): string {
+  return JSON.stringify([
+    input.host.trim().toLowerCase(),
+    input.username?.trim() ?? "",
+    input.port ?? 22,
+    input.repositoryPath.trim().replace(/\\/g, "/").replace(/\/$/, ""),
+    input.identityFile?.trim() ?? ""
+  ]);
 }
 
 function configureApplicationMenu(): void {

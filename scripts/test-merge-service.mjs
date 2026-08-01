@@ -164,6 +164,23 @@ async function testConflictContinueCompletesMerge() {
   assert.equal((await service.getStatus(repositoryPath)).operationState, undefined);
 }
 
+async function testRecreatedMergeMarkerInvalidatesManagedState() {
+  const repositoryPath = await createConflictRepository("recreated-merge-marker");
+  const mergeResult = await service.mergeCurrentBranch(repositoryPath, "main", "ff");
+  assert.equal(mergeResult.ok, false);
+
+  const markerPath = path.resolve(repositoryPath, git(repositoryPath, "rev-parse", "--git-path", "MERGE_HEAD"));
+  const markerContent = await readFile(markerPath);
+  await rm(markerPath);
+  await writeFile(markerPath, markerContent);
+
+  const status = await new GitService().getStatus(repositoryPath);
+  assert.equal(status.operationState, "merge");
+  assert.equal(status.mergeSourceBranch, undefined);
+  assert.equal(status.mergeTargetBranch, undefined);
+  git(repositoryPath, "merge", "--abort");
+}
+
 async function testConflictResolutionRejectsStaleSnapshot() {
   const repositoryPath = await createConflictRepository("stale-conflict");
   const mergeResult = await service.mergeCurrentBranch(repositoryPath, "main", "ff");
@@ -269,6 +286,7 @@ try {
   await testMergeFailureRestoresSource();
   await testConflictAbortRestoresSource();
   await testConflictContinueCompletesMerge();
+  await testRecreatedMergeMarkerInvalidatesManagedState();
   await testConflictResolutionRejectsStaleSnapshot();
   await testConflictCanAdoptIncomingVersion();
   await testUnrelatedHistoryIsRejectedBeforeSwitch();

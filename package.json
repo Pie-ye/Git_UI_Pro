@@ -33,6 +33,7 @@
     "build:electron": "tsc -p electron/tsconfig.json",
     "build:renderer": "tsc -p tsconfig.json --noEmit && vite build",
     "test:merge": "npm run build:electron && node scripts/test-merge-service.mjs",
+    "test:config": "npm run build:electron && node --test scripts/test-config-store.mjs",
     "test:release": "node --test scripts/test-release-console.mjs",
     "test:update": "npm run build:electron && node --test scripts/test-update-utils.mjs",
     "icons": "node scripts/generate-icons.mjs",

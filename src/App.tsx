@@ -60,8 +60,11 @@ const DEFAULT_CONSOLE_HEIGHT = 240;
 const MIN_CONSOLE_HEIGHT = 80;
 const CONSOLE_TOP_SNAP_DISTANCE = 36;
 const SELECTED_PROJECT_REFRESH_INTERVAL_MS = 4000;
+const REMOTE_PROJECT_REFRESH_INTERVAL_MS = 30_000;
 const PROJECT_LIST_STATUS_REFRESH_INTERVAL_MS = 20000;
 const PROJECT_LIST_STATUS_BATCH_SIZE = 3;
+const REMOTE_PROJECT_LIST_INITIAL_DELAY_MS = 15_000;
+const REMOTE_PROJECT_LIST_REFRESH_INTERVAL_MS = 120_000;
 const PROJECT_SELECTION_LOAD_DELAY_MS = 180;
 const PROJECT_DATA_CACHE_TTL_MS = 20_000;
 const GRAPH_HISTORY_CACHE_TTL_MS = 20_000;
@@ -148,6 +151,7 @@ export function App() {
   const selectedProjectIdRef = useRef<string | null>(null);
   const autoRefreshBusyRef = useRef(false);
   const projectListRefreshBusyRef = useRef(false);
+  const remoteProjectListRefreshBusyRef = useRef(false);
   const selectedProjectLoadTimerRef = useRef<number | undefined>();
   const projectLoadRequestRef = useRef(0);
   const projectDataCacheRef = useRef(new Map<string, ProjectDataSnapshot>());
@@ -444,9 +448,10 @@ export function App() {
       }
     };
 
+    const refreshInterval = selectedProject.remote ? REMOTE_PROJECT_REFRESH_INTERVAL_MS : SELECTED_PROJECT_REFRESH_INTERVAL_MS;
     const intervalId = window.setInterval(() => {
       void refresh();
-    }, SELECTED_PROJECT_REFRESH_INTERVAL_MS);
+    }, refreshInterval);
     const onFocus = () => void refresh();
     const onVisibilityChange = () => {
       if (!document.hidden) {
@@ -465,7 +470,7 @@ export function App() {
   }, [selectedProject?.id, selectedProject?.path, selectedProjectGitReady]);
 
   useEffect(() => {
-    if (gitDependency.status !== "ready" && !projectsRef.current.some((project) => project.remote)) {
+    if (gitDependency.status !== "ready") {
       return;
     }
 
@@ -489,6 +494,26 @@ export function App() {
     };
   }, [gitDependency.status, projects.some((project) => Boolean(project.remote))]);
 
+  useEffect(() => {
+    if (!projects.some((project) => Boolean(project.remote))) {
+      return;
+    }
+
+    let disposed = false;
+    const refresh = () => {
+      if (!document.hidden) {
+        void refreshProjectListStatuses(undefined, () => disposed, "remote");
+      }
+    };
+    const initialTimerId = window.setTimeout(refresh, REMOTE_PROJECT_LIST_INITIAL_DELAY_MS);
+    const intervalId = window.setInterval(refresh, REMOTE_PROJECT_LIST_REFRESH_INTERVAL_MS);
+    return () => {
+      disposed = true;
+      window.clearTimeout(initialTimerId);
+      window.clearInterval(intervalId);
+    };
+  }, [projects.some((project) => Boolean(project.remote))]);
+
   async function loadInitialData() {
     try {
       const [projectList, versionResult] = await Promise.all([apiClient.getProjects(), apiClient.getGitVersion()]);
@@ -496,7 +521,7 @@ export function App() {
       setProjects(orderedProjects);
       selectProject(orderedProjects[0]?.id ?? null);
       applyGitVersionResult(versionResult);
-      const refreshableProjects = versionResult.ok ? orderedProjects : orderedProjects.filter((project) => project.remote);
+      const refreshableProjects = versionResult.ok ? orderedProjects.filter((project) => !project.remote) : [];
       if (refreshableProjects.length > 0) {
         void refreshProjectListStatuses(refreshableProjects);
       }
@@ -734,17 +759,26 @@ export function App() {
     return worktreeState;
   }
 
-  async function refreshProjectListStatuses(projectSnapshot = projectsRef.current, isDisposed: () => boolean = () => false) {
-    projectSnapshot = projectSnapshot.filter((project) => gitDependency.status === "ready" || project.remote);
-    if (isDisposed() || projectListRefreshBusyRef.current || projectSnapshot.length === 0) {
+  async function refreshProjectListStatuses(
+    projectSnapshot = projectsRef.current,
+    isDisposed: () => boolean = () => false,
+    mode: "local" | "remote" = "local"
+  ) {
+    const remoteMode = mode === "remote";
+    projectSnapshot = projectSnapshot.filter((project) => remoteMode
+      ? Boolean(project.remote) && project.id !== selectedProjectIdRef.current
+      : !project.remote && gitDependency.status === "ready");
+    const busyRef = remoteMode ? remoteProjectListRefreshBusyRef : projectListRefreshBusyRef;
+    if (isDisposed() || busyRef.current || projectSnapshot.length === 0) {
       return;
     }
 
-    projectListRefreshBusyRef.current = true;
+    busyRef.current = true;
     const statusUpdates = new Map<string, GitProject["status"]>();
+    const batchSize = remoteMode ? 1 : PROJECT_LIST_STATUS_BATCH_SIZE;
     try {
-      for (let index = 0; index < projectSnapshot.length && !isDisposed(); index += PROJECT_LIST_STATUS_BATCH_SIZE) {
-        const batch = projectSnapshot.slice(index, index + PROJECT_LIST_STATUS_BATCH_SIZE);
+      for (let index = 0; index < projectSnapshot.length && !isDisposed(); index += batchSize) {
+        const batch = projectSnapshot.slice(index, index + batchSize);
         const results = await Promise.allSettled(
           batch.map(async (project): Promise<ProjectStatusRefresh> => ({
             projectId: project.id,
@@ -778,7 +812,7 @@ export function App() {
         return changed ? nextProjects : current;
       });
     } finally {
-      projectListRefreshBusyRef.current = false;
+      busyRef.current = false;
     }
   }
 
@@ -1117,7 +1151,9 @@ export function App() {
 
     const confirmed = await requestConfirm({
       title: "移除项目记录",
-      description: "只会从项目列表移除，不会删除本地文件。",
+      description: project.remote
+        ? "只会移除连接记录，不会删除服务器上的仓库或文件。"
+        : "只会从项目列表移除，不会删除本地文件。",
       detail: project.name,
       confirmLabel: "移除",
       tone: "warning"
@@ -2808,7 +2844,7 @@ function projectIdentityKey(project: GitProject): string {
   return [
     "ssh",
     project.remote.host.toLowerCase(),
-    project.remote.username?.toLowerCase() ?? "",
+    project.remote.username ?? "",
     project.remote.port ?? 22,
     project.path
   ].join(":");

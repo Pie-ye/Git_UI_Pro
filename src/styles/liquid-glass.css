@@ -1710,3 +1710,674 @@ select:not([disabled]):focus {
   outline: 0;
   box-shadow: none;
 }
+
+/* Remote SSH connection: one continuous glass dialog with a fixed action rail. */
+.remote-project-dialog {
+  border-color: color-mix(in srgb, var(--glass-edge) 86%, var(--blue));
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--glass-fill-strong) 91%, #e9f8fb), color-mix(in srgb, var(--glass-fill-strong) 94%, #f7edf7));
+  box-shadow: 0 36px 86px rgba(25, 51, 72, 0.3), 0 7px 22px rgba(33, 61, 82, 0.12), inset 0 1px 0 var(--glass-edge);
+  backdrop-filter: blur(38px) saturate(176%);
+  -webkit-backdrop-filter: blur(38px) saturate(176%);
+}
+
+.theme-dark .remote-project-dialog {
+  border-color: color-mix(in srgb, var(--glass-edge) 76%, var(--blue));
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--glass-fill-strong) 94%, #0b2d38), color-mix(in srgb, var(--glass-fill-strong) 96%, #271f31));
+  box-shadow: 0 38px 90px rgba(0, 6, 13, 0.55), 0 7px 22px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+.remote-project-header {
+  min-height: 58px;
+  border-bottom-color: color-mix(in srgb, var(--border) 76%, transparent);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--glass-edge) 18%, transparent), transparent);
+}
+
+.remote-project-header .branch-dialog-title svg {
+  color: var(--blue);
+}
+
+.remote-project-scroll {
+  scrollbar-gutter: stable;
+}
+
+.remote-project-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.remote-project-scroll::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 46%, transparent);
+  background-clip: padding-box;
+}
+
+.remote-project-dialog .remote-address-input,
+.remote-project-dialog .remote-project-field > input,
+.remote-project-dialog .remote-key-input {
+  min-height: 44px;
+  border: 1px solid color-mix(in srgb, var(--border-strong) 86%, var(--glass-edge));
+  border-radius: 14px;
+  color: var(--text-strong);
+  background: color-mix(in srgb, var(--surface-3) 76%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--glass-edge) 72%, transparent), inset 0 2px 6px rgba(9, 28, 40, 0.05);
+  transition: border-color 170ms ease, background-color 170ms ease, box-shadow 170ms ease;
+}
+
+.theme-dark .remote-project-dialog .remote-address-input,
+.theme-dark .remote-project-dialog .remote-project-field > input,
+.theme-dark .remote-project-dialog .remote-key-input {
+  background: color-mix(in srgb, var(--surface-3) 72%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), inset 0 2px 7px rgba(0, 0, 0, 0.18);
+}
+
+.remote-project-dialog .remote-address-input input,
+.remote-project-dialog .remote-key-input input {
+  min-height: 40px;
+  border: 0;
+  border-radius: 0;
+  padding: 0 3px;
+  color: var(--text-strong);
+  background: transparent;
+  box-shadow: none;
+}
+
+.remote-project-dialog .remote-address-input input:focus,
+.remote-project-dialog .remote-key-input input:focus {
+  border: 0;
+  outline: 0;
+  box-shadow: none;
+}
+
+.remote-project-dialog .remote-address-input:focus-within,
+.remote-project-dialog .remote-project-field > input:focus,
+.remote-project-dialog .remote-key-input:focus-within {
+  border-color: color-mix(in srgb, var(--blue) 76%, var(--glass-edge));
+  outline: 0;
+  background: color-mix(in srgb, var(--surface-3) 86%, transparent);
+  box-shadow: inset 0 1px 0 var(--glass-edge), 0 0 0 1px color-mix(in srgb, var(--blue) 14%, transparent), 0 8px 20px color-mix(in srgb, var(--blue) 8%, transparent);
+}
+
+.remote-project-dialog .remote-address-field.invalid .remote-address-input,
+.remote-project-dialog .remote-project-field.invalid > input,
+.remote-project-dialog .remote-project-field.invalid .remote-key-input {
+  border-color: color-mix(in srgb, var(--danger) 68%, var(--glass-edge));
+}
+
+.remote-project-dialog .remote-auth-summary,
+.remote-project-dialog .remote-connection-feedback {
+  border-color: color-mix(in srgb, var(--glass-edge) 74%, var(--border));
+  background: color-mix(in srgb, var(--glass-fill-static) 56%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--glass-edge) 66%, transparent);
+}
+
+.remote-project-dialog .remote-connection-feedback.error {
+  border-color: color-mix(in srgb, var(--danger) 32%, var(--glass-edge));
+  background: color-mix(in srgb, var(--danger) 8%, var(--glass-fill-static));
+}
+
+.remote-project-dialog .remote-project-actions {
+  border-top-color: color-mix(in srgb, var(--border) 76%, transparent);
+  background: color-mix(in srgb, var(--glass-fill-strong) 74%, transparent);
+  box-shadow: 0 -10px 28px color-mix(in srgb, var(--panel) 38%, transparent), inset 0 1px 0 color-mix(in srgb, var(--glass-edge) 46%, transparent);
+  backdrop-filter: blur(24px) saturate(155%);
+  -webkit-backdrop-filter: blur(24px) saturate(155%);
+}
+
+.remote-project-dialog .remote-test-button,
+.remote-project-dialog .remote-connect-button,
+.remote-project-dialog .remote-project-actions > .text-button {
+  min-height: 40px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 680;
+}
+
+.remote-project-dialog .remote-test-button {
+  border: 1px solid var(--glass-edge);
+  background: var(--surface);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--glass-edge) 68%, transparent);
+}
+
+.remote-project-dialog .remote-connect-button {
+  min-width: 126px;
+  border: 1px solid color-mix(in srgb, var(--accent) 58%, var(--glass-edge));
+  box-shadow: 0 9px 22px color-mix(in srgb, var(--accent) 22%, transparent), inset 0 1px 0 rgba(255, 255, 255, 0.26);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .remote-project-dialog .remote-address-input,
+  .remote-project-dialog .remote-project-field > input,
+  .remote-project-dialog .remote-key-input {
+    transition: none;
+  }
+}
+
+/* Always-visible version capsule and release history workflow. */
+.app-update-control {
+  grid-column: 2;
+  align-self: stretch;
+  width: auto;
+  min-width: 0;
+  padding-left: 3px;
+}
+
+.app-update-trigger {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  width: auto;
+  min-width: 62px;
+  height: 24px;
+  min-height: 24px;
+  border: 1px solid color-mix(in srgb, var(--blue) 18%, var(--glass-edge));
+  border-radius: 8px;
+  padding: 0 5px 0 8px;
+  color: var(--muted-strong);
+  background: color-mix(in srgb, var(--glass-fill-static) 56%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--glass-edge) 70%, transparent);
+}
+
+.app-update-trigger:hover,
+.app-update-trigger[aria-expanded="true"] {
+  border-color: color-mix(in srgb, var(--blue) 38%, var(--glass-edge));
+  color: var(--text-strong);
+  background: color-mix(in srgb, var(--blue) 8%, var(--glass-fill-strong));
+  box-shadow: inset 0 1px 0 var(--glass-edge), 0 5px 14px color-mix(in srgb, var(--blue) 12%, transparent);
+}
+
+.app-update-trigger-version {
+  font-family: var(--mono-font);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.app-update-trigger-state {
+  display: grid;
+  width: 16px;
+  height: 16px;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 10%, transparent);
+}
+
+.app-update-trigger[data-phase="available"] .app-update-trigger-state,
+.app-update-trigger[data-phase="downloading"] .app-update-trigger-state {
+  color: var(--blue);
+  background: color-mix(in srgb, var(--blue) 10%, transparent);
+}
+
+.app-update-trigger[data-operation="rollback"] .app-update-trigger-state {
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 11%, transparent);
+}
+
+.app-update-trigger[data-phase="error"] .app-update-trigger-state {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
+.app-update-trigger-dot {
+  top: 1px;
+  right: 1px;
+  width: 6px;
+  height: 6px;
+}
+
+.app-update-popover {
+  left: -96px;
+  width: min(430px, calc(100vw - 20px));
+  max-height: min(720px, calc(100vh - 52px));
+}
+
+.app-update-panel-header {
+  flex: 0 0 auto;
+  min-height: 62px;
+}
+
+.app-update-header-actions {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+
+.app-update-icon-button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  min-height: 32px;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 0;
+  color: var(--muted-strong);
+  background: transparent;
+  cursor: pointer;
+}
+
+.app-update-icon-button:hover:not(:disabled) {
+  border-color: var(--glass-edge);
+  color: var(--text-strong);
+  background: var(--surface-hover);
+}
+
+.app-update-icon-button:disabled {
+  cursor: default;
+  opacity: 0.42;
+}
+
+.app-update-scroll-region {
+  min-height: 0;
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+
+.app-update-scroll-region::-webkit-scrollbar {
+  width: 8px;
+}
+
+.app-update-scroll-region::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 48%, transparent);
+  background-clip: padding-box;
+}
+
+.app-update-current {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) max-content;
+  gap: 11px;
+  align-items: center;
+  min-height: 82px;
+  margin: 14px 16px 9px;
+  border: 1px solid color-mix(in srgb, var(--blue) 20%, var(--glass-edge));
+  border-radius: 17px;
+  padding: 11px 12px;
+  background: linear-gradient(112deg, color-mix(in srgb, var(--blue) 8%, var(--surface-3)), color-mix(in srgb, var(--accent) 7%, var(--surface-3)));
+  box-shadow: 0 10px 28px rgba(38, 71, 96, 0.09), inset 0 1px 0 var(--glass-edge);
+}
+
+.app-update-current-icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--success) 28%, var(--glass-edge));
+  border-radius: 14px;
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 9%, var(--surface));
+}
+
+.app-update-current > span:nth-child(2) {
+  display: grid;
+  grid-template-columns: max-content max-content;
+  gap: 1px 7px;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.app-update-current small {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.app-update-current strong {
+  color: var(--text-strong);
+  font-family: var(--mono-font);
+  font-size: 22px;
+  font-weight: 760;
+  line-height: 1.2;
+}
+
+.app-update-current em {
+  color: var(--success);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 680;
+}
+
+.app-update-release-link {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  min-height: 30px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 0 7px;
+  color: var(--muted-strong);
+  background: transparent;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.app-update-release-link:hover {
+  border-color: var(--glass-edge);
+  color: var(--text-strong);
+  background: var(--surface-hover);
+}
+
+.app-update-version-lens {
+  min-height: 80px;
+  margin-block: 9px;
+}
+
+.app-update-version-lens[data-operation="rollback"] {
+  border-color: color-mix(in srgb, var(--warning) 28%, var(--glass-edge));
+  background: linear-gradient(112deg, color-mix(in srgb, var(--blue) 6%, var(--surface-3)), color-mix(in srgb, var(--warning) 10%, var(--surface-3)));
+}
+
+.app-update-version-lens[data-operation="rollback"] .app-update-version-flow {
+  border-color: color-mix(in srgb, var(--warning) 34%, var(--glass-edge));
+  color: var(--warning) !important;
+}
+
+.app-update-status {
+  margin-inline: 0;
+  padding: 7px 17px 11px;
+}
+
+.app-update-status[data-operation="rollback"] .app-update-status-icon {
+  border-color: color-mix(in srgb, var(--warning) 32%, var(--glass-edge));
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 9%, var(--surface-3));
+}
+
+.app-update-progress,
+.app-update-error {
+  margin-inline: 17px;
+}
+
+.app-update-notes {
+  flex: initial;
+  margin: 1px 17px 0;
+}
+
+.app-update-notes-content {
+  max-height: 132px;
+}
+
+.app-update-history {
+  margin: 4px 17px 3px;
+  border-top: 1px solid var(--border);
+}
+
+.app-update-history-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 58px;
+  border: 0;
+  padding: 0 2px;
+  color: var(--text);
+  background: transparent;
+  cursor: pointer;
+}
+
+.app-update-history-toggle > svg {
+  flex: 0 0 auto;
+  color: var(--muted);
+  transition: transform 170ms ease;
+}
+
+.app-update-history[data-expanded="true"] .app-update-history-toggle > svg {
+  transform: rotate(180deg);
+}
+
+.app-update-history-title {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  text-align: left;
+}
+
+.app-update-history-title > svg {
+  color: var(--blue);
+}
+
+.app-update-history-title > span {
+  display: grid;
+  gap: 1px;
+}
+
+.app-update-history-title strong {
+  color: var(--text-strong);
+  font-size: 13px;
+  font-weight: 720;
+}
+
+.app-update-history-title small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.app-update-history-body {
+  display: grid;
+  gap: 10px;
+  padding-bottom: 14px;
+}
+
+.app-update-rollback-notice {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 7px;
+  align-items: start;
+  border: 1px solid color-mix(in srgb, var(--warning) 24%, var(--border));
+  border-radius: 12px;
+  padding: 8px 9px;
+  color: var(--muted-strong);
+  background: color-mix(in srgb, var(--warning) 6%, var(--surface));
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.app-update-rollback-notice svg {
+  margin-top: 1px;
+  color: var(--warning);
+}
+
+.app-update-history-list {
+  border: 1px solid color-mix(in srgb, var(--glass-edge) 74%, var(--border));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--glass-fill-static) 48%, transparent);
+  overflow: hidden;
+}
+
+.app-update-history-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  gap: 5px;
+  align-items: center;
+  min-height: 54px;
+  border-bottom: 1px solid var(--border);
+  padding: 3px 7px 3px 0;
+  color: var(--text);
+}
+
+.app-update-history-item:last-child {
+  border-bottom: 0;
+}
+
+.app-update-history-item:hover {
+  background: var(--surface-hover);
+}
+
+.app-update-history-choice {
+  position: relative;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) max-content;
+  gap: 9px;
+  align-items: center;
+  min-height: 48px;
+  padding: 3px 4px 3px 11px;
+  cursor: pointer;
+}
+
+.app-update-history-choice > input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.app-update-history-radio {
+  display: grid;
+  width: 17px;
+  height: 17px;
+  place-items: center;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  color: transparent;
+  background: var(--surface);
+}
+
+.app-update-history-choice > input:checked + .app-update-history-radio {
+  border-color: var(--blue);
+  color: var(--blue-contrast);
+  background: var(--blue);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 12%, transparent);
+}
+
+.app-update-history-choice > input:focus-visible + .app-update-history-radio {
+  outline: 2px solid color-mix(in srgb, var(--blue) 44%, transparent);
+  outline-offset: 2px;
+}
+
+.app-update-history-meta {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.app-update-history-meta strong {
+  color: var(--text-strong);
+  font-family: var(--mono-font);
+  font-size: 13px;
+}
+
+.app-update-history-meta small,
+.app-update-history-size {
+  color: var(--muted);
+  font-family: var(--mono-font);
+  font-size: 11px;
+}
+
+.app-update-history-empty,
+.app-update-history-error {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-height: 54px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 13px;
+  padding: 9px 11px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.app-update-history-error {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 32px;
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--danger) 30%, var(--border));
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 7%, var(--surface));
+}
+
+.app-update-prepare-rollback {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  justify-content: center;
+  justify-self: end;
+  min-height: 38px;
+  border: 1px solid color-mix(in srgb, var(--warning) 36%, var(--glass-edge));
+  border-radius: 12px;
+  padding: 0 12px;
+  color: var(--text-strong);
+  background: color-mix(in srgb, var(--warning) 9%, var(--surface));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--glass-edge) 62%, transparent);
+  font-size: 12px;
+  font-weight: 680;
+  cursor: pointer;
+}
+
+.app-update-prepare-rollback:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--warning) 52%, var(--glass-edge));
+  background: color-mix(in srgb, var(--warning) 14%, var(--surface-hover));
+}
+
+.app-update-prepare-rollback:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.app-update-actions {
+  flex: 0 0 auto;
+  margin: 0;
+  border-top: 1px solid var(--border);
+  padding: 12px 17px 15px;
+  background: color-mix(in srgb, var(--glass-fill-strong) 74%, transparent);
+  box-shadow: 0 -10px 28px color-mix(in srgb, var(--panel) 34%, transparent);
+  backdrop-filter: blur(22px) saturate(150%);
+  -webkit-backdrop-filter: blur(22px) saturate(150%);
+}
+
+@media (max-width: 520px) {
+  .app-update-popover {
+    right: 8px;
+    left: 8px;
+  }
+
+  .app-update-current,
+  .app-update-version-lens {
+    margin-inline: 12px;
+  }
+
+  .app-update-current {
+    grid-template-columns: 40px minmax(0, 1fr);
+  }
+
+  .app-update-current-icon {
+    width: 38px;
+    height: 38px;
+  }
+
+  .app-update-release-link {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .app-update-status,
+  .app-update-progress,
+  .app-update-error,
+  .app-update-notes,
+  .app-update-history {
+    margin-inline: 13px;
+  }
+
+  .app-update-status {
+    margin-inline: 0;
+  }
+
+  .app-update-history-choice {
+    grid-template-columns: 18px minmax(0, 1fr);
+  }
+
+  .app-update-history-size {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-update-history-toggle > svg {
+    transition: none;
+  }
+}

@@ -41,6 +41,8 @@ export type UpdatePhase =
   | "installing"
   | "error";
 
+export type UpdateOperation = "upgrade" | "rollback";
+
 export interface UpdateProgress {
   percent: number;
   transferred: number;
@@ -50,6 +52,7 @@ export interface UpdateProgress {
 
 export interface UpdateState {
   phase: UpdatePhase;
+  operation: UpdateOperation;
   currentVersion: string;
   availableVersion?: string;
   releaseName?: string;
@@ -60,6 +63,16 @@ export interface UpdateState {
   error?: string;
 }
 
+export interface ReleaseHistoryItem {
+  version: string;
+  tagName: string;
+  releaseName: string;
+  releaseNotes: string;
+  publishedAt: string;
+  releaseUrl: string;
+  installerSize: number;
+}
+
 export interface GitUIBridge {
   runAppCommand: (command: string) => Promise<boolean>;
   openExternal: (url: string) => Promise<boolean>;
@@ -67,7 +80,10 @@ export interface GitUIBridge {
   getWindowState: () => Promise<WindowState>;
   onWindowStateChange: (callback: (state: WindowState) => void) => () => void;
   getUpdateState: () => Promise<UpdateState>;
+  listUpdateReleases: (force?: boolean) => Promise<ReleaseHistoryItem[]>;
   checkForUpdates: () => Promise<UpdateState>;
+  prepareRollback: (version: string) => Promise<UpdateState>;
+  cancelRollback: () => Promise<UpdateState>;
   downloadUpdate: () => Promise<UpdateState>;
   installUpdate: () => Promise<boolean>;
   onUpdateState: (callback: (state: UpdateState) => void) => () => void;

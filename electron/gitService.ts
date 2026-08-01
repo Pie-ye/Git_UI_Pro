@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
 import { access, mkdir, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { TextDecoder } from "node:util";
@@ -164,6 +165,9 @@ interface ManagedMergeState {
   sourceBranch: string;
   targetBranch: string;
   startedAt: string;
+  mergeHead: string;
+  originalHead: string;
+  mergeMarkerToken: string;
 }
 
 interface ConflictSnapshot {
@@ -179,7 +183,24 @@ const fieldSeparator = "\x1f";
 const recordSeparator = "\x1e";
 const resetCommandTimeoutMs = 30_000;
 const mergeCommandTimeoutMs = 120_000;
+const remoteReadCommandTimeoutMs = 30_000;
 const managedMergeStateFile = "git-ui-pro-merge-state.json";
+const readOnlyGitCommands = new Set([
+  "cat-file",
+  "check-ref-format",
+  "diff",
+  "diff-tree",
+  "for-each-ref",
+  "log",
+  "ls-files",
+  "ls-tree",
+  "merge-base",
+  "rev-list",
+  "rev-parse",
+  "show",
+  "show-ref",
+  "status"
+]);
 const maxEditableConflictBytes = 2 * 1024 * 1024;
 const maxPreviewImageBytes = 25 * 1024 * 1024;
 const maxPreviewVideoBytes = 80 * 1024 * 1024;
@@ -253,6 +274,8 @@ function decodeGitOutput(buffer: Buffer): string {
 
 export class GitService {
   private readonly activeMergeRepositories = new Set<string>();
+  private readonly pendingStatusRequests = new Map<string, Promise<GitStatusSummary>>();
+  private readonly cleanManagedMergeRepositories = new Set<string>();
 
   async run(cwd: RepositoryLocation, args: string[], options: { timeoutMs?: number } = {}): Promise<GitOperationResult> {
     const result = await this.runProcess(cwd, args, options);
@@ -277,6 +300,7 @@ export class GitService {
   ): Promise<Omit<GitOperationResult, "stdout"> & { stdout: Buffer }> {
     return new Promise((resolve) => {
       const target = normalizeRepositoryTarget(cwd);
+      const timeoutMs = options.timeoutMs ?? (target.remote && isReadOnlyGitCommand(args) ? remoteReadCommandTimeoutMs : undefined);
       const remoteCommand = target.remote ? buildRemoteGitCommand(target.path, args) : undefined;
       const executable = target.remote ? "ssh" : "git";
       const executableArgs = target.remote ? [...buildSshArgs(target.remote, true), remoteCommand!] : args;
@@ -302,9 +326,9 @@ export class GitService {
         }
         resolve(result);
       };
-      const timeoutId = options.timeoutMs
+      const timeoutId = timeoutMs
         ? setTimeout(() => {
-            const timeoutText = `Git command timed out after ${Math.round((options.timeoutMs ?? 0) / 1000)}s.`;
+            const timeoutText = `Git command timed out after ${Math.round(timeoutMs / 1000)}s.`;
             const stderrText = decodeGitOutput(Buffer.concat(stderrChunks));
             const stderr = stderrText ? `${stderrText}\n${timeoutText}` : timeoutText;
             child.kill();
@@ -316,7 +340,7 @@ export class GitService {
               exitCode: -1,
               messageZh: target.remote ? "远程 Git 命令执行超时，请检查 SSH 连接后重试" : "Git 命令执行超时，请确认仓库未被其它进程锁定后重试"
             });
-          }, options.timeoutMs)
+          }, timeoutMs)
         : undefined;
 
       child.stdout.on("data", (chunk: Buffer) => {
@@ -373,6 +397,14 @@ export class GitService {
       return gitFailure("ssh", validationError);
     }
 
+    if (input.identityFile) {
+      try {
+        await access(input.identityFile.trim(), fsConstants.R_OK);
+      } catch {
+        return gitFailure("ssh", "无法读取所选 SSH 私钥，请确认文件仍然存在且当前用户有读取权限。");
+      }
+    }
+
     const target: RepositoryTarget = {
       path: input.repositoryPath.trim(),
       remote: {
@@ -397,6 +429,22 @@ export class GitService {
   }
 
   async getStatus(repositoryPath: RepositoryLocation): Promise<GitStatusSummary> {
+    const requestKey = this.mergeRepositoryKey(repositoryPath);
+    const pendingRequest = this.pendingStatusRequests.get(requestKey);
+    if (pendingRequest) {
+      return { ...(await pendingRequest) };
+    }
+
+    const request = this.loadStatus(repositoryPath).finally(() => {
+      if (this.pendingStatusRequests.get(requestKey) === request) {
+        this.pendingStatusRequests.delete(requestKey);
+      }
+    });
+    this.pendingStatusRequests.set(requestKey, request);
+    return { ...(await request) };
+  }
+
+  private async loadStatus(repositoryPath: RepositoryLocation): Promise<GitStatusSummary> {
     const result = await this.run(repositoryPath, ["status", "--porcelain=v2", "--branch", "--ignored=matching"]);
     if (!result.ok) {
       throw new Error(result.messageZh ?? "无法读取仓库状态。");
@@ -404,11 +452,13 @@ export class GitService {
 
     const summary = parseStatus(result.stdout);
     summary.operationState = await this.getOperationState(repositoryPath);
+    const repositoryKey = this.mergeRepositoryKey(repositoryPath);
     if (summary.operationState === "merge") {
-      const managedState = await this.readManagedMergeState(repositoryPath);
+      this.cleanManagedMergeRepositories.delete(repositoryKey);
+      const managedState = await this.readCurrentManagedMergeState(repositoryPath, summary.currentBranch);
       summary.mergeSourceBranch = managedState?.sourceBranch;
       summary.mergeTargetBranch = managedState?.targetBranch;
-    } else {
+    } else if (!this.cleanManagedMergeRepositories.has(repositoryKey)) {
       await this.clearManagedMergeState(repositoryPath);
     }
     return summary;
@@ -646,9 +696,8 @@ export class GitService {
 
   async getConflictFileDetails(repositoryPath: RepositoryLocation, filePath: string): Promise<ConflictFileDetails> {
     const snapshot = await this.loadConflictSnapshot(repositoryPath, filePath);
-    const [status, managedState, incomingLabel] = await Promise.all([
+    const [status, incomingLabel] = await Promise.all([
       this.getStatus(repositoryPath),
-      this.readManagedMergeState(repositoryPath),
       this.getMergeHeadLabel(repositoryPath)
     ]);
     const buffers = [snapshot.base, snapshot.current, snapshot.incoming, snapshot.result].filter((value): value is Buffer => Boolean(value));
@@ -665,8 +714,8 @@ export class GitService {
       currentExists: Boolean(snapshot.current),
       incomingExists: Boolean(snapshot.incoming),
       resultExists: Boolean(snapshot.result),
-      currentLabel: managedState?.targetBranch ?? status.currentBranch ?? "当前分支",
-      incomingLabel: managedState?.sourceBranch ?? incomingLabel ?? "传入分支",
+      currentLabel: status.mergeTargetBranch ?? status.currentBranch ?? "当前分支",
+      incomingLabel: status.mergeSourceBranch ?? incomingLabel ?? "传入分支",
       editable,
       isBinary,
       token: snapshot.token
@@ -1053,10 +1102,19 @@ export class GitService {
       const operationState = await this.getOperationState(repositoryPath);
       if (operationState === "merge") {
         try {
+          const [mergeIdentity, mergeMarkerToken] = await Promise.all([
+            this.readMergeIdentity(repositoryPath),
+            this.readMergeMarkerToken(repositoryPath)
+          ]);
+          if (!mergeIdentity || !mergeMarkerToken) {
+            throw new Error("无法确认当前合并身份。");
+          }
           await this.writeManagedMergeState(repositoryPath, {
             sourceBranch: plan.sourceBranch,
             targetBranch: plan.targetBranch,
-            startedAt: new Date().toISOString()
+            startedAt: new Date().toISOString(),
+            ...mergeIdentity,
+            mergeMarkerToken
           });
         } catch (error) {
           return {
@@ -1128,7 +1186,7 @@ export class GitService {
         return gitFailure("git merge --abort", "当前没有正在进行的合并操作。", "No merge operation is in progress.");
       }
 
-      const managedState = await this.readManagedMergeState(repositoryPath);
+      const managedState = await this.readCurrentManagedMergeState(repositoryPath, status.currentBranch);
       const abortResult = await this.run(repositoryPath, ["merge", "--abort"], { timeoutMs: mergeCommandTimeoutMs });
       if (!abortResult.ok) {
         return abortResult;
@@ -1346,17 +1404,95 @@ export class GitService {
         return undefined;
       }
       const parsed = JSON.parse(decodeGitOutput(content)) as Partial<ManagedMergeState>;
-      if (typeof parsed.sourceBranch !== "string" || typeof parsed.targetBranch !== "string" || typeof parsed.startedAt !== "string") {
+      if (
+        typeof parsed.sourceBranch !== "string" ||
+        typeof parsed.targetBranch !== "string" ||
+        typeof parsed.startedAt !== "string" ||
+        typeof parsed.mergeHead !== "string" ||
+        typeof parsed.originalHead !== "string" ||
+        typeof parsed.mergeMarkerToken !== "string" ||
+        !parsed.mergeMarkerToken.trim() ||
+        parsed.mergeMarkerToken.length > 512 ||
+        !isCommitHash(parsed.mergeHead) ||
+        !isCommitHash(parsed.originalHead)
+      ) {
         return undefined;
       }
       return {
         sourceBranch: parsed.sourceBranch,
         targetBranch: parsed.targetBranch,
-        startedAt: parsed.startedAt
+        startedAt: parsed.startedAt,
+        mergeHead: parsed.mergeHead.toLowerCase(),
+        originalHead: parsed.originalHead.toLowerCase(),
+        mergeMarkerToken: parsed.mergeMarkerToken
       };
     } catch {
       return undefined;
     }
+  }
+
+  private async readCurrentManagedMergeState(
+    repositoryPath: RepositoryLocation,
+    currentBranch: string | null
+  ): Promise<ManagedMergeState | undefined> {
+    const [state, identity, mergeMarkerToken] = await Promise.all([
+      this.readManagedMergeState(repositoryPath),
+      this.readMergeIdentity(repositoryPath),
+      this.readMergeMarkerToken(repositoryPath)
+    ]);
+    if (
+      !state ||
+      !identity ||
+      state.targetBranch !== currentBranch ||
+      state.mergeHead !== identity.mergeHead ||
+      state.originalHead !== identity.originalHead ||
+      state.mergeMarkerToken !== mergeMarkerToken
+    ) {
+      return undefined;
+    }
+    return state;
+  }
+
+  private async readMergeIdentity(
+    repositoryPath: RepositoryLocation
+  ): Promise<Pick<ManagedMergeState, "mergeHead" | "originalHead"> | undefined> {
+    const result = await this.run(repositoryPath, ["rev-parse", "MERGE_HEAD^{commit}", "ORIG_HEAD^{commit}"]);
+    if (!result.ok) {
+      return undefined;
+    }
+    const [mergeHead, originalHead] = result.stdout.trim().split(/\r?\n/);
+    if (!isCommitHash(mergeHead) || !isCommitHash(originalHead)) {
+      return undefined;
+    }
+    return { mergeHead: mergeHead.toLowerCase(), originalHead: originalHead.toLowerCase() };
+  }
+
+  private async readMergeMarkerToken(repositoryPath: RepositoryLocation): Promise<string | undefined> {
+    const markerResult = await this.run(repositoryPath, ["rev-parse", "--git-path", "MERGE_HEAD"]);
+    if (!markerResult.ok || !markerResult.stdout.trim()) {
+      return undefined;
+    }
+    const markerPath = resolveGitReportedPath(repositoryPath, markerResult.stdout.trim());
+    const target = normalizeRepositoryTarget(repositoryPath);
+    if (!target.remote) {
+      try {
+        const info = await stat(markerPath);
+        return info.isFile()
+          ? [info.dev, info.ino, info.size, info.birthtimeMs, info.ctimeMs, info.mtimeMs].join(":")
+          : undefined;
+      } catch {
+        return undefined;
+      }
+    }
+
+    const marker = shellQuote(markerPath);
+    const command = [
+      `stat -c ${shellQuote("%d:%i:%s:%y")} -- ${marker} 2>/dev/null`,
+      `stat -f ${shellQuote("%d:%i:%z:%m")} ${marker} 2>/dev/null`
+    ].join(" || ");
+    const result = await runSshShell(target.remote, command, { timeoutMs: 10_000 });
+    const token = result.ok ? result.stdout.toString("utf8").trim() : "";
+    return token && token.length <= 512 ? token : undefined;
   }
 
   private async writeManagedMergeState(repositoryPath: RepositoryLocation, state: ManagedMergeState): Promise<void> {
@@ -1365,6 +1501,7 @@ export class GitService {
       throw new Error("无法定位 Git 合并状态目录。");
     }
     await this.writeTargetFile(repositoryPath, statePath, Buffer.from(`${JSON.stringify(state, null, 2)}\n`, "utf8"));
+    this.cleanManagedMergeRepositories.delete(this.mergeRepositoryKey(repositoryPath));
   }
 
   private async clearManagedMergeState(repositoryPath: RepositoryLocation): Promise<void> {
@@ -1375,6 +1512,7 @@ export class GitService {
 
     try {
       await this.removeTargetFile(repositoryPath, statePath);
+      this.cleanManagedMergeRepositories.add(this.mergeRepositoryKey(repositoryPath));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         return;
@@ -1633,7 +1771,7 @@ export function buildSshArgs(connection: SshConnection, batchMode = false): stri
     args.push("-p", String(connection.port));
   }
   if (connection.identityFile) {
-    args.push("-i", connection.identityFile);
+    args.push("-o", "IdentitiesOnly=yes", "-i", connection.identityFile);
   }
   args.push(sshDestination(connection));
   return args;
@@ -1659,6 +1797,31 @@ function buildRemoteGitCommand(repositoryPath: string, args: string[]): string {
   ]
     .map(shellQuote)
     .join(" ");
+}
+
+function isReadOnlyGitCommand(args: string[]): boolean {
+  let index = 0;
+  while (args[index] === "-c" && typeof args[index + 1] === "string") {
+    index += 2;
+  }
+  const command = args[index];
+  if (!command) {
+    return false;
+  }
+  if (readOnlyGitCommands.has(command)) {
+    return true;
+  }
+  if (command === "config") {
+    return args[index + 1] === "--get" || args[index + 1] === "--get-all";
+  }
+  if (command === "remote") {
+    return args.length === index + 1 || args[index + 1] === "-v";
+  }
+  return false;
+}
+
+function isCommitHash(value: unknown): value is string {
+  return typeof value === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(value);
 }
 
 export function shellQuote(value: string): string {
