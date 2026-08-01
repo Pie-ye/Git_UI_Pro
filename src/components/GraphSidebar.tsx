@@ -18,6 +18,7 @@ import {
   RefreshCw,
   RotateCcw,
   Search,
+  SlidersHorizontal,
   Tag,
   Undo2,
   X
@@ -26,7 +27,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import { createPortal } from "react-dom";
 import { apiClient } from "../api/client";
 import { PathTooltip } from "./PathTooltip";
-import type { ChangedFile, CommitGraphAction, CommitNode, CommitRef, GitHistoryFilter, GitHistoryRef, GitOperationState, GitProject } from "../types/domain";
+import type { ChangedFile, CommitGraphAction, CommitNode, CommitRef, GitBlameLine, GitHistoryFilter, GitHistoryQuery, GitHistoryRef, GitOperationState, GitProject } from "../types/domain";
 import { fileIconInfo } from "../utils/fileIcon";
 import { absoluteFilePath } from "../utils/filePath";
 
@@ -37,6 +38,11 @@ interface GraphSidebarProps {
   historyFilter: GitHistoryFilter;
   loading: boolean;
   onHistoryFilterChange: (filter: GitHistoryFilter) => void;
+  advancedQuery: Pick<GitHistoryQuery, "search" | "author" | "after" | "before" | "path">;
+  onAdvancedQueryChange: (query: Pick<GitHistoryQuery, "search" | "author" | "after" | "before" | "path">) => void;
+  hasMore: boolean;
+  loadingMore: boolean;
+  onLoadMore: () => void;
   selectedHash: string;
   onSelectCommit: (hash: string) => void;
   onSelectCommitFile: (commit: CommitNode, file: ChangedFile) => void;
@@ -144,6 +150,11 @@ export function GraphSidebar({
   historyFilter,
   loading,
   onHistoryFilterChange,
+  advancedQuery,
+  onAdvancedQueryChange,
+  hasMore,
+  loadingMore,
+  onLoadMore,
   selectedHash,
   onSelectCommit,
   onSelectCommitFile,
@@ -160,6 +171,13 @@ export function GraphSidebar({
 }: GraphSidebarProps) {
   const [commitQuery, setCommitQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const advancedDialogRef = useRef<HTMLElement>(null);
+  const advancedOpenerRef = useRef<HTMLElement | null>(null);
+  const [advancedDraft, setAdvancedDraft] = useState(advancedQuery);
+  const [blameLines, setBlameLines] = useState<GitBlameLine[]>([]);
+  const [blameLoading, setBlameLoading] = useState(false);
+  const [blameError, setBlameError] = useState("");
   const [fileViewMode, setFileViewMode] = useState<GraphFileViewMode>("list");
   const [refsMenuOpen, setRefsMenuOpen] = useState(false);
   const [refsQuery, setRefsQuery] = useState("");
@@ -196,6 +214,7 @@ export function GraphSidebar({
 
     return commits.filter((commit) => `${commit.hash} ${commit.subject} ${commit.authorName} ${commit.authorEmail}`.toLowerCase().includes(keyword));
   }, [commits, commitQuery]);
+  const advancedActive = hasAdvancedQuery(advancedQuery);
   const graphContext = useMemo(() => buildGraphBranchContext(project, historyRefs, historyFilter), [project, historyRefs, historyFilter]);
   const historyFilterLabel = graphHistoryFilterLabel(historyFilter, historyRefs);
   const rowTones = useMemo(() => buildGraphTones(filteredCommits, graphContext), [filteredCommits, graphContext]);
@@ -244,6 +263,49 @@ export function GraphSidebar({
     },
     []
   );
+
+  useEffect(() => {
+    if (advancedOpen) {
+      setAdvancedDraft(advancedQuery);
+      setBlameLines([]);
+      setBlameError("");
+    }
+  }, [advancedOpen, advancedQuery]);
+
+  useEffect(() => {
+    if (!advancedOpen) {
+      return;
+    }
+    advancedOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const focusFrame = window.requestAnimationFrame(() => advancedDialogRef.current?.querySelector<HTMLInputElement>("input")?.focus());
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setAdvancedOpen(false);
+        return;
+      }
+      if (event.key !== "Tab" || !advancedDialogRef.current) {
+        return;
+      }
+      const focusable = Array.from(advancedDialogRef.current.querySelectorAll<HTMLElement>("button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])"))
+        .filter((element) => element.getClientRects().length > 0);
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      document.removeEventListener("keydown", handleKeyDown);
+      advancedOpenerRef.current?.focus();
+    };
+  }, [advancedOpen]);
 
   useLayoutEffect(() => {
     const list = graphListRef.current;
@@ -593,6 +655,24 @@ export function GraphSidebar({
     }
   }
 
+  async function loadBlame() {
+    const filePath = advancedDraft.path?.trim();
+    if (!project || !filePath) {
+      setBlameError("请先填写仓库内文件路径。");
+      return;
+    }
+    setBlameLoading(true);
+    setBlameError("");
+    try {
+      setBlameLines(await apiClient.getBlame(project, filePath));
+    } catch (error) {
+      setBlameLines([]);
+      setBlameError(error instanceof Error ? error.message : "无法读取文件 Blame。");
+    } finally {
+      setBlameLoading(false);
+    }
+  }
+
   return (
     <section className={`graph-sidebar graph-panel ${panelOpen ? "" : "panel-collapsed"}`}>
       <div className="graph-section-title">
@@ -633,6 +713,16 @@ export function GraphSidebar({
                 }}
               >
                 <Search size={GRAPH_TOOLBAR_ICON_SIZE} />
+              </button>
+            </PathTooltip>
+            <PathTooltip content="高级历史筛选与 Blame" className="graph-toolbar-tooltip">
+              <button
+                type="button"
+                className={`icon-button compact-icon ${advancedOpen || advancedActive ? "active" : ""}`}
+                aria-label="高级历史筛选与 Blame"
+                onClick={() => setAdvancedOpen(true)}
+              >
+                <SlidersHorizontal size={GRAPH_TOOLBAR_ICON_SIZE} />
               </button>
             </PathTooltip>
             {visibleGraphOperations.map((operation) => {
@@ -784,6 +874,12 @@ export function GraphSidebar({
               );
             })}
             {virtualGraphEnabled && graphVirtualRange.bottomPadding > 0 ? <div className="graph-virtual-spacer" style={{ height: graphVirtualRange.bottomPadding }} aria-hidden="true" /> : null}
+            {hasMore ? (
+              <button type="button" className="graph-load-more" disabled={loadingMore} onClick={onLoadMore}>
+                <RefreshCw size={14} className={loadingMore ? "spin" : ""} />
+                {loadingMore ? "正在加载" : "加载更多提交"}
+              </button>
+            ) : commits.length > 0 ? <div className="graph-history-end">已加载到当前筛选范围末尾</div> : null}
           </div>
         </>
       ) : null}
@@ -845,6 +941,46 @@ export function GraphSidebar({
                 <AlertTriangle size={14} />
                 {commitContextMenu.isHead ? "撤销此提交，丢弃更改" : "重置到此提交，丢弃更改"}
               </button>
+            </div>,
+            document.querySelector(".app-shell") ?? document.body
+          )
+        : null}
+      {advancedOpen && typeof document !== "undefined"
+        ? createPortal(
+            <div className="graph-advanced-backdrop" role="presentation">
+              <section ref={advancedDialogRef} className="graph-advanced-dialog" role="dialog" aria-modal="true" aria-labelledby="graph-advanced-title">
+                <header>
+                  <span><SlidersHorizontal size={18} /><strong id="graph-advanced-title">历史筛选与文件追溯</strong></span>
+                  <button type="button" className="icon-button compact-icon" aria-label="关闭" onClick={() => setAdvancedOpen(false)}><X size={17} /></button>
+                </header>
+                <form className="graph-advanced-form" onSubmit={(event) => {
+                  event.preventDefault();
+                  onAdvancedQueryChange(normalizeAdvancedQuery(advancedDraft));
+                  setAdvancedOpen(false);
+                }}>
+                  <label><span>提交内容</span><input value={advancedDraft.search ?? ""} onChange={(event) => setAdvancedDraft((current) => ({ ...current, search: event.target.value }))} placeholder="提交标题或正文" /></label>
+                  <label><span>作者</span><input value={advancedDraft.author ?? ""} onChange={(event) => setAdvancedDraft((current) => ({ ...current, author: event.target.value }))} placeholder="姓名或邮箱" /></label>
+                  <label><span>开始日期</span><input type="date" value={advancedDraft.after ?? ""} onChange={(event) => setAdvancedDraft((current) => ({ ...current, after: event.target.value }))} /></label>
+                  <label><span>结束日期</span><input type="date" value={advancedDraft.before ?? ""} onChange={(event) => setAdvancedDraft((current) => ({ ...current, before: event.target.value }))} /></label>
+                  <label className="wide"><span>仓库内文件路径</span><input value={advancedDraft.path ?? ""} onChange={(event) => { setAdvancedDraft((current) => ({ ...current, path: event.target.value })); setBlameLines([]); setBlameError(""); }} placeholder="src/components/App.tsx" /></label>
+                  <div className="graph-advanced-actions wide">
+                    <button type="button" className="secondary" onClick={() => { setAdvancedDraft({}); setBlameLines([]); setBlameError(""); onAdvancedQueryChange({}); }}>清除筛选</button>
+                    <button type="button" className="secondary" disabled={!advancedDraft.path?.trim() || blameLoading} onClick={() => void loadBlame()}>{blameLoading ? "正在读取" : "查看 Blame"}</button>
+                    <button type="submit" className="primary">应用筛选</button>
+                  </div>
+                </form>
+                {blameError ? <div className="graph-blame-error">{blameError}</div> : null}
+                {blameLines.length > 0 ? (
+                  <div className="graph-blame-panel" role="table" aria-label="文件 Blame">
+                    <div className="graph-blame-header" role="row"><span>行</span><span>提交</span><span>作者</span><span>时间</span><span>内容</span></div>
+                    {blameLines.map((line) => (
+                      <div className="graph-blame-row" role="row" key={`${line.hash}-${line.lineNumber}`}>
+                        <span>{line.lineNumber}</span><code>{line.shortHash}</code><span title={line.authorEmail}>{line.authorName}</span><time>{formatBlameDate(line.authorDate)}</time><code>{line.content || " "}</code>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </section>
             </div>,
             document.querySelector(".app-shell") ?? document.body
           )
@@ -1554,6 +1690,24 @@ function graphHistoryFilterLabel(filter: GitHistoryFilter, refs: GitHistoryRef[]
   }
 
   return `${refIds.length} 项`;
+}
+
+function hasAdvancedQuery(query: Pick<GitHistoryQuery, "search" | "author" | "after" | "before" | "path">): boolean {
+  return Boolean(query.search?.trim() || query.author?.trim() || query.after?.trim() || query.before?.trim() || query.path?.trim());
+}
+
+function normalizeAdvancedQuery(
+  query: Pick<GitHistoryQuery, "search" | "author" | "after" | "before" | "path">
+): Pick<GitHistoryQuery, "search" | "author" | "after" | "before" | "path"> {
+  return Object.fromEntries(
+    Object.entries(query).map(([key, value]) => [key, value?.trim() || undefined]).filter(([, value]) => Boolean(value))
+  );
+}
+
+function formatBlameDate(value: string): string {
+  if (!value) return "-";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString("zh-CN");
 }
 
 function cloneHistoryFilter(filter: GitHistoryFilter): GitHistoryFilter {

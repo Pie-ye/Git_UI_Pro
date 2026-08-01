@@ -72,7 +72,7 @@
   background:
     linear-gradient(142deg, rgba(255, 255, 255, 0.42) 0%, transparent 31%),
     linear-gradient(120deg, #dcebf5 0%, #f1f7f9 43%, #f5edf4 73%, #dcecf3 100%);
-  font-size: 15px;
+  font-size: var(--ui-font-size, 14px);
   letter-spacing: 0;
 }
 
@@ -159,6 +159,62 @@
 .project-rail-list,
 .collapsed-sidebar-list {
   padding: 8px;
+}
+
+.project-rail-group {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  margin-bottom: 8px;
+}
+
+.project-rail-group:last-child {
+  margin-bottom: 0;
+}
+
+.project-rail-group-header {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) max-content;
+  gap: 6px;
+  align-items: center;
+  min-height: 32px;
+  border: 0;
+  border-radius: 10px;
+  padding: 0 8px;
+  color: var(--muted-strong);
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+}
+
+.project-rail-group-header:hover,
+.project-rail-group-header:focus-visible {
+  color: var(--text-strong);
+  background: color-mix(in srgb, var(--glass-fill-strong) 68%, transparent);
+}
+
+.project-rail-group-header:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--accent) 58%, var(--glass-edge));
+  outline-offset: -1px;
+}
+
+.project-rail-group-header > span {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-rail-group-header > small {
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.project-rail-group-items {
+  display: grid;
+  min-width: 0;
 }
 
 .project-rail-item,

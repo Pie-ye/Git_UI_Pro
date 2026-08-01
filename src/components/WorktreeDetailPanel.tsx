@@ -39,6 +39,8 @@ interface WorktreeDetailPanelProps {
   onPinTab: (tabId: string) => void;
   onResolveConflict: (tab: WorktreeEditorTab, input: ConflictResolutionInput) => Promise<boolean>;
   onRetryLoad: (tab: WorktreeEditorTab) => Promise<void>;
+  diffViewMode?: "split" | "inline";
+  diffWrap?: boolean;
 }
 
 type SplitDiffRowType = "context" | "add" | "delete" | "replace";
@@ -65,7 +67,9 @@ export function WorktreeDetailPanel({
   onCloseTab,
   onPinTab,
   onResolveConflict,
-  onRetryLoad
+  onRetryLoad,
+  diffViewMode,
+  diffWrap = false
 }: WorktreeDetailPanelProps) {
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0];
   const diffPanelRef = useRef<HTMLElement>(null);
@@ -76,13 +80,14 @@ export function WorktreeDetailPanel({
   const activeDiffLines = activeTab?.diffLines ?? [];
   const mediaPreview = activeTab?.preview;
   const splitDiffRows = useMemo(() => buildSplitDiffRows(activeDiffLines), [activeDiffLines]);
-  const showSplitDiff = Boolean(!mediaPreview && prefersSplitDiff && activeTab && canUseSplitDiff(activeTab.file.status) && splitDiffRows.length > 0);
+  const splitDiffEnabled = diffViewMode ? diffViewMode === "split" : prefersSplitDiff;
+  const showSplitDiff = Boolean(!mediaPreview && splitDiffEnabled && activeTab && canUseSplitDiff(activeTab.file.status) && splitDiffRows.length > 0);
   const [splitMaxScroll, setSplitMaxScroll] = useState(0);
   const [splitScrollX, setSplitScrollX] = useState(0);
   const [diffPanelHeight, setDiffPanelHeight] = useState(0);
   const [diffScrollTop, setDiffScrollTop] = useState(0);
   const virtualRowCount = mediaPreview ? 0 : showSplitDiff ? splitDiffRows.length : activeDiffLines.length;
-  const diffVirtualEnabled = virtualRowCount > DIFF_VIRTUAL_THRESHOLD;
+  const diffVirtualEnabled = !diffWrap && virtualRowCount > DIFF_VIRTUAL_THRESHOLD;
   const diffVirtualRange = useMemo(() => {
     if (!diffVirtualEnabled) {
       return {
@@ -285,7 +290,7 @@ export function WorktreeDetailPanel({
         ) : activeTab.conflict ? (
           <ConflictResolver tab={activeTab} onResolve={onResolveConflict} />
         ) : (
-        <section className={`diff-panel editor-diff-panel ${showSplitDiff ? "split-mode" : ""} ${mediaPreview ? "media-mode" : ""}`} ref={diffPanelRef} onScroll={handleDiffPanelScroll}>
+        <section className={`diff-panel editor-diff-panel ${showSplitDiff ? "split-mode" : ""} ${diffWrap ? "wrap-lines" : ""} ${mediaPreview ? "media-mode" : ""}`} ref={diffPanelRef} onScroll={handleDiffPanelScroll}>
           {mediaPreview ? (
             <MediaPreview preview={mediaPreview} filePath={file.path} />
           ) : showSplitDiff ? (

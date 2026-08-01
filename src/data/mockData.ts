@@ -18,7 +18,8 @@ export const mockProjects: GitProject[] = [
       stagedCount: 0,
       unstagedCount: 1,
       untrackedCount: 3,
-      hasConflicts: false
+      hasConflicts: false,
+      conflictedCount: 0
     }
   },
   {
@@ -39,6 +40,7 @@ export const mockProjects: GitProject[] = [
       unstagedCount: 1,
       untrackedCount: 0,
       hasConflicts: true,
+      conflictedCount: 1,
       operationState: "merge",
       mergeSourceBranch: "feature/invoice-flow",
       mergeTargetBranch: "release/2.4"
@@ -61,7 +63,8 @@ export const mockProjects: GitProject[] = [
       stagedCount: 0,
       unstagedCount: 0,
       untrackedCount: 0,
-      hasConflicts: false
+      hasConflicts: false,
+      conflictedCount: 0
     }
   }
 ];

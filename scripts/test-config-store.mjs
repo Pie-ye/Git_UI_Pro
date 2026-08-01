@@ -57,3 +57,54 @@ test("主配置损坏时保留原文件并从有效备份恢复", async () => {
     assert.equal(await readFile(path.join(directory, corruptFiles[0]), "utf8"), "{ broken json");
   });
 });
+
+test("项目分组、最近项目和界面偏好保持一致", async () => {
+  await withTemporaryStore(async (store, directory) => {
+    const first = await store.addProject(path.join(directory, "repo-a"));
+    const second = await store.addProject(path.join(directory, "repo-b"));
+    const group = await store.createProjectGroup("产品仓库");
+    await store.setProjectGroup(first.id, group.id);
+    await store.markProjectOpened(first.id);
+    await store.markProjectOpened(second.id);
+
+    const library = await store.getProjectLibrary();
+    assert.equal(library.groups.some((item) => item.id === group.id && item.name === "产品仓库"), true);
+    assert.deepEqual(library.recentProjectIds.slice(0, 2), [second.id, first.id]);
+
+    const preferences = await store.updateUiPreferences({
+      theme: "dark",
+      fontSize: 16,
+      sidebarPosition: "right",
+      diffViewMode: "inline",
+      shortcuts: { "repository.center": "Ctrl+Alt+R" }
+    });
+    assert.equal(preferences.theme, "dark");
+    assert.equal(preferences.fontSize, 16);
+    assert.equal(preferences.sidebarPosition, "right");
+    assert.equal(preferences.diffViewMode, "inline");
+    assert.equal(preferences.shortcuts["repository.center"], "Ctrl+Alt+R");
+    const normalizedShortcuts = await store.updateUiPreferences({ shortcuts: { "repository.center": "R + shift + Control" } });
+    assert.equal(normalizedShortcuts.shortcuts["repository.center"], "Ctrl+Shift+R");
+    await assert.rejects(
+      store.updateUiPreferences({ shortcuts: { "git.fetch": "Control+G", "git.pull": "G+Ctrl" } }),
+      /同时分配/
+    );
+    await assert.rejects(store.updateUiPreferences({ shortcuts: { "git.fetch": "Ctrl+K+L" } }), /只能包含一个主按键/);
+
+    await store.deleteProjectGroup(group.id);
+    assert.equal((await store.listProjects()).find((item) => item.id === first.id)?.groupId, undefined);
+    await store.removeRecentProject(second.id);
+    assert.equal((await store.getProjectLibrary()).recentProjectIds.includes(second.id), false);
+  });
+});
+
+test("读取配置时拒绝非字符串快捷键", async () => {
+  await withTemporaryStore(async (store, directory) => {
+    await writeFile(path.join(directory, "config.json"), JSON.stringify({
+      version: 1,
+      projects: [],
+      ui: { shortcuts: { "git.fetch": 42 } }
+    }), "utf8");
+    await assert.rejects(store.read(), /必须是字符串/);
+  });
+});

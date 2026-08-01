@@ -1,5 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ClipboardPaste, Copy, ChevronsDown, ChevronsUp, ListX, Plus, Trash2, X, Terminal as TerminalIcon } from "lucide-react";
+import {
+  ChevronsDown,
+  ChevronsUp,
+  ClipboardPaste,
+  Copy,
+  History,
+  ListX,
+  PencilLine,
+  Play,
+  Plus,
+  RefreshCw,
+  Search,
+  Trash2,
+  X,
+  Terminal as TerminalIcon
+} from "lucide-react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
@@ -11,6 +26,8 @@ type ThemeName = "light" | "dark";
 type TerminalStatus = "starting" | "running" | "exited" | "error";
 
 const TERMINAL_RESIZE_DEBOUNCE_MS = 140;
+const TERMINAL_HISTORY_LIMIT = 200;
+const TRUSTED_PROMPT_MARKER = "\u001b]633;A\u0007";
 
 interface ConsolePanelProps {
   project?: GitProject;
@@ -27,7 +44,9 @@ interface TerminalTab {
   projectId: string;
   projectName: string;
   projectPath: string;
+  project: GitProject;
   title: string;
+  customTitle: boolean;
   status: TerminalStatus;
   statusText: string;
   session?: TerminalSessionInfo;
@@ -46,12 +65,31 @@ interface TerminalRuntime {
   lastResizeCols?: number;
   lastResizeRows?: number;
   sessionId?: string;
+  launchId: number;
+  restarting: boolean;
+  commandBuffer: string;
+  commandBufferReliable: boolean;
+  trustedPromptMarkers: boolean;
+  atTrustedPrompt: boolean;
+  promptMarkerTail: string;
+}
+
+interface TerminalHistoryEntry {
+  id: string;
+  command: string;
+  executedAt: string;
 }
 
 export function ConsolePanel({ project, theme, visible, maximized, onToggleMaximized, onHide, onConfirmCloseTabs }: ConsolePanelProps) {
   const [tabs, setTabs] = useState<TerminalTab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [activeHasSelection, setActiveHasSelection] = useState(false);
+  const [renamingTabId, setRenamingTabId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyQuery, setHistoryQuery] = useState("");
+  const [historyByTab, setHistoryByTab] = useState<Record<string, TerminalHistoryEntry[]>>({});
+  const [terminalError, setTerminalError] = useState("");
   const panelRef = useRef<HTMLElement>(null);
   const tabsRef = useRef<TerminalTab[]>([]);
   const activeTabIdRef = useRef<string | null>(null);
@@ -59,10 +97,18 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
   const runtimeByTabRef = useRef(new Map<string, TerminalRuntime>());
   const tabBySessionRef = useRef(new Map<string, string>());
   const terminalSeedRef = useRef(0);
+  const terminalHistorySeedRef = useRef(0);
   const themeRef = useRef<ThemeName>(theme);
 
   const projectTabs = useMemo(() => (project ? tabs.filter((tab) => tab.projectId === project.id) : []), [project, tabs]);
   const activeTab = useMemo(() => projectTabs.find((tab) => tab.id === activeTabId) ?? projectTabs[0] ?? null, [activeTabId, projectTabs]);
+  const activeHistory = activeTab ? historyByTab[activeTab.id] ?? [] : [];
+  const filteredHistory = useMemo(() => {
+    const normalizedQuery = historyQuery.trim().toLocaleLowerCase();
+    return normalizedQuery
+      ? activeHistory.filter((entry) => entry.command.toLocaleLowerCase().includes(normalizedQuery))
+      : activeHistory;
+  }, [activeHistory, historyQuery]);
 
   useEffect(() => {
     tabsRef.current = tabs;
@@ -83,7 +129,20 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
         return;
       }
 
-      runtimeByTabRef.current.get(tabId)?.terminal.write(event.data);
+      const runtime = runtimeByTabRef.current.get(tabId);
+      if (!runtime) {
+        return;
+      }
+      if (runtime.trustedPromptMarkers) {
+        const markerSource = runtime.promptMarkerTail + event.data;
+        if (markerSource.includes(TRUSTED_PROMPT_MARKER)) {
+          runtime.atTrustedPrompt = true;
+          runtime.commandBuffer = "";
+          runtime.commandBufferReliable = true;
+        }
+        runtime.promptMarkerTail = markerSource.slice(-(TRUSTED_PROMPT_MARKER.length - 1));
+      }
+      runtime.terminal.write(event.data);
     });
     const unsubscribeExit = apiClient.onTerminalExit((event) => {
       const tabId = tabBySessionRef.current.get(event.sessionId);
@@ -104,6 +163,7 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
           tab.id === tabId
             ? {
                 ...tab,
+                session: undefined,
                 status: "exited",
                 statusText: "已退出"
               }
@@ -163,6 +223,21 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
     runtimeByTabRef.current.get(activeTab.id)?.terminal.focus();
   }, [activeTab?.id, visible]);
 
+  useEffect(() => {
+    if (!historyOpen) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setHistoryOpen(false);
+        runtimeByTabRef.current.get(activeTabIdRef.current ?? "")?.terminal.focus();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [historyOpen]);
+
   function createTerminalTab(targetProject = project) {
     if (!targetProject) {
       return;
@@ -176,7 +251,26 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
     const inputSubscription = terminal.onData((data) => {
       const runtime = runtimeByTabRef.current.get(tabId);
       if (runtime?.sessionId) {
-        void apiClient.writeTerminal(runtime.sessionId, data);
+        const mayRecordCommand = runtime.trustedPromptMarkers && runtime.atTrustedPrompt;
+        const consumedInput = mayRecordCommand
+          ? consumeTerminalInput(runtime.commandBuffer, runtime.commandBufferReliable, data)
+          : { buffer: "", commands: [], reliable: false };
+        runtime.commandBuffer = consumedInput.buffer;
+        runtime.commandBufferReliable = consumedInput.reliable;
+        const submittedCommand = consumedInput.commands[0];
+        if (submittedCommand) {
+          runtime.atTrustedPrompt = false;
+          runtime.commandBuffer = "";
+          runtime.commandBufferReliable = false;
+        }
+        void apiClient.writeTerminal(runtime.sessionId, data).then((written) => {
+          if (written && submittedCommand) {
+            recordTerminalCommand(tabId, submittedCommand);
+          }
+          if (!written) {
+            setTerminalError("终端输入写入失败，当前会话可能已经结束。");
+          }
+        }).catch((error) => setTerminalError(terminalErrorMessage("终端输入写入失败", error)));
       }
     });
     const selectionSubscription = terminal.onSelectionChange(() => {
@@ -192,7 +286,14 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
       selectionSubscription,
       opened: false,
       resizeFrame: 0,
-      resizeTimer: 0
+      resizeTimer: 0,
+      launchId: 0,
+      restarting: false,
+      commandBuffer: "",
+      commandBufferReliable: true,
+      trustedPromptMarkers: false,
+      atTrustedPrompt: false,
+      promptMarkerTail: ""
     });
     terminal.attachCustomKeyEventHandler((event) => handleTerminalKeyEvent(tabId, event));
 
@@ -203,7 +304,9 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
       projectId: targetProject.id,
       projectName: targetProject.name,
       projectPath: targetProject.path,
+      project: targetProject,
       title: "终端",
+      customTitle: false,
       status: "starting",
       statusText: "启动中"
     };
@@ -212,53 +315,82 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
     setActiveTabId(tabId);
     activeByProjectRef.current.set(targetProject.id, tabId);
 
-    void apiClient
-      .startTerminal(targetProject)
-      .then((session) => {
-        const runtime = runtimeByTabRef.current.get(tabId);
-        if (!runtime) {
-          void apiClient.disposeTerminal(session.sessionId);
-          return;
-        }
+    void launchTerminalSession(tabId, targetProject);
+  }
 
-        runtime.sessionId = session.sessionId;
-        tabBySessionRef.current.set(session.sessionId, tabId);
-        setTabs((current) =>
-          renumberTerminalTabs(
-            current.map((tab) =>
-              tab.id === tabId
-                ? {
-                    ...tab,
-                    session,
-                    status: "running",
-                    statusText: session.shell
-                  }
-                : tab
-            )
+  async function launchTerminalSession(tabId: string, targetProject: GitProject) {
+    const initialRuntime = runtimeByTabRef.current.get(tabId);
+    if (!initialRuntime) {
+      return;
+    }
+
+    const launchId = initialRuntime.launchId + 1;
+    initialRuntime.launchId = launchId;
+    setTabs((current) =>
+      current.map((tab) =>
+        tab.id === tabId
+          ? {
+              ...tab,
+              session: undefined,
+              status: "starting",
+              statusText: "启动中"
+            }
+          : tab
+      )
+    );
+
+    try {
+      const session = await apiClient.startTerminal(targetProject);
+      const runtime = runtimeByTabRef.current.get(tabId);
+      if (!runtime || runtime.launchId !== launchId) {
+        await apiClient.disposeTerminal(session.sessionId);
+        return;
+      }
+
+      runtime.sessionId = session.sessionId;
+      runtime.trustedPromptMarkers = session.trustedPromptMarkers;
+      runtime.atTrustedPrompt = false;
+      runtime.promptMarkerTail = "";
+      tabBySessionRef.current.set(session.sessionId, tabId);
+      setTabs((current) =>
+        renumberTerminalTabs(
+          current.map((tab) =>
+            tab.id === tabId
+              ? {
+                  ...tab,
+                  session,
+                  status: "running",
+                  statusText: session.shell
+                }
+              : tab
           )
-        );
-        fitAndResizeTab(tabId, { immediateBackendResize: true });
-        if (activeTabIdRef.current === tabId && visible) {
-          runtime.terminal.focus();
-        }
-      })
-      .catch((error) => {
-        const runtime = runtimeByTabRef.current.get(tabId);
-        runtime?.terminal.writeln(`启动控制台失败：${error instanceof Error ? error.message : "未知错误"}`);
-        setTabs((current) =>
-          renumberTerminalTabs(
-            current.map((tab) =>
-              tab.id === tabId
-                ? {
-                    ...tab,
-                    status: "error",
-                    statusText: "启动失败"
-                  }
-                : tab
-            )
+        )
+      );
+      fitAndResizeTab(tabId, { immediateBackendResize: true });
+      if (activeTabIdRef.current === tabId && visible) {
+        runtime.terminal.focus();
+      }
+    } catch (error) {
+      const runtime = runtimeByTabRef.current.get(tabId);
+      if (!runtime || runtime.launchId !== launchId) {
+        setTerminalError(terminalErrorMessage("终端会话清理失败", error));
+        return;
+      }
+      runtime.terminal.writeln(`启动控制台失败：${error instanceof Error ? error.message : "未知错误"}`);
+      setTabs((current) =>
+        renumberTerminalTabs(
+          current.map((tab) =>
+            tab.id === tabId
+              ? {
+                  ...tab,
+                  status: "error",
+                  statusText: "启动失败"
+                }
+              : tab
           )
-        );
-      });
+        )
+      );
+    }
   }
 
   function attachTerminalHost(tabId: string, node: HTMLDivElement | null) {
@@ -332,7 +464,11 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
 
       latestRuntime.lastResizeCols = nextCols;
       latestRuntime.lastResizeRows = nextRows;
-      void apiClient.resizeTerminal(latestRuntime.sessionId, nextCols, nextRows);
+      void apiClient.resizeTerminal(latestRuntime.sessionId, nextCols, nextRows)
+        .then((resized) => {
+          if (!resized) setTerminalError("终端尺寸同步失败，当前会话可能已经结束。");
+        })
+        .catch((error) => setTerminalError(terminalErrorMessage("终端尺寸同步失败", error)));
     };
 
     if (immediate) {
@@ -346,6 +482,121 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
   function handleSelectTab(tab: TerminalTab) {
     setActiveTabId(tab.id);
     activeByProjectRef.current.set(tab.projectId, tab.id);
+  }
+
+  function beginRenameTerminal(tab: TerminalTab) {
+    handleSelectTab(tab);
+    setRenameDraft(tab.title);
+    setRenamingTabId(tab.id);
+  }
+
+  function finishRenameTerminal(tabId: string, value: string) {
+    const title = value.trim();
+    if (title) {
+      setTabs((current) =>
+        current.map((tab) =>
+          tab.id === tabId
+            ? {
+                ...tab,
+                title,
+                customTitle: true
+              }
+            : tab
+        )
+      );
+    }
+    setRenamingTabId(null);
+    setRenameDraft("");
+    window.requestAnimationFrame(() => runtimeByTabRef.current.get(tabId)?.terminal.focus());
+  }
+
+  function cancelRenameTerminal(tabId: string) {
+    setRenamingTabId(null);
+    setRenameDraft("");
+    window.requestAnimationFrame(() => runtimeByTabRef.current.get(tabId)?.terminal.focus());
+  }
+
+  async function restartTerminal(tabId = activeTab?.id) {
+    if (!tabId) {
+      return;
+    }
+
+    const tab = tabsRef.current.find((candidate) => candidate.id === tabId);
+    const runtime = runtimeByTabRef.current.get(tabId);
+    if (!tab || !runtime || tab.status === "starting" || runtime.restarting) {
+      return;
+    }
+
+    runtime.restarting = true;
+    const previousSessionId = runtime.sessionId;
+    runtime.sessionId = undefined;
+    runtime.commandBuffer = "";
+    runtime.commandBufferReliable = true;
+    runtime.atTrustedPrompt = false;
+    runtime.promptMarkerTail = "";
+    runtime.lastResizeCols = undefined;
+    runtime.lastResizeRows = undefined;
+    try {
+      if (previousSessionId) {
+        tabBySessionRef.current.delete(previousSessionId);
+        await apiClient.disposeTerminal(previousSessionId);
+      }
+
+      runtime.terminal.writeln("");
+      runtime.terminal.writeln("[正在重启终端...]");
+      await launchTerminalSession(tabId, tab.project);
+    } catch (error) {
+      setTerminalError(terminalErrorMessage("终端重启失败", error));
+    } finally {
+      const latestRuntime = runtimeByTabRef.current.get(tabId);
+      if (latestRuntime) {
+        latestRuntime.restarting = false;
+      }
+    }
+  }
+
+  function recordTerminalCommand(tabId: string, command: string) {
+    if (!command.trim()) {
+      return;
+    }
+
+    const entry: TerminalHistoryEntry = {
+      id: `terminal-history-${Date.now()}-${++terminalHistorySeedRef.current}`,
+      command,
+      executedAt: new Date().toISOString()
+    };
+    setHistoryByTab((current) => ({
+      ...current,
+      [tabId]: [entry, ...(current[tabId] ?? [])].slice(0, TERMINAL_HISTORY_LIMIT)
+    }));
+  }
+
+  async function runHistoryCommand(entry: TerminalHistoryEntry) {
+    if (!activeTab) {
+      return;
+    }
+
+    const runtime = runtimeByTabRef.current.get(activeTab.id);
+    if (!runtime?.sessionId || !runtime.trustedPromptMarkers || !runtime.atTrustedPrompt) {
+      return;
+    }
+
+    runtime.commandBuffer = "";
+    runtime.commandBufferReliable = true;
+    runtime.atTrustedPrompt = false;
+    try {
+      const written = await apiClient.writeTerminal(runtime.sessionId, `${entry.command}\r`);
+      if (!written) {
+        setTerminalError("历史命令写入失败，当前会话可能已经结束。");
+        return;
+      }
+    } catch (error) {
+      setTerminalError(terminalErrorMessage("历史命令写入失败", error));
+      return;
+    }
+    recordTerminalCommand(activeTab.id, entry.command);
+    setHistoryOpen(false);
+    runtime.terminal.focus();
   }
 
   function handleCloseTab(tabId: string) {
@@ -363,6 +614,11 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
 
     disposeTerminalRuntime(tabId);
     setTabs((current) => renumberTerminalTabs(current.filter((tab) => tab.id !== tabId)));
+    setHistoryByTab((current) => omitRecordKey(current, tabId));
+    if (renamingTabId === tabId) {
+      setRenamingTabId(null);
+      setRenameDraft("");
+    }
 
     if (nextActiveTab) {
       activeByProjectRef.current.set(closingTab.projectId, nextActiveTab.id);
@@ -467,12 +723,8 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
     runtime.terminal.focus();
   }
 
-  async function handleCloseProjectTabs() {
-    if (!project) {
-      return;
-    }
-
-    const closingTabs = tabsRef.current.filter((tab) => tab.projectId === project.id);
+  async function handleCloseAllTabs() {
+    const closingTabs = tabsRef.current;
     if (closingTabs.length === 0) {
       return;
     }
@@ -482,17 +734,18 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
       return;
     }
 
-    const closingIds = new Set(closingTabs.map((tab) => tab.id));
-    for (const tabId of closingIds) {
+    for (const tab of closingTabs) {
+      const tabId = tab.id;
       disposeTerminalRuntime(tabId);
     }
 
-    activeByProjectRef.current.delete(project.id);
-    setTabs((current) => renumberTerminalTabs(current.filter((tab) => !closingIds.has(tab.id))));
-
-    if (activeTabIdRef.current && closingIds.has(activeTabIdRef.current)) {
-      setActiveTabId(null);
-    }
+    activeByProjectRef.current.clear();
+    setTabs([]);
+    setHistoryByTab({});
+    setActiveTabId(null);
+    setHistoryOpen(false);
+    setRenamingTabId(null);
+    setRenameDraft("");
   }
 
   function disposeTerminalRuntime(tabId: string) {
@@ -508,7 +761,11 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
     runtime.selectionSubscription.dispose();
     if (runtime.sessionId) {
       tabBySessionRef.current.delete(runtime.sessionId);
-      void apiClient.disposeTerminal(runtime.sessionId);
+      void apiClient.disposeTerminal(runtime.sessionId)
+        .then((disposed) => {
+          if (!disposed) setTerminalError("终端会话关闭失败：会话已经不存在。");
+        })
+        .catch((error) => setTerminalError(terminalErrorMessage("终端会话关闭失败", error)));
     }
 
     runtime.terminal.dispose();
@@ -523,18 +780,41 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
         <div className="console-tab-strip" role="tablist" aria-label="终端标签">
           {projectTabs.map((tab) => (
             <div className={`console-tab ${tab.id === activeTab?.id ? "active" : ""}`} role="presentation" key={tab.id}>
-              <PathTooltip content={tab.projectPath} className="console-tab-tooltip">
-                <button
-                  type="button"
-                  className="console-tab-main"
-                  role="tab"
-                  aria-selected={tab.id === activeTab?.id}
-                  aria-label={`${tab.title}：${tab.projectPath}`}
-                  onClick={() => handleSelectTab(tab)}
-                >
-                  <span>{tab.title}</span>
-                </button>
-              </PathTooltip>
+              {renamingTabId === tab.id ? (
+                <input
+                  className="console-tab-rename"
+                  aria-label="终端标签名称"
+                  value={renameDraft}
+                  maxLength={40}
+                  autoFocus
+                  onChange={(event) => setRenameDraft(event.target.value)}
+                  onFocus={(event) => event.currentTarget.select()}
+                  onBlur={(event) => finishRenameTerminal(tab.id, event.currentTarget.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      finishRenameTerminal(tab.id, event.currentTarget.value);
+                    } else if (event.key === "Escape") {
+                      event.preventDefault();
+                      cancelRenameTerminal(tab.id);
+                    }
+                  }}
+                />
+              ) : (
+                <PathTooltip content={`${tab.projectPath} · ${tab.statusText}`} className="console-tab-tooltip">
+                  <button
+                    type="button"
+                    className="console-tab-main"
+                    role="tab"
+                    aria-selected={tab.id === activeTab?.id}
+                    aria-label={`${tab.title}：${tab.projectPath}`}
+                    onClick={() => handleSelectTab(tab)}
+                    onDoubleClick={() => beginRenameTerminal(tab)}
+                  >
+                    <span>{tab.title}</span>
+                  </button>
+                </PathTooltip>
+              )}
               <PathTooltip content="关闭终端" className="console-icon-tooltip">
                 <button type="button" className="console-tab-close" aria-label="关闭终端" onClick={() => handleCloseTab(tab.id)}>
                   <X size={12} />
@@ -548,61 +828,98 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
             </button>
           </PathTooltip>
         </div>
-        <PathTooltip content={maximized ? "恢复控制台高度" : "控制台拉伸到顶部"} className="console-icon-tooltip">
-          <button
-            type="button"
-            className="icon-button console-close"
-            aria-label={maximized ? "恢复控制台高度" : "控制台拉伸到顶部"}
-            onClick={onToggleMaximized}
-            disabled={!visible}
-          >
-            {maximized ? <ChevronsDown size={14} /> : <ChevronsUp size={14} />}
-          </button>
-        </PathTooltip>
-        <PathTooltip content="复制所选内容 (Ctrl+Shift+C / Ctrl+C)" className="console-icon-tooltip">
-          <button
-            type="button"
-            className="icon-button console-close"
-            aria-label="复制所选内容"
-            onClick={() => void copyTerminalSelection()}
-            disabled={!activeTab || !activeHasSelection}
-          >
-            <Copy size={14} />
-          </button>
-        </PathTooltip>
-        <PathTooltip content="粘贴 (Ctrl+Shift+V / Shift+Insert)" className="console-icon-tooltip">
-          <button
-            type="button"
-            className="icon-button console-close"
-            aria-label="粘贴到终端"
-            onClick={() => void pasteIntoTerminal()}
-            disabled={!activeTab?.session}
-          >
-            <ClipboardPaste size={14} />
-          </button>
-        </PathTooltip>
-        <PathTooltip content="清空当前终端" className="console-icon-tooltip">
-          <button type="button" className="icon-button console-close" aria-label="清空当前终端" onClick={clearActiveTerminal} disabled={!activeTab}>
-            <Trash2 size={14} />
-          </button>
-        </PathTooltip>
-        <PathTooltip content="关闭当前项目全部终端标签" className="console-icon-tooltip">
-          <button
-            type="button"
-            className="icon-button console-close danger-icon"
-            aria-label="关闭当前项目全部终端标签"
-            onClick={handleCloseProjectTabs}
-            disabled={projectTabs.length === 0}
-          >
-            <ListX size={14} />
-          </button>
-        </PathTooltip>
-        <PathTooltip content="隐藏控制台" className="console-icon-tooltip">
-          <button type="button" className="icon-button console-close" aria-label="隐藏控制台" onClick={onHide}>
-            <X size={15} />
-          </button>
-        </PathTooltip>
+        <div className="console-title-actions" aria-label="终端操作">
+          <PathTooltip content={maximized ? "恢复控制台高度" : "控制台拉伸到顶部"} className="console-icon-tooltip">
+            <button
+              type="button"
+              className="icon-button console-close"
+              aria-label={maximized ? "恢复控制台高度" : "控制台拉伸到顶部"}
+              onClick={onToggleMaximized}
+              disabled={!visible}
+            >
+              {maximized ? <ChevronsDown size={14} /> : <ChevronsUp size={14} />}
+            </button>
+          </PathTooltip>
+          <PathTooltip content="重命名当前终端" className="console-icon-tooltip">
+            <button
+              type="button"
+              className="icon-button console-close"
+              aria-label="重命名当前终端"
+              onClick={() => activeTab && beginRenameTerminal(activeTab)}
+              disabled={!activeTab}
+            >
+              <PencilLine size={14} />
+            </button>
+          </PathTooltip>
+          <PathTooltip content="重启当前终端" className="console-icon-tooltip">
+            <button
+              type="button"
+              className="icon-button console-close"
+              aria-label="重启当前终端"
+              onClick={() => void restartTerminal()}
+              disabled={!activeTab || activeTab.status === "starting"}
+            >
+              <RefreshCw size={14} />
+            </button>
+          </PathTooltip>
+          <PathTooltip content={activeTab?.session?.trustedPromptMarkers ? "命令历史" : "当前终端无法安全识别命令边界"} className="console-icon-tooltip">
+            <button
+              type="button"
+              className={`icon-button console-close ${historyOpen ? "active" : ""}`}
+              aria-label="命令历史"
+              aria-pressed={historyOpen}
+              onClick={() => setHistoryOpen((current) => !current)}
+              disabled={!activeTab?.session?.trustedPromptMarkers}
+            >
+              <History size={14} />
+            </button>
+          </PathTooltip>
+          <PathTooltip content="复制所选内容 (Ctrl+Shift+C / Ctrl+C)" className="console-icon-tooltip">
+            <button
+              type="button"
+              className="icon-button console-close"
+              aria-label="复制所选内容"
+              onClick={() => void copyTerminalSelection()}
+              disabled={!activeTab || !activeHasSelection}
+            >
+              <Copy size={14} />
+            </button>
+          </PathTooltip>
+          <PathTooltip content="粘贴 (Ctrl+Shift+V / Shift+Insert)" className="console-icon-tooltip">
+            <button
+              type="button"
+              className="icon-button console-close"
+              aria-label="粘贴到终端"
+              onClick={() => void pasteIntoTerminal()}
+              disabled={!activeTab?.session}
+            >
+              <ClipboardPaste size={14} />
+            </button>
+          </PathTooltip>
+          <PathTooltip content="清空当前终端" className="console-icon-tooltip">
+            <button type="button" className="icon-button console-close" aria-label="清空当前终端" onClick={clearActiveTerminal} disabled={!activeTab}>
+              <Trash2 size={14} />
+            </button>
+          </PathTooltip>
+          <PathTooltip content="关闭全部终端" className="console-icon-tooltip">
+            <button
+              type="button"
+              className="icon-button console-close danger-icon"
+              aria-label="关闭全部终端"
+              onClick={() => void handleCloseAllTabs()}
+              disabled={tabs.length === 0}
+            >
+              <ListX size={14} />
+            </button>
+          </PathTooltip>
+          <PathTooltip content="隐藏控制台" className="console-icon-tooltip">
+            <button type="button" className="icon-button console-close" aria-label="隐藏控制台" onClick={onHide}>
+              <X size={15} />
+            </button>
+          </PathTooltip>
+        </div>
       </div>
+      {terminalError ? <div className="console-operation-error" role="alert"><span>{terminalError}</span><button type="button" aria-label="关闭终端错误" onClick={() => setTerminalError("")}><X size={13} /></button></div> : null}
       <div className="console-terminal-stack">
         {tabs.map((tab) => (
           <div
@@ -620,6 +937,51 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
           </div>
         ) : null}
         {visible && !project ? <div className="console-empty-state">选择一个项目后使用控制台。</div> : null}
+        {historyOpen && activeTab ? (
+          <aside className="console-history-panel" aria-label="命令历史">
+            <header className="console-history-header">
+              <div>
+                <strong>命令历史</strong>
+                <span>{activeHistory.length}</span>
+              </div>
+              <button
+                type="button"
+                className="icon-button console-history-close"
+                aria-label="关闭命令历史"
+                onClick={() => {
+                  setHistoryOpen(false);
+                  runtimeByTabRef.current.get(activeTab.id)?.terminal.focus();
+                }}
+              >
+                <X size={15} />
+              </button>
+            </header>
+            <label className="console-history-search">
+              <Search size={14} />
+              <input
+                value={historyQuery}
+                onChange={(event) => setHistoryQuery(event.target.value)}
+                placeholder="搜索命令"
+                aria-label="搜索命令历史"
+                autoFocus
+              />
+            </label>
+            <div className="console-history-list">
+              {filteredHistory.map((entry) => (
+                <button type="button" className="console-history-entry" key={entry.id} onClick={() => void runHistoryCommand(entry)}>
+                  <span className="console-history-command">{entry.command}</span>
+                  <span className="console-history-meta">
+                    <time dateTime={entry.executedAt}>{formatTerminalHistoryTime(entry.executedAt)}</time>
+                    <Play size={13} />
+                  </span>
+                </button>
+              ))}
+              {filteredHistory.length === 0 ? (
+                <div className="console-history-empty">{activeHistory.length === 0 ? "暂无命令" : "没有匹配的命令"}</div>
+              ) : null}
+            </div>
+          </aside>
+        ) : null}
       </div>
     </section>
   );
@@ -681,11 +1043,104 @@ function isVisible(element: HTMLElement): boolean {
   return element.getClientRects().length > 0 && element.clientWidth > 0 && element.clientHeight > 0;
 }
 
+function consumeTerminalInput(buffer: string, reliable: boolean, data: string): { buffer: string; commands: string[]; reliable: boolean } {
+  const commands: string[] = [];
+  let nextBuffer = buffer;
+  let nextReliable = reliable;
+  let index = 0;
+  const normalizedData = data.replace(/\u001b\[20[01]~/gu, "");
+
+  while (index < normalizedData.length) {
+    const character = normalizedData[index];
+    if (character === "\u001b") {
+      const sequence = normalizedData.slice(index).match(/^\u001b(?:\[[0-?]*[ -/]*[@-~]|.)/u)?.[0];
+      nextReliable = false;
+      index += sequence?.length ?? 1;
+      continue;
+    }
+
+    if (character === "\r" || character === "\n") {
+      if (nextReliable && nextBuffer.trim()) {
+        commands.push(nextBuffer);
+      }
+      nextBuffer = "";
+      nextReliable = true;
+      if (character === "\r" && normalizedData[index + 1] === "\n") {
+        index += 1;
+      }
+      index += 1;
+      continue;
+    }
+
+    if (character === "\u007f" || character === "\b") {
+      nextBuffer = removeLastCharacter(nextBuffer);
+      index += 1;
+      continue;
+    }
+
+    if (character === "\u0003" || character === "\u0015") {
+      nextBuffer = "";
+      nextReliable = true;
+      index += 1;
+      continue;
+    }
+
+    if (character === "\u0017") {
+      nextBuffer = nextBuffer.replace(/\s*\S+\s*$/u, "");
+      index += 1;
+      continue;
+    }
+
+    if (character === "\t" || character < " ") {
+      nextReliable = false;
+      index += 1;
+      continue;
+    }
+
+    const codePoint = normalizedData.codePointAt(index);
+    if (codePoint === undefined) {
+      break;
+    }
+    nextBuffer += String.fromCodePoint(codePoint);
+    index += codePoint > 0xffff ? 2 : 1;
+  }
+
+  return { buffer: nextBuffer, commands, reliable: nextReliable };
+}
+
+function removeLastCharacter(value: string): string {
+  const characters = Array.from(value);
+  characters.pop();
+  return characters.join("");
+}
+
+function omitRecordKey<T>(record: Record<string, T>, key: string): Record<string, T> {
+  const next = { ...record };
+  delete next[key];
+  return next;
+}
+
+function formatTerminalHistoryTime(value: string): string {
+  return new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  }).format(new Date(value));
+}
+
+function terminalErrorMessage(label: string, error: unknown): string {
+  return `${label}：${error instanceof Error ? error.message : String(error)}`;
+}
+
 function renumberTerminalTabs(tabs: TerminalTab[]): TerminalTab[] {
   const projectCounts = new Map<string, number>();
   return tabs.map((tab) => {
     const nextNumber = (projectCounts.get(tab.projectId) ?? 0) + 1;
     projectCounts.set(tab.projectId, nextNumber);
+    if (tab.customTitle) {
+      return tab;
+    }
     const nextTitle = `终端 ${nextNumber}`;
     return tab.title === nextTitle ? tab : { ...tab, title: nextTitle };
   });

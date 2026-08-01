@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import releaseHistory from "../dist-electron/releaseHistory.js";
+import updateService from "../dist-electron/updateService.js";
 import updateUtils from "../dist-electron/updateUtils.js";
 
 const { buildReleaseHistoryCatalog, createRollbackUpdaterOptions } = releaseHistory;
+const { parseLatestStableGithubRelease, resolveFreshUpgradeCheck, startFreshUpgradeDownload } = updateService;
 const { githubReleaseUrl, normalizeReleaseNotes, updateErrorMessage } = updateUtils;
 
 const SHA256 = "a".repeat(64);
@@ -33,6 +35,32 @@ function githubRelease(version, overrides = {}) {
   };
 }
 
+function latestGithubRelease(version, overrides = {}) {
+  const release = githubRelease(version, overrides);
+  return {
+    ...release,
+    assets: overrides.assets ?? [
+      ...release.assets,
+      {
+        name: "latest.yml",
+        state: "uploaded",
+        size: 1024,
+        browser_download_url: `https://github.com/zjx150504-lgtm/Git_UI_Pro/releases/download/v${version}/latest.yml`
+      }
+    ]
+  };
+}
+
+function updateCheckResult(version, isUpdateAvailable = true) {
+  const updateInfo = { version, files: [] };
+  return {
+    isUpdateAvailable,
+    updateInfo,
+    versionInfo: updateInfo,
+    cancellationToken: { version }
+  };
+}
+
 test("统一字符串与多版本发布说明格式", () => {
   assert.equal(normalizeReleaseNotes("  第一项\r\n第二项  "), "第一项\n第二项");
   assert.equal(
@@ -44,7 +72,7 @@ test("统一字符串与多版本发布说明格式", () => {
   );
 });
 
-test("更新错误信息有可读兜底且限制长度", () => {
+test("更新错误信息使用明确默认说明并限制长度", () => {
   assert.equal(updateErrorMessage(new Error("网络不可用")), "网络不可用");
   assert.equal(updateErrorMessage(""), "检查更新失败");
   assert.equal(updateErrorMessage("x".repeat(800)).length, 600);
@@ -154,4 +182,137 @@ test("RollbackProvider 提供固定版本与 SHA-256 下载信息", async () => 
     () => createRollbackUpdaterOptions({ ...target, downloadUrl: "https://example.com/installer.exe" }),
     /回退目标无效/
   );
+});
+
+test("GitHub latest 只接受资产就绪的稳定正式版", () => {
+  const latest = parseLatestStableGithubRelease(latestGithubRelease("0.1.16"));
+  assert.equal(latest.version, "0.1.16");
+  assert.equal(latest.tagName, "v0.1.16");
+  assert.equal(latest.target.version, "0.1.16");
+  assert.equal(latest.target.sha256, SHA256);
+  assert.equal(
+    latest.target.downloadUrl,
+    "https://github.com/zjx150504-lgtm/Git_UI_Pro/releases/download/v0.1.16/Git-UI-Pro-Setup-0.1.16-x64.exe"
+  );
+  assert.throws(
+    () => parseLatestStableGithubRelease(latestGithubRelease("0.1.16", { prerelease: true })),
+    /不是可用的正式版本/
+  );
+  assert.throws(
+    () => parseLatestStableGithubRelease(latestGithubRelease("0.1.16-beta.1")),
+    /不是标准正式版本号/
+  );
+  assert.throws(
+    () =>
+      parseLatestStableGithubRelease(
+        latestGithubRelease("0.1.16", {
+          assets: [
+            {
+              name: "Git-UI-Pro-Setup-0.1.16-x64.exe",
+              state: "uploaded",
+              size: 82_000_000
+            }
+          ]
+        })
+      ),
+    /Windows 正式版资产尚未就绪/
+  );
+});
+
+test("权威 latest 与 updater 元数据不一致时拒绝旧候选", async () => {
+  let downloadCalls = 0;
+  const updater = {
+    async checkForUpdates() {
+      return updateCheckResult("0.1.15");
+    },
+    async downloadUpdate() {
+      downloadCalls += 1;
+      return [];
+    }
+  };
+
+  await assert.rejects(
+    () =>
+      startFreshUpgradeDownload(
+        updater,
+        async () => ({ version: "0.1.16", tagName: "v0.1.16" }),
+        () => assert.fail("不应接受旧候选")
+      ),
+    /GitHub 最新正式版为 v0\.1\.16.*更新元数据仍为 v0\.1\.15/
+  );
+  assert.equal(downloadCalls, 0);
+});
+
+test("连续发布时每次下载都重新读取 latest 并下载本次检查结果", async () => {
+  const callOrder = [];
+  const downloadedVersions = [];
+  let remoteVersion = "0.1.15";
+  let updaterCandidate = "0.1.14";
+  const updater = {
+    async checkForUpdates() {
+      callOrder.push(`check:${remoteVersion}`);
+      updaterCandidate = remoteVersion;
+      return updateCheckResult(remoteVersion);
+    },
+    async downloadUpdate(cancellationToken) {
+      callOrder.push(`download:${updaterCandidate}`);
+      downloadedVersions.push({ candidate: updaterCandidate, token: cancellationToken.version });
+      return [`Git-UI-Pro-Setup-${updaterCandidate}-x64.exe`];
+    }
+  };
+  const loadLatestRelease = async () => {
+    callOrder.push(`latest:${remoteVersion}`);
+    return { version: remoteVersion, tagName: `v${remoteVersion}` };
+  };
+
+  const first = await startFreshUpgradeDownload(updater, loadLatestRelease, (info) => {
+    callOrder.push(`candidate:${info.version}`);
+  });
+  await first.downloadPromise;
+
+  remoteVersion = "0.1.16";
+  const second = await startFreshUpgradeDownload(updater, loadLatestRelease, (info) => {
+    callOrder.push(`candidate:${info.version}`);
+  });
+  await second.downloadPromise;
+
+  assert.deepEqual(downloadedVersions, [
+    { candidate: "0.1.15", token: "0.1.15" },
+    { candidate: "0.1.16", token: "0.1.16" }
+  ]);
+  assert.deepEqual(callOrder, [
+    "latest:0.1.15",
+    "check:0.1.15",
+    "candidate:0.1.15",
+    "download:0.1.15",
+    "latest:0.1.16",
+    "check:0.1.16",
+    "candidate:0.1.16",
+    "download:0.1.16"
+  ]);
+});
+
+test("没有新版本时保留本次 latest 结果且不触发下载", async () => {
+  let downloadCalls = 0;
+  const updater = {
+    async checkForUpdates() {
+      return updateCheckResult("0.1.16", false);
+    },
+    async downloadUpdate() {
+      downloadCalls += 1;
+      return [];
+    }
+  };
+
+  const checked = await resolveFreshUpgradeCheck(updater, async () => ({ version: "0.1.16", tagName: "v0.1.16" }));
+  const download = await startFreshUpgradeDownload(
+    updater,
+    async () => ({ version: "0.1.16", tagName: "v0.1.16" }),
+    () => assert.fail("没有新版本时不应进入下载态")
+  );
+
+  assert.equal(checked.isUpdateAvailable, false);
+  assert.equal(download.info.version, "0.1.16");
+  assert.equal(download.downloadPromise, null);
+  assert.equal(downloadCalls, 0);
 });

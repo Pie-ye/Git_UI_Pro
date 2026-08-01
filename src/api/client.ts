@@ -10,23 +10,71 @@ import type {
   DiffLine,
   FilePreview,
   GitHistoryFilter,
+  GitHistoryPage,
+  GitHistoryQuery,
   GitHistoryRef,
+  GitBlameLine,
+  GitHostingLinks,
+  GitIgnoreDocument,
+  GitLfsStatus,
+  GitLinkedWorktree,
   GitMergePreview,
   GitMergeStrategy,
   GitOperationResult,
   GitProject,
+  GitReflogEntry,
+  GitRebasePlanItem,
+  GitRemoteInfo,
+  GitRemoteUpdateInput,
   GitResetMode,
+  GitSigningConfig,
+  GitSigningConfigUpdate,
+  GitStashCreateOptions,
+  GitStashEntry,
   GitStatusSummary,
+  GitSubmoduleInfo,
+  GitSubmoduleUpdateOptions,
+  GitTagInfo,
+  GitWorktreeAddOptions,
+  GitCloneOptions,
+  ProjectGroup,
+  ProjectLibraryState,
   RemoteProjectInput,
   RemoteProjectTestResult,
   RepositoryTarget,
+  RepositoryCreationResult,
   TerminalDataEvent,
   TerminalExitEvent,
   TerminalSessionInfo,
+  UiPreferences,
   WorktreeState
 } from "../types/domain";
 
 const mockDelay = 180;
+let browserProjectLibrary: ProjectLibraryState = {
+  groups: [
+    { id: "personal", name: "个人项目", sortOrder: 0 },
+    { id: "work", name: "工作项目", sortOrder: 1 },
+    { id: "client", name: "客户项目", sortOrder: 2 }
+  ],
+  recentProjectIds: mockProjects.map((project) => project.id)
+};
+let browserUiPreferences: UiPreferences = {
+  theme: "system",
+  language: "zh-CN",
+  bottomConsoleVisible: true,
+  sidebarWidth: 240,
+  rightPanelWidth: 420,
+  consoleHeight: 240,
+  fontSize: 14,
+  fontFamily: "system-ui",
+  diffViewMode: "split",
+  diffWrap: false,
+  density: "comfortable",
+  sidebarPosition: "left",
+  confirmDestructiveActions: true,
+  shortcuts: {}
+};
 
 export const apiClient = {
   async getGitVersion(): Promise<GitOperationResult> {
@@ -58,7 +106,7 @@ export const apiClient = {
     }
 
     await wait(mockDelay);
-    return { sessionId: `mock-terminal-${Date.now()}`, shell: "Mock Shell", cwd: project.path };
+    return { sessionId: `mock-terminal-${Date.now()}`, shell: "Mock Shell", cwd: project.path, trustedPromptMarkers: false };
   },
 
   async writeTerminal(sessionId: string, data: string): Promise<boolean> {
@@ -145,7 +193,8 @@ export const apiClient = {
         stagedCount: 0,
         unstagedCount: 0,
         untrackedCount: 0,
-        hasConflicts: false
+        hasConflicts: false,
+        conflictedCount: 0
       }
     };
   },
@@ -556,13 +605,13 @@ export const apiClient = {
     return okResult("git merge --abort");
   },
 
-  async deleteBranch(project: GitProject, branchName: string): Promise<GitOperationResult> {
+  async deleteBranch(project: GitProject, branchName: string, force = false): Promise<GitOperationResult> {
     if (window.gitUI) {
-      return window.gitUI.deleteBranch(repositoryTarget(project), branchName);
+      return window.gitUI.deleteBranch(repositoryTarget(project), branchName, force);
     }
 
     await wait(mockDelay);
-    return okResult(`git branch -d ${branchName}`);
+    return okResult(`git branch ${force ? "-D" : "-d"} ${branchName}`);
   },
 
   async amendLastCommitMessage(project: GitProject, input: CommitMessageInput): Promise<GitOperationResult> {
@@ -608,6 +657,384 @@ export const apiClient = {
 
     await wait(mockDelay);
     return okResult(`git cherry-pick ${hash}`);
+  },
+
+  async getHistoryPage(project: GitProject, query: GitHistoryQuery): Promise<GitHistoryPage> {
+    if (window.gitUI) {
+      return window.gitUI.getHistoryPage(repositoryTarget(project), query);
+    }
+
+    void project;
+    await wait(mockDelay);
+    const search = query.search?.trim().toLocaleLowerCase();
+    const author = query.author?.trim().toLocaleLowerCase();
+    const filePath = query.path?.trim().toLocaleLowerCase();
+    const after = query.after?.trim();
+    const before = query.before?.trim();
+    const filtered = mockCommits.filter((commit) => {
+      const commitDate = commit.authorDate.slice(0, 10);
+      return (!search || `${commit.subject}\n${commit.body ?? ""}`.toLocaleLowerCase().includes(search)) &&
+        (!author || `${commit.authorName}\n${commit.authorEmail}`.toLocaleLowerCase().includes(author)) &&
+        (!filePath || commit.files.some((file) => file.path.toLocaleLowerCase().includes(filePath))) &&
+        (!after || commitDate >= after) &&
+        (!before || commitDate <= before);
+    });
+    const skip = Math.max(0, query.skip ?? 0);
+    const limit = Math.max(1, query.limit ?? 80);
+    const commits = filtered.slice(skip, skip + limit);
+    return { commits, hasMore: skip + commits.length < filtered.length, nextSkip: skip + commits.length };
+  },
+
+  async getBlame(project: GitProject, filePath: string, revision?: string): Promise<GitBlameLine[]> {
+    if (window.gitUI) {
+      return window.gitUI.getBlame(repositoryTarget(project), filePath, revision);
+    }
+
+    void project;
+    void revision;
+    await wait(mockDelay);
+    return mockCommits.slice(0, 3).map((commit, index) => ({
+      lineNumber: index + 1,
+      hash: commit.hash,
+      shortHash: commit.shortHash,
+      authorName: commit.authorName,
+      authorEmail: commit.authorEmail,
+      authorDate: commit.authorDate,
+      content: index === 0 ? `// ${filePath}` : `const sampleLine${index} = ${index};`
+    }));
+  },
+
+  async fetchRemote(project: GitProject, remoteName: string, prune = false): Promise<GitOperationResult> {
+    return desktopBridge().fetchRemote(repositoryTarget(project), remoteName, prune);
+  },
+
+  async getProjectLibrary(): Promise<ProjectLibraryState> {
+    if (window.gitUI) {
+      return window.gitUI.getProjectLibrary();
+    }
+    await wait(mockDelay);
+    return { groups: browserProjectLibrary.groups.map((group) => ({ ...group })), recentProjectIds: [...browserProjectLibrary.recentProjectIds] };
+  },
+
+  async createProjectGroup(name: string): Promise<ProjectGroup> {
+    if (window.gitUI) {
+      return window.gitUI.createProjectGroup(name);
+    }
+    const group = { id: crypto.randomUUID(), name: name.trim(), sortOrder: browserProjectLibrary.groups.length };
+    browserProjectLibrary = { ...browserProjectLibrary, groups: [...browserProjectLibrary.groups, group] };
+    return group;
+  },
+
+  async renameProjectGroup(groupId: string, name: string): Promise<ProjectGroup> {
+    if (window.gitUI) {
+      return window.gitUI.renameProjectGroup(groupId, name);
+    }
+    const group = browserProjectLibrary.groups.find((item) => item.id === groupId);
+    if (!group) {
+      throw new Error("项目分组不存在。");
+    }
+    const renamed = { ...group, name: name.trim() };
+    browserProjectLibrary = { ...browserProjectLibrary, groups: browserProjectLibrary.groups.map((item) => item.id === groupId ? renamed : item) };
+    return renamed;
+  },
+
+  async deleteProjectGroup(groupId: string): Promise<boolean> {
+    if (window.gitUI) {
+      return window.gitUI.deleteProjectGroup(groupId);
+    }
+    const exists = browserProjectLibrary.groups.some((group) => group.id === groupId);
+    browserProjectLibrary = { ...browserProjectLibrary, groups: browserProjectLibrary.groups.filter((group) => group.id !== groupId) };
+    mockProjects.forEach((project) => { if (project.groupId === groupId) project.groupId = undefined; });
+    return exists;
+  },
+
+  async setProjectGroup(projectId: string, groupId?: string): Promise<GitProject> {
+    if (window.gitUI) {
+      return window.gitUI.setProjectGroup(projectId, groupId);
+    }
+    const project = mockProjects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error("项目不存在。");
+    }
+    project.groupId = groupId;
+    return { ...project };
+  },
+
+  async markProjectOpened(projectId: string): Promise<GitProject> {
+    if (window.gitUI) {
+      return window.gitUI.markProjectOpened(projectId);
+    }
+    const project = mockProjects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error("项目不存在。");
+    }
+    project.lastOpenedAt = new Date().toISOString();
+    browserProjectLibrary = { ...browserProjectLibrary, recentProjectIds: [projectId, ...browserProjectLibrary.recentProjectIds.filter((id) => id !== projectId)] };
+    return { ...project };
+  },
+
+  async removeRecentProject(projectId: string): Promise<boolean> {
+    if (window.gitUI) {
+      return window.gitUI.removeRecentProject(projectId);
+    }
+    const exists = browserProjectLibrary.recentProjectIds.includes(projectId);
+    browserProjectLibrary = { ...browserProjectLibrary, recentProjectIds: browserProjectLibrary.recentProjectIds.filter((id) => id !== projectId) };
+    return exists;
+  },
+
+  async getUiPreferences(): Promise<UiPreferences> {
+    if (window.gitUI) {
+      return window.gitUI.getUiPreferences();
+    }
+    return { ...browserUiPreferences, shortcuts: { ...browserUiPreferences.shortcuts } };
+  },
+
+  async updateUiPreferences(input: Partial<UiPreferences>): Promise<UiPreferences> {
+    if (window.gitUI) {
+      return window.gitUI.updateUiPreferences(input);
+    }
+    browserUiPreferences = {
+      ...browserUiPreferences,
+      ...input,
+      shortcuts: input.shortcuts ? { ...browserUiPreferences.shortcuts, ...input.shortcuts } : browserUiPreferences.shortcuts
+    };
+    return { ...browserUiPreferences, shortcuts: { ...browserUiPreferences.shortcuts } };
+  },
+
+  async initializeRepository(directoryPath: string, initialBranch: string, createGitignore: boolean): Promise<RepositoryCreationResult> {
+    return desktopBridge().initializeRepository(directoryPath, initialBranch, createGitignore);
+  },
+
+  async cloneRepository(sourceUrl: string, destinationPath: string, options: GitCloneOptions): Promise<RepositoryCreationResult> {
+    return desktopBridge().cloneRepository(sourceUrl, destinationPath, options);
+  },
+
+  async getStashes(project: GitProject): Promise<GitStashEntry[]> {
+    return desktopBridge().getStashes(repositoryTarget(project));
+  },
+
+  async createStash(project: GitProject, options: GitStashCreateOptions): Promise<GitOperationResult> {
+    return desktopBridge().createStash(repositoryTarget(project), options);
+  },
+
+  async applyStash(project: GitProject, selector: string, restoreIndex = false): Promise<GitOperationResult> {
+    return desktopBridge().applyStash(repositoryTarget(project), selector, restoreIndex);
+  },
+
+  async popStash(project: GitProject, selector: string, restoreIndex = false): Promise<GitOperationResult> {
+    return desktopBridge().popStash(repositoryTarget(project), selector, restoreIndex);
+  },
+
+  async dropStash(project: GitProject, selector: string): Promise<GitOperationResult> {
+    return desktopBridge().dropStash(repositoryTarget(project), selector);
+  },
+
+  async getRemotes(project: GitProject): Promise<GitRemoteInfo[]> {
+    return desktopBridge().getRemotes(repositoryTarget(project));
+  },
+
+  async addRemote(project: GitProject, name: string, fetchUrl: string, pushUrl?: string): Promise<GitOperationResult> {
+    return desktopBridge().addRemote(repositoryTarget(project), name, fetchUrl, pushUrl);
+  },
+
+  async updateRemote(project: GitProject, currentName: string, input: GitRemoteUpdateInput): Promise<GitOperationResult> {
+    return desktopBridge().updateRemote(repositoryTarget(project), currentName, input);
+  },
+
+  async removeRemote(project: GitProject, name: string): Promise<GitOperationResult> {
+    return desktopBridge().removeRemote(repositoryTarget(project), name);
+  },
+
+  async setBranchUpstream(project: GitProject, branchName: string, upstream: string): Promise<GitOperationResult> {
+    return desktopBridge().setBranchUpstream(repositoryTarget(project), branchName, upstream);
+  },
+
+  async unsetBranchUpstream(project: GitProject, branchName: string): Promise<GitOperationResult> {
+    return desktopBridge().unsetBranchUpstream(repositoryTarget(project), branchName);
+  },
+
+  async setDefaultRemote(project: GitProject, remoteName: string, role: "fetch" | "push", branchName?: string): Promise<GitOperationResult> {
+    return desktopBridge().setDefaultRemote(repositoryTarget(project), remoteName, role, branchName);
+  },
+
+  async startRebase(project: GitProject, upstream: string, onto?: string): Promise<GitOperationResult> {
+    return desktopBridge().startRebase(repositoryTarget(project), upstream, onto);
+  },
+
+  async getRebasePlan(project: GitProject, upstream: string): Promise<GitRebasePlanItem[]> {
+    return desktopBridge().getRebasePlan(repositoryTarget(project), upstream);
+  },
+
+  async startInteractiveRebase(project: GitProject, upstream: string, plan: GitRebasePlanItem[], onto?: string): Promise<GitOperationResult> {
+    return desktopBridge().startInteractiveRebase(repositoryTarget(project), upstream, plan, onto);
+  },
+
+  async continueRebase(project: GitProject): Promise<GitOperationResult> {
+    return desktopBridge().continueRebase(repositoryTarget(project));
+  },
+
+  async skipRebase(project: GitProject): Promise<GitOperationResult> {
+    return desktopBridge().skipRebase(repositoryTarget(project));
+  },
+
+  async abortRebase(project: GitProject): Promise<GitOperationResult> {
+    return desktopBridge().abortRebase(repositoryTarget(project));
+  },
+
+  async continueCherryPick(project: GitProject): Promise<GitOperationResult> {
+    return desktopBridge().continueCherryPick(repositoryTarget(project));
+  },
+
+  async skipCherryPick(project: GitProject): Promise<GitOperationResult> {
+    return desktopBridge().skipCherryPick(repositoryTarget(project));
+  },
+
+  async abortCherryPick(project: GitProject): Promise<GitOperationResult> {
+    return desktopBridge().abortCherryPick(repositoryTarget(project));
+  },
+
+  async continueRevert(project: GitProject): Promise<GitOperationResult> {
+    return desktopBridge().continueRevert(repositoryTarget(project));
+  },
+
+  async skipRevert(project: GitProject): Promise<GitOperationResult> {
+    return desktopBridge().skipRevert(repositoryTarget(project));
+  },
+
+  async abortRevert(project: GitProject): Promise<GitOperationResult> {
+    return desktopBridge().abortRevert(repositoryTarget(project));
+  },
+
+  async resetBisect(project: GitProject): Promise<GitOperationResult> {
+    return desktopBridge().resetBisect(repositoryTarget(project));
+  },
+
+  async startBisect(project: GitProject, badRef?: string, goodRef?: string): Promise<GitOperationResult> {
+    return desktopBridge().startBisect(repositoryTarget(project), badRef, goodRef);
+  },
+
+  async markBisectGood(project: GitProject, ref?: string): Promise<GitOperationResult> {
+    return desktopBridge().markBisectGood(repositoryTarget(project), ref);
+  },
+
+  async markBisectBad(project: GitProject, ref?: string): Promise<GitOperationResult> {
+    return desktopBridge().markBisectBad(repositoryTarget(project), ref);
+  },
+
+  async skipBisect(project: GitProject, refs?: string[]): Promise<GitOperationResult> {
+    return desktopBridge().skipBisect(repositoryTarget(project), refs);
+  },
+
+  async showCommitSignature(project: GitProject, revision: string): Promise<GitOperationResult> {
+    return desktopBridge().showCommitSignature(repositoryTarget(project), revision);
+  },
+
+  async verifyCommitSignature(project: GitProject, revision: string): Promise<GitOperationResult> {
+    return desktopBridge().verifyCommitSignature(repositoryTarget(project), revision);
+  },
+
+  async renameBranch(project: GitProject, branchName: string, nextName: string, force = false): Promise<GitOperationResult> {
+    return desktopBridge().renameBranch(repositoryTarget(project), branchName, nextName, force);
+  },
+
+  async deleteRemoteBranch(project: GitProject, remoteName: string, branchName: string): Promise<GitOperationResult> {
+    return desktopBridge().deleteRemoteBranch(repositoryTarget(project), remoteName, branchName);
+  },
+
+  async getTags(project: GitProject): Promise<GitTagInfo[]> {
+    return desktopBridge().getTags(repositoryTarget(project));
+  },
+
+  async createTag(project: GitProject, name: string, target: string, message?: string): Promise<GitOperationResult> {
+    return desktopBridge().createTag(repositoryTarget(project), name, target, message);
+  },
+
+  async deleteTag(project: GitProject, name: string): Promise<GitOperationResult> {
+    return desktopBridge().deleteTag(repositoryTarget(project), name);
+  },
+
+  async pushTag(project: GitProject, remoteName: string, name: string): Promise<GitOperationResult> {
+    return desktopBridge().pushTag(repositoryTarget(project), remoteName, name);
+  },
+
+  async deleteRemoteTag(project: GitProject, remoteName: string, name: string): Promise<GitOperationResult> {
+    return desktopBridge().deleteRemoteTag(repositoryTarget(project), remoteName, name);
+  },
+
+  async getReflog(project: GitProject, maxCount = 100): Promise<GitReflogEntry[]> {
+    return desktopBridge().getReflog(repositoryTarget(project), maxCount);
+  },
+
+  async resetToReflogEntry(project: GitProject, selector: string, mode: "mixed" | "hard"): Promise<GitOperationResult> {
+    return desktopBridge().resetToReflogEntry(repositoryTarget(project), selector, mode);
+  },
+
+  async getLinkedWorktrees(project: GitProject): Promise<GitLinkedWorktree[]> {
+    return desktopBridge().getLinkedWorktrees(repositoryTarget(project));
+  },
+
+  async addLinkedWorktree(project: GitProject, options: GitWorktreeAddOptions): Promise<GitOperationResult> {
+    return desktopBridge().addLinkedWorktree(repositoryTarget(project), options);
+  },
+
+  async removeLinkedWorktree(project: GitProject, worktreePath: string, force = false): Promise<GitOperationResult> {
+    return desktopBridge().removeLinkedWorktree(repositoryTarget(project), worktreePath, force);
+  },
+
+  async pruneLinkedWorktrees(project: GitProject): Promise<GitOperationResult> {
+    return desktopBridge().pruneLinkedWorktrees(repositoryTarget(project));
+  },
+
+  async getSubmodules(project: GitProject): Promise<GitSubmoduleInfo[]> {
+    return desktopBridge().getSubmodules(repositoryTarget(project));
+  },
+
+  async initializeSubmodules(project: GitProject): Promise<GitOperationResult> {
+    return desktopBridge().initializeSubmodules(repositoryTarget(project));
+  },
+
+  async updateSubmodules(project: GitProject, options: GitSubmoduleUpdateOptions): Promise<GitOperationResult> {
+    return desktopBridge().updateSubmodules(repositoryTarget(project), options);
+  },
+
+  async syncSubmodules(project: GitProject, recursive = true): Promise<GitOperationResult> {
+    return desktopBridge().syncSubmodules(repositoryTarget(project), recursive);
+  },
+
+  async getLfsStatus(project: GitProject): Promise<GitLfsStatus> {
+    return desktopBridge().getLfsStatus(repositoryTarget(project));
+  },
+
+  async installLfs(project: GitProject, scope: "local" | "global" = "local"): Promise<GitOperationResult> {
+    return desktopBridge().installLfs(repositoryTarget(project), scope);
+  },
+
+  async pullLfs(project: GitProject, remoteName?: string, refs?: string[]): Promise<GitOperationResult> {
+    return desktopBridge().pullLfs(repositoryTarget(project), remoteName, refs);
+  },
+
+  async pruneLfs(project: GitProject): Promise<GitOperationResult> {
+    return desktopBridge().pruneLfs(repositoryTarget(project));
+  },
+
+  async readGitIgnore(project: GitProject): Promise<GitIgnoreDocument> {
+    return desktopBridge().readGitIgnore(repositoryTarget(project));
+  },
+
+  async writeGitIgnore(project: GitProject, content: string, expectedRevision: string): Promise<boolean> {
+    return desktopBridge().writeGitIgnore(repositoryTarget(project), content, expectedRevision);
+  },
+
+  async getSigningConfig(project: GitProject): Promise<GitSigningConfig> {
+    return desktopBridge().getSigningConfig(repositoryTarget(project));
+  },
+
+  async setSigningConfig(project: GitProject, input: GitSigningConfigUpdate): Promise<GitOperationResult> {
+    return desktopBridge().setSigningConfig(repositoryTarget(project), input);
+  },
+
+  async getHostingLinks(project: GitProject, remoteName: string, commitHash?: string, branchName?: string): Promise<GitHostingLinks> {
+    return desktopBridge().getHostingLinks(repositoryTarget(project), remoteName, commitHash, branchName);
   }
 };
 
@@ -630,4 +1057,11 @@ function okResult(command: string): GitOperationResult {
     stderr: "",
     exitCode: 0
   };
+}
+
+function desktopBridge() {
+  if (!window.gitUI) {
+    throw new Error("该仓库能力只在桌面应用中可用。");
+  }
+  return window.gitUI;
 }

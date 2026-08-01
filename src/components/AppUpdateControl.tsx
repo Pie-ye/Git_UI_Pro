@@ -20,11 +20,12 @@ import type { ReleaseHistoryItem, UpdateOperation, UpdatePhase, UpdateState } fr
 const TARGET_PHASES = new Set<UpdatePhase>(["available", "downloading", "downloaded", "installing"]);
 const MOCK_PHASES = new Set<UpdatePhase>(["idle", "checking", "up-to-date", "available", "downloading", "downloaded", "error"]);
 const CURRENT_VERSION = packageInfo.version;
+const UPDATE_BRIDGE_UNAVAILABLE = "更新服务不可用：桌面进程未提供所需接口。";
 
 export function AppUpdateControl() {
   const mockState = useMemo(() => readMockUpdateState(), []);
   const isMock = mockState !== null;
-  const [state, setState] = useState<UpdateState>(() => mockState ?? fallbackUpdateState());
+  const [state, setState] = useState<UpdateState>(() => mockState ?? unsupportedUpdateState());
   const [open, setOpen] = useState(false);
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const [historyItems, setHistoryItems] = useState<ReleaseHistoryItem[]>([]);
@@ -43,25 +44,33 @@ export function AppUpdateControl() {
     }
 
     let cancelled = false;
+    let receivedAuthoritativeState = false;
     const bridge = window.gitUI;
     if (!bridge?.getUpdateState) {
+      setState((current) => ({ ...current, phase: "error", operation: "upgrade", error: UPDATE_BRIDGE_UNAVAILABLE }));
       return;
     }
+
+    const unsubscribe = bridge.onUpdateState?.((nextState) => {
+      if (!cancelled) {
+        receivedAuthoritativeState = true;
+        setState((current) => acceptAuthoritativeUpdateState(current, nextState));
+      }
+    });
 
     void bridge
       .getUpdateState()
       .then((nextState) => {
         if (!cancelled) {
-          setState(nextState);
+          receivedAuthoritativeState = true;
+          setState((current) => acceptAuthoritativeUpdateState(current, nextState));
         }
       })
-      .catch(() => undefined);
-
-    const unsubscribe = bridge.onUpdateState?.((nextState) => {
-      if (!cancelled) {
-        setState(nextState);
-      }
-    });
+      .catch((error) => {
+        if (!cancelled && !receivedAuthoritativeState) {
+          setState((current) => ({ ...current, phase: "error", error: cleanActionError(error, "无法读取更新状态。") }));
+        }
+      });
 
     return () => {
       cancelled = true;
@@ -130,9 +139,9 @@ export function AppUpdateControl() {
     setHistoryLoading(true);
     setHistoryError("");
     try {
-      const items = isMock || !window.gitUI?.listUpdateReleases
+      const items = isMock
         ? createMockReleaseHistory(state.currentVersion)
-        : await window.gitUI.listUpdateReleases(force);
+        : await requireUpdateBridgeMethod(window.gitUI?.listUpdateReleases)(force);
       setHistoryItems(items);
       setSelectedHistoryVersion((current) => current && items.some((item) => item.version === current) ? current : items[0]?.version ?? "");
     } catch (error) {
@@ -149,10 +158,11 @@ export function AppUpdateControl() {
 
     setActionPending(true);
     setHistoryError("");
-    if (isMock || !window.gitUI?.checkForUpdates) {
-      setState((current) => ({ ...current, phase: "checking", operation: "upgrade", error: undefined }));
+    if (isMock) {
+      setState((current) => ({ ...current, revision: current.revision + 1, phase: "checking", operation: "upgrade", error: undefined }));
       mockTimerRef.current = window.setTimeout(() => {
         setState((current) => ({
+          revision: current.revision + 1,
           phase: "up-to-date",
           operation: "upgrade",
           currentVersion: current.currentVersion,
@@ -166,7 +176,11 @@ export function AppUpdateControl() {
     }
 
     try {
-      setState(await window.gitUI.checkForUpdates());
+      if (!window.gitUI?.checkForUpdates) {
+        throw new Error(UPDATE_BRIDGE_UNAVAILABLE);
+      }
+      const nextState = await window.gitUI.checkForUpdates();
+      setState((current) => acceptAuthoritativeUpdateState(current, nextState));
     } catch (error) {
       setRecoverableError(error, "upgrade");
     } finally {
@@ -182,8 +196,9 @@ export function AppUpdateControl() {
 
     setActionPending(true);
     setHistoryError("");
-    if (isMock || !window.gitUI?.prepareRollback) {
+    if (isMock) {
       setState({
+        revision: state.revision + 1,
         phase: "available",
         operation: "rollback",
         currentVersion: state.currentVersion,
@@ -198,7 +213,11 @@ export function AppUpdateControl() {
     }
 
     try {
-      setState(await window.gitUI.prepareRollback(selected.version));
+      if (!window.gitUI?.prepareRollback) {
+        throw new Error(UPDATE_BRIDGE_UNAVAILABLE);
+      }
+      const nextState = await window.gitUI.prepareRollback(selected.version);
+      setState((current) => acceptAuthoritativeUpdateState(current, nextState));
     } catch (error) {
       setHistoryError(cleanActionError(error, "无法准备该回退版本。"));
     } finally {
@@ -212,18 +231,22 @@ export function AppUpdateControl() {
     }
 
     setActionPending(true);
-    if (isMock || !window.gitUI?.cancelRollback) {
+    if (isMock) {
       if (mockTimerRef.current !== undefined) {
         window.clearTimeout(mockTimerRef.current);
         mockTimerRef.current = undefined;
       }
-      setState({ phase: "idle", operation: "upgrade", currentVersion: state.currentVersion });
+      setState({ revision: state.revision + 1, phase: "idle", operation: "upgrade", currentVersion: state.currentVersion });
       setActionPending(false);
       return;
     }
 
     try {
-      setState(await window.gitUI.cancelRollback());
+      if (!window.gitUI?.cancelRollback) {
+        throw new Error(UPDATE_BRIDGE_UNAVAILABLE);
+      }
+      const nextState = await window.gitUI.cancelRollback();
+      setState((current) => acceptAuthoritativeUpdateState(current, nextState));
     } catch (error) {
       setRecoverableError(error, "rollback");
     } finally {
@@ -237,9 +260,10 @@ export function AppUpdateControl() {
     }
 
     setActionPending(true);
-    if (isMock || !window.gitUI?.downloadUpdate) {
+    if (isMock) {
       setState({
         ...state,
+        revision: state.revision + 1,
         phase: "downloading",
         error: undefined,
         progress: { percent: 38, transferred: 31_876_324, total: 83_885_063, bytesPerSecond: 5_242_880 }
@@ -248,6 +272,7 @@ export function AppUpdateControl() {
       mockTimerRef.current = window.setTimeout(() => {
         setState((current) => ({
           ...current,
+          revision: current.revision + 1,
           phase: "downloaded",
           progress: { percent: 100, transferred: 83_885_063, total: 83_885_063, bytesPerSecond: 0 }
         }));
@@ -256,7 +281,11 @@ export function AppUpdateControl() {
     }
 
     try {
-      setState(await window.gitUI.downloadUpdate());
+      if (!window.gitUI?.downloadUpdate) {
+        throw new Error(UPDATE_BRIDGE_UNAVAILABLE);
+      }
+      const nextState = await window.gitUI.downloadUpdate();
+      setState((current) => acceptAuthoritativeUpdateState(current, nextState));
     } catch (error) {
       setRecoverableError(error, state.operation);
     } finally {
@@ -270,13 +299,16 @@ export function AppUpdateControl() {
     }
 
     setActionPending(true);
-    if (isMock || !window.gitUI?.installUpdate) {
-      setState({ ...state, phase: "installing", error: undefined });
+    if (isMock) {
+      setState({ ...state, revision: state.revision + 1, phase: "installing", error: undefined });
       setActionPending(false);
       return;
     }
 
     try {
+      if (!window.gitUI?.installUpdate) {
+        throw new Error(UPDATE_BRIDGE_UNAVAILABLE);
+      }
       const started = await window.gitUI.installUpdate();
       if (!started) {
         throw new Error("安装程序未能启动，请稍后重试。");
@@ -293,11 +325,15 @@ export function AppUpdateControl() {
   }
 
   function openRelease(url = state.releaseUrl || releaseUrlFor(state.currentVersion)) {
-    if (window.gitUI?.openExternal) {
-      void window.gitUI.openExternal(url).catch(() => undefined);
+    if (isMock) {
+      window.open(url, "_blank", "noopener,noreferrer");
       return;
     }
-    window.open(url, "_blank", "noopener,noreferrer");
+    if (!window.gitUI?.openExternal) {
+      setRecoverableError(new Error(UPDATE_BRIDGE_UNAVAILABLE), state.operation);
+      return;
+    }
+    void window.gitUI.openExternal(url).catch((error) => setRecoverableError(error, state.operation));
   }
 
   return (
@@ -577,8 +613,19 @@ function hasTargetVersion(state: UpdateState): boolean {
   return Boolean(state.availableVersion) && (TARGET_PHASES.has(state.phase) || state.operation === "rollback" || state.phase === "error");
 }
 
-function fallbackUpdateState(): UpdateState {
-  return { phase: "unsupported", operation: "upgrade", currentVersion: CURRENT_VERSION };
+function unsupportedUpdateState(): UpdateState {
+  return { revision: 0, phase: "unsupported", operation: "upgrade", currentVersion: CURRENT_VERSION };
+}
+
+function requireUpdateBridgeMethod<T>(method: T | undefined): T {
+  if (method === undefined) {
+    throw new Error(UPDATE_BRIDGE_UNAVAILABLE);
+  }
+  return method;
+}
+
+function acceptAuthoritativeUpdateState(current: UpdateState, incoming: UpdateState): UpdateState {
+  return incoming.revision >= current.revision ? incoming : current;
 }
 
 function normalizedPercent(percent: number | undefined): number {
@@ -655,6 +702,7 @@ function readMockUpdateState(): UpdateState | null {
   const currentVersion = params.get("currentVersion")?.trim() || CURRENT_VERSION;
   const availableVersion = params.get("nextVersion")?.trim() || incrementPatchVersion(currentVersion);
   const baseState: UpdateState = {
+    revision: 0,
     phase,
     operation: "upgrade",
     currentVersion,

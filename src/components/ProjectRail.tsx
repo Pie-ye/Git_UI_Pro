@@ -1,4 +1,4 @@
-import { Check, ChevronDown, Filter, FolderGit2, FolderPlus, FolderSearch, GitBranch, Pin, PinOff, Search, Server, Trash2 } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Filter, FolderGit2, FolderPlus, FolderSearch, GitBranch, Pin, PinOff, Search, Server, Trash2 } from "lucide-react";
 import {
   useEffect,
   useMemo,
@@ -12,10 +12,11 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { PathTooltip } from "./PathTooltip";
-import type { GitProject } from "../types/domain";
+import type { GitProject, ProjectGroup } from "../types/domain";
 
 interface ProjectRailProps {
   projects: GitProject[];
+  groups: ProjectGroup[];
   selectedProjectId: string | null;
   onSelectProject: (projectId: string) => void;
   onAddProject: () => void;
@@ -70,6 +71,7 @@ const projectStatusFilterGroups: Array<{
 
 export function ProjectRail({
   projects,
+  groups,
   selectedProjectId,
   onSelectProject,
   onAddProject,
@@ -89,6 +91,7 @@ export function ProjectRail({
   const [filterMenuOpen, setFilterMenuOpen] = useState(false);
   const [filterMenuPosition, setFilterMenuPosition] = useState<CSSProperties>({ top: 0, left: 0, width: PROJECT_STATUS_FILTER_MENU_WIDTH });
   const [statusFilters, setStatusFilters] = useState<ProjectStatusFilterId[]>([]);
+  const [collapsedGroupIds, setCollapsedGroupIds] = useState<string[]>([]);
   const filterMenuButtonRef = useRef<HTMLButtonElement>(null);
   const projectItemRefs = useRef(new Map<string, HTMLDivElement>());
   const contextMenuCloseTimerRef = useRef<number | undefined>();
@@ -105,8 +108,28 @@ export function ProjectRail({
       .sort((a, b) => b.score - a.score || Number(b.project.favorite) - Number(a.project.favorite) || a.index - b.index)
       .map((item) => item.project);
   }, [projects, keyword, statusFilters]);
-  const canReorder = keyword.length === 0 && statusFilters.length === 0;
-  const visibleProjectIds = filteredProjects.map((project) => project.id);
+  const groupedProjects = useMemo(() => {
+    const configuredGroups = [...groups].sort((left, right) => left.sortOrder - right.sortOrder);
+    const knownGroupIds = new Set(configuredGroups.map((group) => group.id));
+    const entries = configuredGroups.map((group) => ({
+      id: group.id,
+      name: group.name,
+      projects: filteredProjects.filter((project) => project.groupId === group.id)
+    })).filter((group) => group.projects.length > 0);
+    const ungrouped = filteredProjects.filter((project) => !project.groupId || !knownGroupIds.has(project.groupId));
+    if (ungrouped.length > 0) {
+      entries.push({ id: "__ungrouped__", name: "未分组", projects: ungrouped });
+    }
+    return entries;
+  }, [filteredProjects, groups]);
+  const showGroupHeaders = groups.length > 0;
+  const hasActiveFiltering = keyword.length > 0 || statusFilters.length > 0;
+  const displayedProjects = groupedProjects.flatMap((group) =>
+    showGroupHeaders && !hasActiveFiltering && collapsedGroupIds.includes(group.id) ? [] : group.projects
+  );
+  const canReorder = !hasActiveFiltering && displayedProjects.length === filteredProjects.length;
+  const visibleProjectIds = displayedProjects.map((project) => project.id);
+  const visibleGroupByProjectId = new Map(groupedProjects.flatMap((group) => group.projects.map((project) => [project.id, group.id] as const)));
   const statusFilterSummary = statusFilters.length === 0 ? "全部状态" : `${statusFilters.length} 项状态`;
 
   useEffect(() => {
@@ -215,7 +238,13 @@ export function ProjectRail({
   }
 
   function handleDragOver(event: DragEvent<HTMLDivElement>, projectId: string) {
-    if (!canReorder || !draggedProjectId || draggedProjectId === projectId) {
+    if (
+      !canReorder ||
+      !draggedProjectId ||
+      draggedProjectId === projectId ||
+      visibleGroupByProjectId.get(draggedProjectId) !== visibleGroupByProjectId.get(projectId)
+    ) {
+      setDragOverProjectId(null);
       return;
     }
 
@@ -228,7 +257,12 @@ export function ProjectRail({
 
   function handleDrop(event: DragEvent<HTMLDivElement>, targetProjectId: string) {
     event.preventDefault();
-    if (!canReorder || !draggedProjectId || draggedProjectId === targetProjectId) {
+    if (
+      !canReorder ||
+      !draggedProjectId ||
+      draggedProjectId === targetProjectId ||
+      visibleGroupByProjectId.get(draggedProjectId) !== visibleGroupByProjectId.get(targetProjectId)
+    ) {
       clearDragState();
       return;
     }
@@ -241,6 +275,51 @@ export function ProjectRail({
     setDraggedProjectId(null);
     setDragOverProjectId(null);
     setDragOverPlacement("before");
+  }
+
+  function toggleGroup(groupId: string) {
+    setCollapsedGroupIds((current) => current.includes(groupId) ? current.filter((id) => id !== groupId) : [...current, groupId]);
+  }
+
+  function renderProjectItem(project: GitProject) {
+    return (
+      <div
+        ref={(node) => setProjectItemRef(project.id, node)}
+        role="button"
+        tabIndex={0}
+        draggable={canReorder}
+        aria-grabbed={draggedProjectId === project.id}
+        className={`project-rail-item ${project.id === selectedProjectId ? "active" : ""} ${project.favorite ? "pinned" : ""} ${draggedProjectId === project.id ? "dragging" : ""} ${dragOverProjectId === project.id ? `drag-over drag-over-${dragOverPlacement}` : ""}`}
+        key={project.id}
+        onClick={(event) => { event.currentTarget.focus(); onSelectProject(project.id); }}
+        onKeyDown={(event) => {
+          if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
+            event.preventDefault();
+            onSelectProject(project.id);
+          }
+        }}
+        onDragStart={(event) => handleDragStart(event, project.id)}
+        onDragOver={(event) => handleDragOver(event, project.id)}
+        onDragLeave={() => { if (dragOverProjectId === project.id) setDragOverProjectId(null); }}
+        onDrop={(event) => handleDrop(event, project.id)}
+        onDragEnd={clearDragState}
+        onContextMenu={(event) => openProjectContextMenu(event, project)}
+      >
+        <span className="project-rail-icon">{project.remote ? <Server size={16} /> : <FolderGit2 size={16} />}</span>
+        <span className="project-rail-main">
+          <PathTooltip content={projectLocationLabel(project)} className="project-rail-name"><span className="project-rail-name-text">{project.name}</span></PathTooltip>
+          <span className="project-rail-meta">
+            <PathTooltip content="切换分支" className="project-rail-branch-tooltip">
+              <button type="button" className="project-rail-branch" aria-label="切换分支" onClick={(event) => { event.stopPropagation(); onSelectProject(project.id); onSwitchBranch(project); }}>
+                <GitBranch size={12} /><span>{project.status?.currentBranch ?? "未知分支"}</span>
+              </button>
+            </PathTooltip>
+            {projectStatusTags(project).map((status) => <span className={`project-status ${status.tone}`} key={`${project.id}-${status.tone}-${status.label}`}>{status.label}</span>)}
+          </span>
+        </span>
+        {project.favorite ? <PathTooltip content="已置顶" className="project-rail-pin-tooltip"><span className="project-rail-pin-indicator" aria-label="已置顶"><Pin size={12} /></span></PathTooltip> : null}
+      </div>
+    );
   }
 
   function setProjectItemRef(projectId: string, node: HTMLDivElement | null) {
@@ -259,14 +338,14 @@ export function ProjectRail({
   }
 
   function selectProjectByOffset(offset: 1 | -1) {
-    if (filteredProjects.length === 0) {
+    if (displayedProjects.length === 0) {
       return;
     }
 
-    const currentIndex = filteredProjects.findIndex((project) => project.id === selectedProjectId);
+    const currentIndex = displayedProjects.findIndex((project) => project.id === selectedProjectId);
     const baseIndex = currentIndex >= 0 ? currentIndex : offset > 0 ? -1 : 0;
-    const nextIndex = (baseIndex + offset + filteredProjects.length) % filteredProjects.length;
-    const nextProject = filteredProjects[nextIndex];
+    const nextIndex = (baseIndex + offset + displayedProjects.length) % displayedProjects.length;
+    const nextProject = displayedProjects[nextIndex];
 
     closeContextMenu();
     onSelectProject(nextProject.id);
@@ -317,7 +396,7 @@ export function ProjectRail({
       <div className="project-rail-filterbar">
         <label className="project-rail-search">
           <Search size={14} />
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索项目" />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索项目" aria-label="搜索项目" />
         </label>
         <div className="project-status-filter">
           <button
@@ -390,81 +469,26 @@ export function ProjectRail({
       </div>
 
       <div className="project-rail-list" tabIndex={0} onKeyDown={handleProjectListKeyDown}>
-        {filteredProjects.map((project) => (
-          <div
-            ref={(node) => setProjectItemRef(project.id, node)}
-            role="button"
-            tabIndex={0}
-            draggable={canReorder}
-            aria-grabbed={draggedProjectId === project.id}
-            className={`project-rail-item ${project.id === selectedProjectId ? "active" : ""} ${project.favorite ? "pinned" : ""} ${
-              draggedProjectId === project.id ? "dragging" : ""
-            } ${dragOverProjectId === project.id ? `drag-over drag-over-${dragOverPlacement}` : ""}`}
-            key={project.id}
-            onClick={(event) => {
-              event.currentTarget.focus();
-              onSelectProject(project.id);
-            }}
-            onKeyDown={(event) => {
-              if (event.target !== event.currentTarget) {
-                return;
-              }
-
-              if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
-                onSelectProject(project.id);
-              }
-            }}
-            onDragStart={(event) => handleDragStart(event, project.id)}
-            onDragOver={(event) => handleDragOver(event, project.id)}
-            onDragLeave={() => {
-              if (dragOverProjectId === project.id) {
-                setDragOverProjectId(null);
-              }
-            }}
-            onDrop={(event) => handleDrop(event, project.id)}
-            onDragEnd={clearDragState}
-            onContextMenu={(event) => openProjectContextMenu(event, project)}
-          >
-            <span className="project-rail-icon">
-              {project.remote ? <Server size={16} /> : <FolderGit2 size={16} />}
-            </span>
-            <span className="project-rail-main">
-              <PathTooltip content={projectLocationLabel(project)} className="project-rail-name">
-                <span className="project-rail-name-text">{project.name}</span>
-              </PathTooltip>
-              <span className="project-rail-meta">
-                <PathTooltip content="切换分支" className="project-rail-branch-tooltip">
-                  <button
-                    type="button"
-                    className="project-rail-branch"
-                    aria-label="切换分支"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onSelectProject(project.id);
-                      onSwitchBranch(project);
-                    }}
-                  >
-                    <GitBranch size={12} />
-                    <span>{project.status?.currentBranch ?? "未知分支"}</span>
-                  </button>
-                </PathTooltip>
-                {projectStatusTags(project).map((status) => (
-                  <span className={`project-status ${status.tone}`} key={`${project.id}-${status.tone}-${status.label}`}>
-                    {status.label}
-                  </span>
-                ))}
-              </span>
-            </span>
-            {project.favorite ? (
-              <PathTooltip content="已置顶" className="project-rail-pin-tooltip">
-                <span className="project-rail-pin-indicator" aria-label="已置顶">
-                  <Pin size={12} />
-                </span>
-              </PathTooltip>
-            ) : null}
-          </div>
-        ))}
+        {groupedProjects.map((group) => {
+          const collapsed = showGroupHeaders && !hasActiveFiltering && collapsedGroupIds.includes(group.id);
+          return (
+            <section className="project-rail-group" key={group.id}>
+              {showGroupHeaders ? (
+                <button
+                  type="button"
+                  className="project-rail-group-header"
+                  aria-expanded={!collapsed}
+                  onClick={() => toggleGroup(group.id)}
+                >
+                  {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+                  <span>{group.name}</span>
+                  <small>{group.projects.length}</small>
+                </button>
+              ) : null}
+              {!collapsed ? <div className="project-rail-group-items">{group.projects.map(renderProjectItem)}</div> : null}
+            </section>
+          );
+        })}
         {filteredProjects.length === 0 ? <div className="empty-inline project-rail-empty">没有匹配项目。</div> : null}
       </div>
       {contextMenu && typeof document !== "undefined"

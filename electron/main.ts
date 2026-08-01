@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, shell, type Web
 import path from "node:path";
 import { existsSync } from "node:fs";
 import * as pty from "@homebridge/node-pty-prebuilt-multiarch";
-import { ConfigStore, type RemoteProjectInput } from "./configStore";
+import { ConfigStore, type RemoteProjectInput, type UiPreferences } from "./configStore";
 import { buildSshArgs, GitService, normalizeRepositoryTarget, shellQuote, sshDestination, type RepositoryLocation } from "./gitService";
 import { UpdateService, type UpdateState } from "./updateService";
 
@@ -111,10 +111,44 @@ function registerIpc(): void {
   });
 
   ipcMain.handle("projects:list", () => configStore.listProjects());
+  ipcMain.handle("projects:getLibrary", () => configStore.getProjectLibrary());
+  ipcMain.handle("projects:createGroup", (_event, name: string) => configStore.createProjectGroup(name));
+  ipcMain.handle("projects:renameGroup", (_event, groupId: string, name: string) => configStore.renameProjectGroup(groupId, name));
+  ipcMain.handle("projects:deleteGroup", async (_event, groupId: string) => {
+    await configStore.deleteProjectGroup(groupId);
+    return true;
+  });
+  ipcMain.handle("projects:setGroup", (_event, projectId: string, groupId?: string) => configStore.setProjectGroup(projectId, groupId));
+  ipcMain.handle("projects:markOpened", (_event, projectId: string) => configStore.markProjectOpened(projectId));
+  ipcMain.handle("projects:removeRecent", async (_event, projectId: string) => {
+    await configStore.removeRecentProject(projectId);
+    return true;
+  });
+  ipcMain.handle("preferences:get", () => configStore.getUiPreferences());
+  ipcMain.handle("preferences:update", (_event, input: Partial<UiPreferences>) => configStore.updateUiPreferences(input));
 
   ipcMain.handle("projects:add", async (_event, directoryPath: string) => {
     const repositoryRoot = await gitService.getRepositoryRoot(directoryPath);
     return configStore.addProject(repositoryRoot);
+  });
+
+  ipcMain.handle("projects:initializeRepository", async (_event, directoryPath: string, initialBranch: string, createGitignore: boolean) => {
+    const result = await gitService.initializeRepository(directoryPath, initialBranch);
+    if (!result.ok) {
+      return { result };
+    }
+    if (createGitignore) {
+      await gitService.createGitIgnoreIfMissing(directoryPath);
+    }
+    return { result, project: await configStore.addProject(await gitService.getRepositoryRoot(directoryPath)) };
+  });
+
+  ipcMain.handle("projects:cloneRepository", async (_event, sourceUrl: string, destinationPath: string, options) => {
+    const result = await gitService.cloneRepository(sourceUrl, destinationPath, options);
+    if (!result.ok) {
+      return { result };
+    }
+    return { result, project: await configStore.addProject(await gitService.getRepositoryRoot(destinationPath)) };
   });
 
   ipcMain.handle("projects:testRemote", async (_event, input: RemoteProjectInput) => {
@@ -168,6 +202,10 @@ function registerIpc(): void {
 
   ipcMain.handle("git:getStatus", (_event, repositoryPath: RepositoryLocation) => gitService.getStatus(repositoryPath));
   ipcMain.handle("git:getHistory", (_event, repositoryPath: RepositoryLocation, filter) => gitService.getHistory(repositoryPath, filter));
+  ipcMain.handle("git:getHistoryPage", (_event, repositoryPath: RepositoryLocation, query) => gitService.getHistoryPage(repositoryPath, query));
+  ipcMain.handle("git:getBlame", (_event, repositoryPath: RepositoryLocation, filePath: string, revision?: string) =>
+    gitService.getBlame(repositoryPath, filePath, revision)
+  );
   ipcMain.handle("git:getHistoryRefs", (_event, repositoryPath: RepositoryLocation) => gitService.getHistoryRefs(repositoryPath));
   ipcMain.handle("git:getCommitDetails", (_event, repositoryPath: RepositoryLocation, hash: string) => gitService.getCommitDetails(repositoryPath, hash));
   ipcMain.handle("git:getCommitDiff", (_event, repositoryPath: RepositoryLocation, hash: string, filePath?: string) => gitService.getCommitDiff(repositoryPath, hash, filePath));
@@ -188,13 +226,42 @@ function registerIpc(): void {
   ipcMain.handle("git:unstageFile", (_event, repositoryPath: RepositoryLocation, filePath: string) => gitService.unstageFile(repositoryPath, filePath));
   ipcMain.handle("git:unstageAll", (_event, repositoryPath: RepositoryLocation) => gitService.unstageAll(repositoryPath));
   ipcMain.handle("git:discardFile", (_event, repositoryPath: RepositoryLocation, file) => gitService.discardFile(repositoryPath, file));
+  ipcMain.handle("git:getStashes", (_event, repositoryPath: RepositoryLocation) => gitService.getStashes(repositoryPath));
+  ipcMain.handle("git:createStash", (_event, repositoryPath: RepositoryLocation, options) => gitService.createStash(repositoryPath, options));
+  ipcMain.handle("git:applyStash", (_event, repositoryPath: RepositoryLocation, selector: string, restoreIndex: boolean) =>
+    gitService.applyStash(repositoryPath, selector, restoreIndex)
+  );
+  ipcMain.handle("git:popStash", (_event, repositoryPath: RepositoryLocation, selector: string, restoreIndex: boolean) =>
+    gitService.popStash(repositoryPath, selector, restoreIndex)
+  );
+  ipcMain.handle("git:dropStash", (_event, repositoryPath: RepositoryLocation, selector: string) => gitService.dropStash(repositoryPath, selector));
   ipcMain.handle("git:commit", (_event, repositoryPath: RepositoryLocation, input: { subject: string; body?: string; amend?: boolean; pushAfterCommit?: boolean }) =>
     gitService.commit(repositoryPath, input)
   );
   ipcMain.handle("git:fetch", (_event, repositoryPath: RepositoryLocation) => gitService.fetch(repositoryPath));
+  ipcMain.handle("git:fetchRemote", (_event, repositoryPath: RepositoryLocation, remoteName: string, prune: boolean) =>
+    gitService.fetchRemote(repositoryPath, remoteName, prune)
+  );
   ipcMain.handle("git:pull", (_event, repositoryPath: RepositoryLocation) => gitService.pull(repositoryPath));
   ipcMain.handle("git:mergeRemote", (_event, repositoryPath: RepositoryLocation) => gitService.mergeRemote(repositoryPath));
   ipcMain.handle("git:push", (_event, repositoryPath: RepositoryLocation) => gitService.push(repositoryPath));
+  ipcMain.handle("git:getRemotes", (_event, repositoryPath: RepositoryLocation) => gitService.getRemotes(repositoryPath));
+  ipcMain.handle("git:addRemote", (_event, repositoryPath: RepositoryLocation, name: string, fetchUrl: string, pushUrl?: string) =>
+    gitService.addRemote(repositoryPath, name, fetchUrl, pushUrl)
+  );
+  ipcMain.handle("git:updateRemote", (_event, repositoryPath: RepositoryLocation, currentName: string, input) =>
+    gitService.updateRemote(repositoryPath, currentName, input)
+  );
+  ipcMain.handle("git:removeRemote", (_event, repositoryPath: RepositoryLocation, name: string) => gitService.removeRemote(repositoryPath, name));
+  ipcMain.handle("git:setBranchUpstream", (_event, repositoryPath: RepositoryLocation, branchName: string, upstream: string) =>
+    gitService.setBranchUpstream(repositoryPath, branchName, upstream)
+  );
+  ipcMain.handle("git:unsetBranchUpstream", (_event, repositoryPath: RepositoryLocation, branchName: string) =>
+    gitService.unsetBranchUpstream(repositoryPath, branchName)
+  );
+  ipcMain.handle("git:setDefaultRemote", (_event, repositoryPath: RepositoryLocation, remoteName: string, role: "fetch" | "push", branchName?: string) =>
+    gitService.setDefaultRemote(repositoryPath, remoteName, role, branchName)
+  );
   ipcMain.handle("git:getBranches", (_event, repositoryPath: RepositoryLocation) => gitService.getBranches(repositoryPath));
   ipcMain.handle("git:createBranch", (_event, repositoryPath: RepositoryLocation, branchName: string, checkout: boolean, startPoint?: string) =>
     gitService.createBranch(repositoryPath, branchName, checkout, startPoint)
@@ -208,7 +275,89 @@ function registerIpc(): void {
   );
   ipcMain.handle("git:continueMerge", (_event, repositoryPath: RepositoryLocation) => gitService.continueMerge(repositoryPath));
   ipcMain.handle("git:abortMerge", (_event, repositoryPath: RepositoryLocation) => gitService.abortMerge(repositoryPath));
-  ipcMain.handle("git:deleteBranch", (_event, repositoryPath: RepositoryLocation, branchName: string) => gitService.deleteBranch(repositoryPath, branchName));
+  ipcMain.handle("git:startRebase", (_event, repositoryPath: RepositoryLocation, upstream: string, onto?: string) =>
+    gitService.startRebase(repositoryPath, upstream, onto)
+  );
+  ipcMain.handle("git:getRebasePlan", (_event, repositoryPath: RepositoryLocation, upstream: string) => gitService.getRebasePlan(repositoryPath, upstream));
+  ipcMain.handle("git:startInteractiveRebase", (_event, repositoryPath: RepositoryLocation, upstream: string, plan, onto?: string) =>
+    gitService.startInteractiveRebase(repositoryPath, upstream, plan, onto)
+  );
+  ipcMain.handle("git:continueRebase", (_event, repositoryPath: RepositoryLocation) => gitService.continueRebase(repositoryPath));
+  ipcMain.handle("git:skipRebase", (_event, repositoryPath: RepositoryLocation) => gitService.skipRebase(repositoryPath));
+  ipcMain.handle("git:abortRebase", (_event, repositoryPath: RepositoryLocation) => gitService.abortRebase(repositoryPath));
+  ipcMain.handle("git:continueCherryPick", (_event, repositoryPath: RepositoryLocation) => gitService.continueCherryPick(repositoryPath));
+  ipcMain.handle("git:skipCherryPick", (_event, repositoryPath: RepositoryLocation) => gitService.skipCherryPick(repositoryPath));
+  ipcMain.handle("git:abortCherryPick", (_event, repositoryPath: RepositoryLocation) => gitService.abortCherryPick(repositoryPath));
+  ipcMain.handle("git:continueRevert", (_event, repositoryPath: RepositoryLocation) => gitService.continueRevert(repositoryPath));
+  ipcMain.handle("git:skipRevert", (_event, repositoryPath: RepositoryLocation) => gitService.skipRevert(repositoryPath));
+  ipcMain.handle("git:abortRevert", (_event, repositoryPath: RepositoryLocation) => gitService.abortRevert(repositoryPath));
+  ipcMain.handle("git:startBisect", (_event, repositoryPath: RepositoryLocation, badRef?: string, goodRef?: string) =>
+    gitService.startBisect(repositoryPath, badRef, goodRef)
+  );
+  ipcMain.handle("git:markBisectGood", (_event, repositoryPath: RepositoryLocation, ref?: string) => gitService.markBisectGood(repositoryPath, ref));
+  ipcMain.handle("git:markBisectBad", (_event, repositoryPath: RepositoryLocation, ref?: string) => gitService.markBisectBad(repositoryPath, ref));
+  ipcMain.handle("git:skipBisect", (_event, repositoryPath: RepositoryLocation, refs?: string[]) => gitService.skipBisect(repositoryPath, refs));
+  ipcMain.handle("git:resetBisect", (_event, repositoryPath: RepositoryLocation) => gitService.resetBisect(repositoryPath));
+  ipcMain.handle("git:showCommitSignature", (_event, repositoryPath: RepositoryLocation, revision: string) =>
+    gitService.showCommitSignature(repositoryPath, revision)
+  );
+  ipcMain.handle("git:verifyCommitSignature", (_event, repositoryPath: RepositoryLocation, revision: string) =>
+    gitService.verifyCommitSignature(repositoryPath, revision)
+  );
+  ipcMain.handle("git:renameBranch", (_event, repositoryPath: RepositoryLocation, branchName: string, nextName: string, force: boolean) =>
+    gitService.renameBranch(repositoryPath, branchName, nextName, force)
+  );
+  ipcMain.handle("git:deleteBranch", (_event, repositoryPath: RepositoryLocation, branchName: string, force = false) =>
+    gitService.deleteBranch(repositoryPath, branchName, force)
+  );
+  ipcMain.handle("git:deleteRemoteBranch", (_event, repositoryPath: RepositoryLocation, remoteName: string, branchName: string) =>
+    gitService.deleteRemoteBranch(repositoryPath, remoteName, branchName)
+  );
+  ipcMain.handle("git:getTags", (_event, repositoryPath: RepositoryLocation) => gitService.getTags(repositoryPath));
+  ipcMain.handle("git:createTag", (_event, repositoryPath: RepositoryLocation, name: string, target: string, message?: string) =>
+    gitService.createTag(repositoryPath, name, target, message)
+  );
+  ipcMain.handle("git:deleteTag", (_event, repositoryPath: RepositoryLocation, name: string) => gitService.deleteTag(repositoryPath, name));
+  ipcMain.handle("git:pushTag", (_event, repositoryPath: RepositoryLocation, remoteName: string, name: string) =>
+    gitService.pushTag(repositoryPath, remoteName, name)
+  );
+  ipcMain.handle("git:deleteRemoteTag", (_event, repositoryPath: RepositoryLocation, remoteName: string, name: string) =>
+    gitService.deleteRemoteTag(repositoryPath, remoteName, name)
+  );
+  ipcMain.handle("git:getReflog", (_event, repositoryPath: RepositoryLocation, maxCount?: number) => gitService.getReflog(repositoryPath, maxCount));
+  ipcMain.handle("git:resetToReflogEntry", (_event, repositoryPath: RepositoryLocation, selector: string, mode: "mixed" | "hard") =>
+    gitService.resetToReflogEntry(repositoryPath, selector, mode)
+  );
+  ipcMain.handle("git:getLinkedWorktrees", (_event, repositoryPath: RepositoryLocation) => gitService.getLinkedWorktrees(repositoryPath));
+  ipcMain.handle("git:addLinkedWorktree", (_event, repositoryPath: RepositoryLocation, options) => gitService.addLinkedWorktree(repositoryPath, options));
+  ipcMain.handle("git:removeLinkedWorktree", (_event, repositoryPath: RepositoryLocation, worktreePath: string, force: boolean) =>
+    gitService.removeLinkedWorktree(repositoryPath, worktreePath, force)
+  );
+  ipcMain.handle("git:pruneLinkedWorktrees", (_event, repositoryPath: RepositoryLocation) => gitService.pruneLinkedWorktrees(repositoryPath));
+  ipcMain.handle("git:getSubmodules", (_event, repositoryPath: RepositoryLocation) => gitService.getSubmodules(repositoryPath));
+  ipcMain.handle("git:initializeSubmodules", (_event, repositoryPath: RepositoryLocation) => gitService.initializeSubmodules(repositoryPath));
+  ipcMain.handle("git:updateSubmodules", (_event, repositoryPath: RepositoryLocation, options) => gitService.updateSubmodules(repositoryPath, options));
+  ipcMain.handle("git:syncSubmodules", (_event, repositoryPath: RepositoryLocation, recursive: boolean) =>
+    gitService.syncSubmodules(repositoryPath, recursive)
+  );
+  ipcMain.handle("git:getLfsStatus", (_event, repositoryPath: RepositoryLocation) => gitService.getLfsStatus(repositoryPath));
+  ipcMain.handle("git:installLfs", (_event, repositoryPath: RepositoryLocation, scope: "local" | "global") =>
+    gitService.installLfs(repositoryPath, scope)
+  );
+  ipcMain.handle("git:pullLfs", (_event, repositoryPath: RepositoryLocation, remoteName?: string, refs?: string[]) =>
+    gitService.pullLfs(repositoryPath, remoteName, refs)
+  );
+  ipcMain.handle("git:pruneLfs", (_event, repositoryPath: RepositoryLocation) => gitService.pruneLfs(repositoryPath));
+  ipcMain.handle("git:readGitIgnore", (_event, repositoryPath: RepositoryLocation) => gitService.readGitIgnore(repositoryPath));
+  ipcMain.handle("git:writeGitIgnore", async (_event, repositoryPath: RepositoryLocation, content: string, expectedRevision: string) => {
+    await gitService.writeGitIgnore(repositoryPath, content, expectedRevision);
+    return true;
+  });
+  ipcMain.handle("git:getSigningConfig", (_event, repositoryPath: RepositoryLocation) => gitService.getSigningConfig(repositoryPath));
+  ipcMain.handle("git:setSigningConfig", (_event, repositoryPath: RepositoryLocation, input) => gitService.setSigningConfig(repositoryPath, input));
+  ipcMain.handle("git:getHostingLinks", (_event, repositoryPath: RepositoryLocation, remoteName: string, commitHash?: string, branchName?: string) =>
+    gitService.getHostingLinks(repositoryPath, commitHash, branchName, remoteName)
+  );
   ipcMain.handle("git:amendLastCommitMessage", (_event, repositoryPath: RepositoryLocation, input: { subject: string; body?: string }) =>
     gitService.amendLastCommitMessage(repositoryPath, input)
   );
@@ -382,7 +531,7 @@ if (!hasSingleInstanceLock) {
   });
 }
 
-function startTerminalSession(webContents: WebContents, repositoryPath: RepositoryLocation): { sessionId: string; shell: string; cwd: string } {
+function startTerminalSession(webContents: WebContents, repositoryPath: RepositoryLocation): { sessionId: string; shell: string; cwd: string; trustedPromptMarkers: boolean } {
   const target = normalizeRepositoryTarget(repositoryPath);
   const localShell = terminalShell();
   const cwd = target.remote ? process.cwd() : path.resolve(target.path);
@@ -411,7 +560,12 @@ function startTerminalSession(webContents: WebContents, repositoryPath: Reposito
     }
   });
 
-  return { sessionId, shell: shellLabel, cwd: target.remote ? `${sshDestination(target.remote)}:${target.path}` : cwd };
+  return {
+    sessionId,
+    shell: shellLabel,
+    cwd: target.remote ? `${sshDestination(target.remote)}:${target.path}` : cwd,
+    trustedPromptMarkers: !target.remote && localShell.trustedPromptMarkers
+  };
 }
 
 function writeTerminalSession(sessionId: string, data: string): boolean {
@@ -460,22 +614,32 @@ function sendTerminalData(sessionId: string, data: string): void {
   session.webContents.send("terminal:data", { sessionId, stream: "stdout", data });
 }
 
-function terminalShell(): { command: string; args: string[]; label: string } {
+function terminalShell(): { command: string; args: string[]; label: string; trustedPromptMarkers: boolean } {
   if (process.platform === "win32") {
     const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
     const windowsPowerShell = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
     if (existsSync(windowsPowerShell)) {
       return {
         command: windowsPowerShell,
-        args: ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-NoExit"],
-        label: "PowerShell"
+        args: [
+          "-NoLogo",
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-NoExit",
+          "-Command",
+          "$global:GitUiProOriginalPrompt=$function:prompt; function global:prompt { [Console]::Write(([char]27)+']633;A'+[char]7); & $global:GitUiProOriginalPrompt }"
+        ],
+        label: "PowerShell",
+        trustedPromptMarkers: true
       };
     }
 
     return {
       command: process.env.ComSpec || path.join(systemRoot, "System32", "cmd.exe"),
       args: ["/K"],
-      label: "Command Prompt"
+      label: "Command Prompt",
+      trustedPromptMarkers: false
     };
   }
 
@@ -483,7 +647,8 @@ function terminalShell(): { command: string; args: string[]; label: string } {
   return {
     command: shell,
     args: [],
-    label: path.basename(shell)
+    label: path.basename(shell),
+    trustedPromptMarkers: false
   };
 }
 
