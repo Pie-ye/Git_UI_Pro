@@ -12,14 +12,17 @@ import {
   expectedWindowsUpdateArtifacts,
   isTransientGitNetworkFailure,
   mergeReleaseNotes,
+  parseGitHubRepository,
   parseStatusPorcelain,
   parseVersion,
   recommendVersions,
+  retryPush,
   resolveNpmInvocation,
   runGitWithNetworkRetry,
   runProcess,
   startReleaseConsole,
-  validateWindowsUpdateArtifacts
+  validateWindowsUpdateArtifacts,
+  waitForGitHubReleaseReady
 } from "./release-console.mjs";
 
 test("解析并推荐稳定版本号", () => {
@@ -68,6 +71,16 @@ test("识别 GitHub 与 Gitee 远端", () => {
   assert.equal(detectProvider("https://github.com/example/repo.git"), "github");
   assert.equal(detectProvider("git@gitee.com:example/repo.git"), "gitee");
   assert.equal(detectProvider("https://git.example.com/repo.git"), "other");
+});
+
+test("从常见 GitHub 远端地址解析仓库", () => {
+  const expected = { owner: "example-owner", repository: "repo.name" };
+  assert.deepEqual(parseGitHubRepository("https://github.com/example-owner/repo.name.git"), expected);
+  assert.deepEqual(parseGitHubRepository("git@github.com:example-owner/repo.name.git"), expected);
+  assert.deepEqual(parseGitHubRepository("ssh://git@github.com/example-owner/repo.name.git"), expected);
+  assert.deepEqual(parseGitHubRepository("git+https://github.com/example-owner/repo.name.git"), expected);
+  assert.equal(parseGitHubRepository("https://gitee.com/example-owner/repo.name.git"), null);
+  assert.equal(parseGitHubRepository("https://github.com/example-owner/repo/extra"), null);
 });
 
 test("只将临时 Git 网络故障识别为可重试错误", () => {
@@ -216,6 +229,310 @@ test("缺少 blockmap 或 latest.yml 时拒绝发布 Windows 正式版", () => {
   assert.deepEqual(validation.missing, [expected.blockmap, expected.metadata]);
 });
 
+test("等待 GitHub 安装包与最新版指针全部就绪后才完成发布", async () => {
+  const version = "0.1.17";
+  const tag = `v${version}`;
+  const expected = expectedWindowsUpdateArtifacts(version);
+  const requestedUrls = [];
+  const progress = [];
+  let metadataCalls = 0;
+  let blockmapCalls = 0;
+  let latestCalls = 0;
+  let clock = 0;
+
+  const fetchImpl = async (requestUrl) => {
+    const url = new URL(requestUrl);
+    requestedUrls.push(url);
+    if (url.pathname.endsWith(`/${expected.metadata}`)) {
+      metadataCalls += 1;
+      if (metadataCalls === 1) {
+        return new Response(null, { status: 404 });
+      }
+      return new Response(`version: ${version}\nfiles:\n  - url: ${expected.installer}\n`, { status: 200 });
+    }
+    if (url.pathname.endsWith(`/${expected.installer}`)) {
+      return new Response(null, {
+        status: 302,
+        headers: { location: "https://objects.githubusercontent.com/installer" }
+      });
+    }
+    if (url.pathname.endsWith(`/${expected.blockmap}`)) {
+      blockmapCalls += 1;
+      return blockmapCalls === 1
+        ? new Response(null, { status: 404 })
+        : new Response(null, {
+            status: 302,
+            headers: { location: "https://objects.githubusercontent.com/blockmap" }
+          });
+    }
+    if (url.pathname.endsWith("/releases/latest")) {
+      latestCalls += 1;
+      const latestTag = latestCalls === 1 ? "v0.1.16" : tag;
+      return new Response(null, {
+        status: 302,
+        headers: { location: `https://github.com/example/repo/releases/tag/${latestTag}` }
+      });
+    }
+    throw new Error(`未处理的测试请求：${url}`);
+  };
+
+  const result = await waitForGitHubReleaseReady(
+    { owner: "example", repository: "repo" },
+    tag,
+    version,
+    {
+      fetchImpl,
+      timeoutMs: 100,
+      pollIntervalMs: 10,
+      requestTimeoutMs: 10,
+      now: () => clock,
+      wait: async (delayMs) => {
+        clock += delayMs;
+      },
+      onProgress: (entry) => progress.push(entry)
+    }
+  );
+
+  assert.deepEqual(result, {
+    tag,
+    version,
+    latestTag: tag,
+    assets: Object.values(expected)
+  });
+  assert.deepEqual(progress.map((entry) => entry.key), [
+    "waiting-release",
+    "waiting-assets",
+    "waiting-latest",
+    "ready"
+  ]);
+  assert.equal(metadataCalls, 4);
+  assert.equal(blockmapCalls, 3);
+  assert.equal(latestCalls, 2);
+  assert.ok(requestedUrls.every((url) => url.searchParams.has("release-console")));
+});
+
+test("GitHub Actions 超时未生成正式安装包时保留可重试错误", async () => {
+  let clock = 0;
+  await assert.rejects(
+    waitForGitHubReleaseReady(
+      { owner: "example", repository: "repo" },
+      "v0.1.17",
+      "0.1.17",
+      {
+        fetchImpl: async () => new Response(null, { status: 404 }),
+        timeoutMs: 25,
+        pollIntervalMs: 10,
+        requestTimeoutMs: 10,
+        now: () => clock,
+        wait: async (delayMs) => {
+          clock += delayMs;
+        }
+      }
+    ),
+    /标签 v0\.1\.17 已推送，但 GitHub Windows 正式版.*请检查 .*\/actions，工作流完成后重试发布流程/
+  );
+});
+
+test("GitHub 正式版等待时间会中止仍在挂起的网络请求", async () => {
+  const startedAt = Date.now();
+  await assert.rejects(
+    waitForGitHubReleaseReady(
+      { owner: "example", repository: "repo" },
+      "v0.1.17",
+      "0.1.17",
+      {
+        fetchImpl: async (_url, options) => new Promise((resolve, reject) => {
+          options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+        }),
+        timeoutMs: 40,
+        pollIntervalMs: 10,
+        requestTimeoutMs: 1_000
+      }
+    ),
+    /GitHub Windows 正式版在 1 分钟内仍未就绪/
+  );
+  assert.ok(Date.now() - startedAt < 250, "总等待时间不应被单次网络请求额外延长");
+});
+
+test("GitHub 证书错误会立即停止正式版检查", async () => {
+  let calls = 0;
+  await assert.rejects(
+    waitForGitHubReleaseReady(
+      { owner: "example", repository: "repo" },
+      "v0.1.17",
+      "0.1.17",
+      {
+        fetchImpl: async () => {
+          calls += 1;
+          throw new TypeError("fetch failed", { cause: { code: "CERT_HAS_EXPIRED" } });
+        },
+        timeoutMs: 1_000,
+        pollIntervalMs: 10,
+        requestTimeoutMs: 100
+      }
+    ),
+    /GitHub TLS 证书校验失败（CERT_HAS_EXPIRED）/
+  );
+  assert.equal(calls, 1);
+});
+
+test("GitHub 确定性 HTTP 错误不会反复重试", async () => {
+  let calls = 0;
+  await assert.rejects(
+    waitForGitHubReleaseReady(
+      { owner: "example", repository: "repo" },
+      "v0.1.17",
+      "0.1.17",
+      {
+        fetchImpl: async () => {
+          calls += 1;
+          return new Response(null, { status: 403 });
+        },
+        timeoutMs: 1_000,
+        pollIntervalMs: 10,
+        requestTimeoutMs: 100
+      }
+    ),
+    /latest\.yml 返回 HTTP 403/
+  );
+  assert.equal(calls, 1);
+});
+
+test("拒绝将非 GitHub 资产或其他仓库的重定向判定为发布完成", async () => {
+  const version = "0.1.17";
+  const tag = `v${version}`;
+  const expected = expectedWindowsUpdateArtifacts(version);
+  const metadata = `version: ${version}\nfiles:\n  - url: ${expected.installer}\n`;
+
+  await assert.rejects(
+    waitForGitHubReleaseReady(
+      { owner: "example", repository: "repo" },
+      tag,
+      version,
+      {
+        fetchImpl: async (requestUrl) => {
+          const url = new URL(requestUrl);
+          if (url.pathname.endsWith(`/${expected.metadata}`)) {
+            return new Response(metadata, { status: 200 });
+          }
+          return new Response(null, {
+            status: 302,
+            headers: { location: "https://download.example.com/file" }
+          });
+        },
+        timeoutMs: 100,
+        pollIntervalMs: 10,
+        requestTimeoutMs: 10
+      }
+    ),
+    /非 GitHub 发布资产地址/
+  );
+
+  await assert.rejects(
+    waitForGitHubReleaseReady(
+      { owner: "example", repository: "repo" },
+      tag,
+      version,
+      {
+        fetchImpl: async (requestUrl) => {
+          const url = new URL(requestUrl);
+          if (url.pathname.endsWith(`/${expected.metadata}`)) {
+            return new Response(metadata, { status: 200 });
+          }
+          if (url.pathname.endsWith("/releases/latest")) {
+            return new Response(null, {
+              status: 302,
+              headers: { location: `https://github.com/another/repo/releases/tag/${tag}` }
+            });
+          }
+          return new Response(null, {
+            status: 302,
+            headers: { location: "https://release-assets.githubusercontent.com/file" }
+          });
+        },
+        timeoutMs: 100,
+        pollIntervalMs: 10,
+        requestTimeoutMs: 10
+      }
+    ),
+    /非目标仓库重定向/
+  );
+});
+
+function createRetryJob(pushedRemotes) {
+  return {
+    id: "retry-test",
+    state: "failed",
+    currentStage: "github",
+    stages: [
+      { key: "gitee", label: "推送 Gitee", status: pushedRemotes.gitee ? "completed" : "failed" },
+      { key: "github", label: "GitHub 正式版", status: "failed" }
+    ],
+    logs: [],
+    createdAt: new Date().toISOString(),
+    completedAt: new Date().toISOString(),
+    version: "0.1.17",
+    tag: "v0.1.17",
+    artifacts: [],
+    error: "测试失败",
+    canRetryPush: true,
+    pushedRemotes: { ...pushedRemotes },
+    releaseContext: {
+      branch: "master",
+      gitee: { name: "origin" },
+      github: { name: "github" }
+    }
+  };
+}
+
+test("远端均已推送时重试只检查正式版并可再次重试", async () => {
+  const job = createRetryJob({ gitee: true, github: true });
+  const calls = [];
+  await retryPush(job, {
+    verifyTag: async () => calls.push("verify"),
+    pushRemote: async (key) => calls.push(`push:${key}`),
+    confirmRelease: async () => calls.push("confirm")
+  });
+
+  assert.deepEqual(calls, ["confirm"]);
+  assert.equal(job.state, "completed");
+  assert.equal(job.canRetryPush, false);
+  assert.equal(job.stages.find((stage) => stage.key === "github").status, "completed");
+
+  const failedJob = createRetryJob({ gitee: true, github: true });
+  await assert.rejects(
+    retryPush(failedJob, {
+      verifyTag: async () => {
+        throw new Error("不应校验 HEAD");
+      },
+      pushRemote: async () => {
+        throw new Error("不应重复推送");
+      },
+      confirmRelease: async () => {
+        throw new Error("正式版尚未就绪");
+      }
+    }),
+    /正式版尚未就绪/
+  );
+  assert.equal(failedJob.state, "failed");
+  assert.equal(failedJob.canRetryPush, true);
+  assert.equal(failedJob.stages.find((stage) => stage.key === "github").status, "failed");
+});
+
+test("部分远端已推送时只补推缺失远端", async () => {
+  const job = createRetryJob({ gitee: true, github: false });
+  const calls = [];
+  await retryPush(job, {
+    verifyTag: async () => calls.push("verify"),
+    pushRemote: async (key) => calls.push(`push:${key}`),
+    confirmRelease: async () => calls.push("confirm")
+  });
+
+  assert.deepEqual(calls, ["verify", "push:github", "confirm"]);
+  assert.deepEqual(job.pushedRemotes, { gitee: true, github: true });
+  assert.equal(job.state, "completed");
+});
+
 test("发布控制台仅凭令牌返回仓库状态", async () => {
   const { server, url, token } = await startReleaseConsole({ port: 0, openBrowser: false });
   try {
@@ -243,6 +560,53 @@ test("发布控制台仅凭令牌返回仓库状态", async () => {
     assert.equal(status.remotes.gitee.provider, "gitee");
     assert.ok(Array.isArray(status.history));
     assert.ok(Array.isArray(status.files));
+
+    const noJobResponse = await fetch(`${url}/api/jobs/latest`, {
+      headers: { "x-release-token": token }
+    });
+    assert.equal(noJobResponse.status, 200);
+    assert.equal(await noJobResponse.json(), null);
+
+    const createResponse = await fetch(`${url}/api/releases`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Origin": url,
+        "x-release-token": token
+      },
+      body: JSON.stringify({
+        version: "invalid",
+        notes: ["测试恢复任务"],
+        buildMode: "unsigned",
+        expectedCurrentVersion: status.packageVersion
+      })
+    });
+    assert.equal(createResponse.status, 202);
+    const createdJob = await createResponse.json();
+
+    const latestJobResponse = await fetch(`${url}/api/jobs/latest`, {
+      headers: { "x-release-token": token }
+    });
+    assert.equal(latestJobResponse.status, 200);
+    assert.equal((await latestJobResponse.json()).id, createdJob.id);
+
+    let terminalJob = createdJob;
+    for (let attempt = 0; attempt < 200 && ["queued", "running"].includes(terminalJob.state); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      const jobResponse = await fetch(`${url}/api/jobs/${createdJob.id}`, {
+        headers: { "x-release-token": token }
+      });
+      terminalJob = await jobResponse.json();
+    }
+    assert.equal(terminalJob.state, "failed");
+
+    const restoredJobResponse = await fetch(`${url}/api/jobs/latest`, {
+      headers: { "x-release-token": token }
+    });
+    const restoredJob = await restoredJobResponse.json();
+    assert.equal(restoredJob.id, createdJob.id);
+    assert.equal(restoredJob.state, "failed");
+    assert.equal(restoredJob.canRetryPush, false);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

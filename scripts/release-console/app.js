@@ -38,6 +38,7 @@ const elements = {
   releaseDialog: document.querySelector("#releaseDialog"),
   removeNoteIcon: document.querySelector("#removeNoteIcon"),
   retryButton: document.querySelector("#retryButton"),
+  retryButtonLabel: document.querySelector("#retryButtonLabel"),
   stageList: document.querySelector("#stageList"),
   toast: document.querySelector("#toast"),
   versionInput: document.querySelector("#versionInput"),
@@ -425,6 +426,7 @@ function renderJob(job) {
     elements.artifactList.append(item);
   }
   elements.retryButton.hidden = !job.canRetryPush || job.state !== "failed";
+  setText(elements.retryButtonLabel, job.retryMode === "confirm" ? "重新检查正式版" : "重试发布流程");
   updatePublishAvailability();
 }
 
@@ -481,6 +483,26 @@ async function startRelease() {
     showToast(error.message);
     updatePublishAvailability();
   }
+}
+
+async function restoreLatestJob() {
+  try {
+    const job = await api("/api/jobs/latest");
+    if (!job) {
+      return;
+    }
+    renderJob(job);
+    if (job.state === "queued" || job.state === "running") {
+      pollJob(job.id);
+    }
+  } catch (error) {
+    showToast(`恢复发布任务失败：${error.message}`);
+  }
+}
+
+async function initialize() {
+  await refreshStatus();
+  await restoreLatestJob();
 }
 
 elements.refreshButton.addEventListener("click", () => refreshStatus({ preserveForm: true }));
@@ -545,4 +567,4 @@ elements.retryButton.addEventListener("click", async () => {
   }
 });
 
-refreshStatus();
+initialize();

@@ -154,7 +154,7 @@
             <li data-stage="build"><i></i><span>Windows 打包</span><small>等待</small></li>
             <li data-stage="commit"><i></i><span>提交与标签</span><small>等待</small></li>
             <li data-stage="gitee"><i></i><span>推送 Gitee</span><small>等待</small></li>
-            <li data-stage="github"><i></i><span>推送 GitHub</span><small>等待</small></li>
+            <li data-stage="github"><i></i><span>GitHub 正式版</span><small>等待</small></li>
           </ol>
 
           <div class="console-heading">
@@ -169,7 +169,7 @@
           </div>
 
           <button id="retryButton" class="retry-button" type="button" hidden>
-            {{icon:RefreshCw}} 重试双远端推送
+            {{icon:RefreshCw}} <span id="retryButtonLabel">重试发布流程</span>
           </button>
         </aside>
       </section>
