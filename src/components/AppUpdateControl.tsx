@@ -9,7 +9,6 @@ import {
   ExternalLink,
   History,
   LoaderCircle,
-  LockKeyhole,
   PackageCheck,
   RefreshCw,
   RotateCcw,
@@ -29,13 +28,14 @@ export function AppUpdateControl() {
   const isMock = mockState !== null;
   const [state, setState] = useState<UpdateState>(() => mockState ?? fallbackUpdateState());
   const [open, setOpen] = useState(false);
-  const [historyExpanded, setHistoryExpanded] = useState(true);
+  const [historyExpanded, setHistoryExpanded] = useState(false);
   const [historyItems, setHistoryItems] = useState<ReleaseHistoryItem[]>([]);
   const [selectedHistoryVersion, setSelectedHistoryVersion] = useState("");
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState("");
   const [actionPending, setActionPending] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const mockTimerRef = useRef<number>();
 
@@ -84,7 +84,8 @@ export function AppUpdateControl() {
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
-        setOpen(false);
+        event.preventDefault();
+        closePanel();
       }
     }
 
@@ -113,14 +114,20 @@ export function AppUpdateControl() {
   );
 
   const progressPercent = normalizedPercent(state.progress?.percent);
-  const status = phaseContent(state, progressPercent);
+  const statusLabel = phaseLabel(state);
   const hasTarget = hasTargetVersion(state);
-  const releaseNotes = state.releaseNotes?.trim() || "本次发布未提供版本说明。";
+  const releaseNotes = releaseNotesForDisplay(state.releaseNotes);
   const triggerLabel = triggerContent(state);
   const canCheck = !actionPending && state.operation !== "rollback" && !["checking", "downloading", "downloaded", "installing"].includes(state.phase);
   const selectedRollbackPrepared = state.operation === "rollback" &&
     state.availableVersion === selectedHistoryVersion &&
-    TARGET_PHASES.has(state.phase);
+    (TARGET_PHASES.has(state.phase) || (state.phase === "error" && Boolean(state.progress)));
+  const rollbackNeedsPreparation = state.operation === "rollback" && state.phase === "error" && !state.progress;
+
+  function closePanel() {
+    setOpen(false);
+    window.requestAnimationFrame(() => triggerRef.current?.focus());
+  }
 
   async function loadReleaseHistory(force: boolean) {
     setHistoryLoading(true);
@@ -299,6 +306,7 @@ export function AppUpdateControl() {
   return (
     <div className="app-update-control" ref={rootRef}>
       <button
+        ref={triggerRef}
         type="button"
         className="app-update-trigger"
         data-phase={state.phase}
@@ -327,57 +335,51 @@ export function AppUpdateControl() {
           tabIndex={-1}
         >
           <div className="app-update-panel-header">
-            <div>
-              <span className="app-update-eyebrow">Windows 正式版</span>
-              <h2 id="app-update-title">版本与更新</h2>
-            </div>
+            <h2 id="app-update-title">版本与更新</h2>
             <div className="app-update-header-actions">
               <button type="button" className="app-update-icon-button" title="检查最新版本" aria-label="检查最新版本" disabled={!canCheck} onClick={() => void checkForUpdates()}>
                 <RefreshCw className={state.phase === "checking" ? "app-update-spin" : ""} size={15} />
               </button>
-              <button type="button" className="app-update-icon-button" title="关闭版本窗口" aria-label="关闭版本窗口" onClick={() => setOpen(false)}>
+              <button type="button" className="app-update-icon-button" title="关闭版本窗口" aria-label="关闭版本窗口" onClick={closePanel}>
                 <X size={16} />
               </button>
             </div>
           </div>
 
           <div className="app-update-scroll-region">
-            <section className="app-update-current" aria-label={`当前版本 v${stripVersionPrefix(state.currentVersion)}`}>
-              <span className="app-update-current-icon"><ShieldCheck size={20} /></span>
-              <span>
-                <small>当前版本</small>
-                <strong>v{stripVersionPrefix(state.currentVersion)}</strong>
-                <em>{status.shortLabel}</em>
-              </span>
-              <button type="button" className="app-update-release-link" onClick={() => openRelease(releaseUrlFor(state.currentVersion))}>
-                <ExternalLink size={13} />
-                查看发布
-              </button>
-            </section>
-
-            {hasTarget ? (
-              <div className="app-update-version-lens" data-operation={state.operation} aria-label={`从 ${state.currentVersion} ${state.operation === "rollback" ? "回退" : "更新"}到 ${state.availableVersion}`}>
-                <div>
-                  <span>当前</span>
+            <section
+              className="app-update-overview"
+              data-has-target={hasTarget}
+              data-operation={state.operation}
+              aria-label={hasTarget
+                ? `从 ${state.currentVersion} ${state.operation === "rollback" ? "回退" : "更新"}到 ${state.availableVersion}`
+                : `当前版本 v${stripVersionPrefix(state.currentVersion)}`}
+            >
+              <div className="app-update-version-strip">
+                <div className="app-update-version-block">
+                  <span>{hasTarget ? "当前" : "当前版本"}</span>
                   <strong>v{stripVersionPrefix(state.currentVersion)}</strong>
                 </div>
-                <span className="app-update-version-flow" aria-hidden="true">
-                  {state.operation === "rollback" ? <RotateCcw size={17} /> : <ArrowRight size={18} />}
+                {hasTarget ? <>
+                  <span className="app-update-version-flow" aria-hidden="true">
+                    {state.operation === "rollback" ? <RotateCcw size={17} /> : <ArrowRight size={18} />}
+                  </span>
+                  <div className="app-update-version-block is-target">
+                    <span>{state.operation === "rollback" ? "回退至" : "更新至"}</span>
+                    <strong>v{stripVersionPrefix(state.availableVersion ?? state.currentVersion)}</strong>
+                  </div>
+                </> : null}
+              </div>
+              <div className="app-update-overview-meta" data-phase={state.phase} data-operation={state.operation} aria-live="polite">
+                <span className="app-update-overview-status">
+                  <span className="app-update-status-icon"><UpdateIcon phase={state.phase} operation={state.operation} size={13} /></span>
+                  <strong>{statusLabel}</strong>
                 </span>
-                <div className="is-target">
-                  <span>{state.operation === "rollback" ? "回退目标" : "新版本"}</span>
-                  <strong>v{stripVersionPrefix(state.availableVersion ?? state.currentVersion)}</strong>
-                </div>
+                <button type="button" className="app-update-release-link" onClick={() => openRelease()}>
+                  <ExternalLink size={13} />发布页
+                </button>
               </div>
-            ) : null}
-
-            <div className="app-update-status" data-phase={state.phase} data-operation={state.operation} aria-live="polite">
-              <span className="app-update-status-icon"><UpdateIcon phase={state.phase} operation={state.operation} size={16} /></span>
-              <div>
-                <strong>{status.title}</strong>
-                <span>{status.description}</span>
-              </div>
-            </div>
+            </section>
 
             {state.phase === "downloading" ? (
               <div className="app-update-progress" role="progressbar" aria-label="安装包下载进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progressPercent}>
@@ -397,29 +399,32 @@ export function AppUpdateControl() {
               </div>
             ) : null}
 
-            {hasTarget ? (
+            {hasTarget && releaseNotes ? (
               <section className="app-update-notes" aria-labelledby="app-update-notes-title">
                 <div className="app-update-notes-heading">
                   <div>
-                    <h3 id="app-update-notes-title">{state.releaseName?.trim() || "版本说明"}</h3>
+                    <h3 id="app-update-notes-title">版本说明</h3>
                     {state.releaseDate ? <time dateTime={state.releaseDate}>{formatReleaseDate(state.releaseDate)}</time> : null}
                   </div>
-                  <span title="版本说明来自 GitHub Release，不可在此编辑"><LockKeyhole size={12} />发布记录</span>
                 </div>
                 <div className="app-update-notes-content">{releaseNotes}</div>
               </section>
             ) : null}
 
             <section className="app-update-history" data-expanded={historyExpanded}>
-              <button type="button" className="app-update-history-toggle" aria-expanded={historyExpanded} onClick={() => setHistoryExpanded((current) => !current)}>
-                <span className="app-update-history-title"><History size={16} /><span><strong>版本回退</strong><small>最近 3 个可校验的正式版本</small></span></span>
+              <button
+                type="button"
+                className="app-update-history-toggle"
+                title="仅显示带 SHA-256 校验的 GitHub 正式安装版"
+                aria-expanded={historyExpanded}
+                onClick={() => setHistoryExpanded((current) => !current)}
+              >
+                <span className="app-update-history-title"><History size={16} /><strong>历史版本</strong>{historyItems.length > 0 ? <small>{historyItems.length}</small> : null}</span>
                 <ChevronDown size={16} />
               </button>
 
               {historyExpanded ? (
                 <div className="app-update-history-body">
-                  <div className="app-update-rollback-notice"><ShieldCheck size={14} /><span>只使用 GitHub 正式版 Setup，并在安装前校验 SHA-256。项目记录不会被删除，但旧版本可能不兼容较新的配置。</span></div>
-
                   {historyLoading ? (
                     <div className="app-update-history-empty"><LoaderCircle className="app-update-spin" size={16} />正在读取历史版本</div>
                   ) : historyError ? (
@@ -453,19 +458,22 @@ export function AppUpdateControl() {
                   )}
 
                   {historyItems.length > 0 ? (
-                    <button
-                      type="button"
-                      className="app-update-prepare-rollback"
-                      disabled={!selectedHistoryVersion || actionPending || selectedRollbackPrepared || ["downloading", "downloaded", "installing"].includes(state.phase)}
-                      onClick={() => void prepareRollback()}
-                    >
-                      {selectedRollbackPrepared
-                        ? <CheckCircle2 size={15} />
-                        : actionPending
-                          ? <LoaderCircle className="app-update-spin" size={15} />
-                          : <ArrowDownToLine size={15} />}
-                      {selectedRollbackPrepared ? `已准备回退到 v${selectedHistoryVersion}` : `准备回退到 v${selectedHistoryVersion}`}
-                    </button>
+                    <>
+                      <div className="app-update-history-caution"><ShieldCheck size={13} /><span>程序回退，项目保留；旧版可能不兼容当前配置。</span></div>
+                      <button
+                        type="button"
+                        className="app-update-prepare-rollback"
+                        disabled={!selectedHistoryVersion || actionPending || selectedRollbackPrepared || ["downloading", "downloaded", "installing"].includes(state.phase)}
+                        onClick={() => void prepareRollback()}
+                      >
+                        {selectedRollbackPrepared
+                          ? <CheckCircle2 size={15} />
+                          : actionPending
+                            ? <LoaderCircle className="app-update-spin" size={15} />
+                            : <ArrowDownToLine size={15} />}
+                        {selectedRollbackPrepared ? `已选择 v${selectedHistoryVersion}` : `选为回退目标`}
+                      </button>
+                    </>
                   ) : null}
                 </div>
               ) : null}
@@ -476,12 +484,10 @@ export function AppUpdateControl() {
             <div className="app-update-actions">
               {state.operation === "rollback" ? (
                 <button type="button" className="app-update-secondary" disabled={actionPending || state.phase === "installing"} onClick={() => void cancelRollback()}>
-                  <X size={14} />取消回退
+                  <X size={14} />取消
                 </button>
-              ) : state.releaseUrl ? (
-                <button type="button" className="app-update-secondary" onClick={() => openRelease()}><ExternalLink size={15} />查看发布</button>
               ) : null}
-              {state.availableVersion ? (
+              {state.availableVersion && !rollbackNeedsPreparation ? (
                 <button
                   type="button"
                   className="app-update-primary"
@@ -489,7 +495,7 @@ export function AppUpdateControl() {
                   onClick={state.phase === "downloaded" ? () => void installUpdate() : () => void downloadUpdate()}
                 >
                   {state.phase === "downloaded" ? <PackageCheck size={16} /> : state.phase === "downloading" || state.phase === "installing" ? <LoaderCircle className="app-update-spin" size={16} /> : state.operation === "rollback" ? <RotateCcw size={16} /> : <Download size={16} />}
-                  {primaryActionLabel(state, progressPercent, actionPending)}
+                  {primaryActionLabel(state, actionPending)}
                 </button>
               ) : null}
             </div>
@@ -516,27 +522,57 @@ function UpdateIcon({ phase, operation, size }: { phase: UpdatePhase; operation:
   return <CheckCircle2 size={size} />;
 }
 
-function phaseContent(state: UpdateState, progressPercent: number) {
+function phaseLabel(state: UpdateState): string {
   const rollback = state.operation === "rollback";
   switch (state.phase) {
     case "unsupported":
-      return { title: "当前版本信息", description: "在线更新与回退仅在 Windows 已安装正式版中启用。", shortLabel: "当前版本" };
+      return "仅支持 Windows 安装版";
     case "idle":
-      return { title: "当前版本已就绪", description: "可手动检查最新正式版，或选择历史版本回退。", shortLabel: "正式版" };
+      return "正式版";
     case "checking":
-      return { title: rollback ? "正在校验回退版本" : "正在检查新版本", description: rollback ? "正在确认安装包与发布记录，请稍候。" : "正在读取 GitHub 最新正式版。", shortLabel: "检查中" };
+      return rollback ? "正在校验" : "正在检查更新";
     case "up-to-date":
-      return { title: "已是最新版本", description: "当前已安装 GitHub 上的最新正式版。", shortLabel: "已是最新" };
+      return "已是最新版本";
     case "downloading":
-      return { title: rollback ? "正在下载回退版本" : "正在下载更新", description: `已完成 ${progressPercent}%，下载期间可继续使用软件。`, shortLabel: `下载 ${progressPercent}%` };
+      return rollback ? "正在下载回退版本" : "正在下载更新";
     case "downloaded":
-      return { title: rollback ? "回退版本已准备好" : "更新已准备好", description: rollback ? "建议现在安装并重启；关闭软件后可能需要重新下载。" : "安装时软件将关闭，并自动启动新版。", shortLabel: "等待安装" };
+      return rollback ? "回退版本已就绪" : "更新已就绪";
     case "installing":
-      return { title: rollback ? "正在启动回退安装" : "正在启动安装", description: "请稍候，软件即将关闭并完成安装。", shortLabel: "安装中" };
+      return "正在启动安装";
     case "error":
-      return { title: rollback ? "回退未完成" : "更新未完成", description: "当前安装不会受影响，可根据错误信息重试或取消。", shortLabel: "需要处理" };
+      return rollback ? "回退未完成" : "更新未完成";
     default:
-      return { title: rollback ? "已选择回退版本" : "发现新版本", description: rollback ? "安装包将由 electron-updater 下载并校验后再安装。" : "确认版本说明后，可手动下载并安装。", shortLabel: rollback ? "待回退" : "可更新" };
+      return rollback ? "已选择回退版本" : "发现新版本";
+  }
+}
+
+function releaseNotesForDisplay(value: string | undefined): string {
+  if (!value) {
+    return "";
+  }
+
+  return value
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .filter((line) => !isGeneratedChangelogLine(line))
+    .join("\n")
+    .trim();
+}
+
+function isGeneratedChangelogLine(line: string): boolean {
+  const normalized = line.replace(/\*\*/g, "").trim();
+  const prefix = "Full Changelog:";
+  if (!normalized.startsWith(prefix)) {
+    return false;
+  }
+
+  try {
+    const url = new URL(normalized.slice(prefix.length).trim());
+    return url.protocol === "https:" &&
+      url.hostname === "github.com" &&
+      url.pathname.startsWith("/zjx150504-lgtm/Git_UI_Pro/compare/");
+  } catch {
+    return false;
   }
 }
 
@@ -556,12 +592,12 @@ function triggerContent(state: UpdateState): { title: string; attention: boolean
   return { title: `当前版本 v${state.currentVersion}`, attention: false };
 }
 
-function primaryActionLabel(state: UpdateState, progressPercent: number, actionPending: boolean): string {
+function primaryActionLabel(state: UpdateState, actionPending: boolean): string {
   if (state.phase === "checking") {
     return "正在校验";
   }
   if (state.phase === "downloading") {
-    return `下载中 ${progressPercent}%`;
+    return "正在下载";
   }
   if (state.phase === "downloaded") {
     return actionPending ? "正在启动" : state.operation === "rollback" ? "回退并重启" : "安装并重启";
