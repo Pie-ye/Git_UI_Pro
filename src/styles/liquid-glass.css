@@ -2016,103 +2016,123 @@ select:not([disabled]):focus {
   background: linear-gradient(112deg, color-mix(in srgb, var(--blue) 6%, var(--surface-3)), color-mix(in srgb, var(--warning) 9%, var(--surface-3)));
 }
 
-.app-update-version-strip {
+.app-update-version-route {
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 38px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(58px, 0.72fr) minmax(0, 1fr);
   align-items: center;
-  min-height: 78px;
-  padding: 5px 10px;
+  min-height: 108px;
+  padding: 18px 18px 16px;
 }
 
-.app-update-overview[data-has-target="false"] .app-update-version-strip {
+.app-update-overview[data-has-target="false"] .app-update-version-route {
   grid-template-columns: minmax(0, 1fr);
 }
 
-.app-update-version-block {
+.app-update-version-node {
   display: grid;
-  gap: 2px;
+  gap: 4px;
+  align-content: center;
   min-width: 0;
-  padding: 8px 10px;
 }
 
-.app-update-overview[data-has-target="true"] .app-update-version-block:first-child {
+.app-update-version-node.is-target {
   text-align: right;
 }
 
-.app-update-version-block > span {
+.app-update-version-node > span {
   color: var(--muted);
   font-size: 11px;
-  font-weight: 650;
+  font-weight: 680;
 }
 
-.app-update-version-block > strong {
+.app-update-version-node > strong {
   color: var(--text-strong);
   font-family: var(--mono-font);
-  font-size: 22px;
+  font-size: 24px;
   font-weight: 760;
-  line-height: 1.2;
+  line-height: 1.15;
   overflow-wrap: anywhere;
 }
 
-.app-update-overview[data-has-target="true"] .app-update-version-block:first-child > strong {
+.app-update-version-node.is-current > strong {
   color: var(--muted-strong);
 }
 
-.app-update-overview[data-operation="rollback"] .app-update-version-flow {
-  border-color: color-mix(in srgb, var(--warning) 34%, var(--glass-edge));
-  color: var(--warning) !important;
-}
-
-.app-update-overview-meta {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  min-height: 39px;
-  border-top: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
-  padding: 4px 7px 4px 11px;
-  background: color-mix(in srgb, var(--glass-fill-static) 28%, transparent);
-}
-
-.app-update-overview-status {
-  display: inline-flex;
-  gap: 7px;
-  align-items: center;
-  min-width: 0;
-}
-
-.app-update-overview-status > strong {
+.app-update-overview[data-has-target="false"] .app-update-version-node.is-current > strong {
   color: var(--text-strong);
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1.3;
 }
 
-.app-update-overview .app-update-status-icon {
-  width: 24px;
-  height: 24px;
-}
-
-.app-update-overview-meta[data-operation="rollback"] .app-update-status-icon {
-  border-color: color-mix(in srgb, var(--warning) 32%, var(--glass-edge));
-  color: var(--warning);
-  background: color-mix(in srgb, var(--warning) 9%, var(--surface-3));
-}
-
-.app-update-overview-meta[data-phase="downloaded"] .app-update-status-icon {
-  border-color: color-mix(in srgb, var(--success) 32%, var(--glass-edge));
+.app-update-version-node > em {
   color: var(--success);
-  background: color-mix(in srgb, var(--success) 10%, var(--surface-3));
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 720;
 }
 
-.app-update-overview-meta[data-phase="error"] .app-update-status-icon {
-  border-color: color-mix(in srgb, var(--danger) 32%, var(--glass-edge));
-  color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 9%, var(--surface-3));
+.app-update-overview[data-operation="rollback"] .app-update-version-node > em {
+  color: var(--warning);
+}
+
+.app-update-version-rail {
+  display: grid;
+  gap: 8px;
+  align-items: center;
+  align-self: center;
+  min-width: 0;
+  padding-inline: 8px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.app-update-version-rail > span {
+  font-size: 11px;
+  font-weight: 680;
+}
+
+.app-update-version-rail > i {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 1px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--blue) 10%, transparent), color-mix(in srgb, var(--blue) 62%, transparent), color-mix(in srgb, var(--accent) 48%, transparent));
+}
+
+.app-update-version-rail > i::before,
+.app-update-version-rail > i::after {
+  position: absolute;
+  top: 50%;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  content: "";
+  background: var(--blue);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 10%, transparent);
+  transform: translateY(-50%);
+}
+
+.app-update-version-rail > i::before {
+  left: 0;
+}
+
+.app-update-version-rail > i::after {
+  right: 0;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.app-update-overview[data-operation="rollback"] .app-update-version-rail {
+  color: var(--warning);
+}
+
+.app-update-overview[data-operation="rollback"] .app-update-version-rail > i {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--blue) 32%, transparent), color-mix(in srgb, var(--warning) 58%, transparent));
+}
+
+.app-update-overview[data-operation="rollback"] .app-update-version-rail > i::after {
+  background: var(--warning);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 10%, transparent);
 }
 
 .app-update-current {
@@ -2297,23 +2317,6 @@ select:not([disabled]):focus {
   padding-bottom: 12px;
 }
 
-.app-update-history-caution {
-  display: flex;
-  gap: 6px;
-  align-items: flex-start;
-  margin: 0;
-  padding: 0 2px;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.45;
-}
-
-.app-update-history-caution svg {
-  flex: 0 0 auto;
-  margin-top: 1px;
-  color: var(--warning);
-}
-
 .app-update-history-list {
   border: 1px solid color-mix(in srgb, var(--glass-edge) 74%, var(--border));
   border-radius: 14px;
@@ -2349,6 +2352,10 @@ select:not([disabled]):focus {
   min-height: 42px;
   padding: 3px 4px 3px 11px;
   cursor: pointer;
+}
+
+.app-update-history-choice:has(input:disabled) {
+  cursor: not-allowed;
 }
 
 .app-update-history-choice > input {
@@ -2474,9 +2481,26 @@ select:not([disabled]):focus {
 
   .app-update-progress,
   .app-update-error,
-  .app-update-notes,
   .app-update-history {
     margin-inline: 13px;
+  }
+
+  .app-update-version-route {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+    min-height: 0;
+    padding: 18px 16px;
+  }
+
+  .app-update-version-node.is-target {
+    text-align: left;
+  }
+
+  .app-update-version-rail {
+    grid-template-columns: max-content minmax(0, 1fr);
+    width: 100%;
+    padding-inline: 0;
+    text-align: left;
   }
 
   .app-update-history-choice {

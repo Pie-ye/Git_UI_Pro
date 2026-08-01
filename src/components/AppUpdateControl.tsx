@@ -1,7 +1,6 @@
 import {
   AlertTriangle,
   ArrowDownToLine,
-  ArrowRight,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -12,7 +11,6 @@ import {
   PackageCheck,
   RefreshCw,
   RotateCcw,
-  ShieldCheck,
   X
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -116,7 +114,6 @@ export function AppUpdateControl() {
   const progressPercent = normalizedPercent(state.progress?.percent);
   const statusLabel = phaseLabel(state);
   const hasTarget = hasTargetVersion(state);
-  const releaseNotes = releaseNotesForDisplay(state.releaseNotes);
   const triggerLabel = triggerContent(state);
   const canCheck = !actionPending && state.operation !== "rollback" && !["checking", "downloading", "downloaded", "installing"].includes(state.phase);
   const selectedRollbackPrepared = state.operation === "rollback" &&
@@ -337,6 +334,15 @@ export function AppUpdateControl() {
           <div className="app-update-panel-header">
             <h2 id="app-update-title">版本与更新</h2>
             <div className="app-update-header-actions">
+              <button
+                type="button"
+                className="app-update-icon-button"
+                title={`查看 v${stripVersionPrefix(state.availableVersion ?? state.currentVersion)} 发布页`}
+                aria-label={`查看 v${stripVersionPrefix(state.availableVersion ?? state.currentVersion)} 发布页`}
+                onClick={() => openRelease()}
+              >
+                <ExternalLink size={15} />
+              </button>
               <button type="button" className="app-update-icon-button" title="检查最新版本" aria-label="检查最新版本" disabled={!canCheck} onClick={() => void checkForUpdates()}>
                 <RefreshCw className={state.phase === "checking" ? "app-update-spin" : ""} size={15} />
               </button>
@@ -345,6 +351,12 @@ export function AppUpdateControl() {
               </button>
             </div>
           </div>
+
+          <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+            {hasTarget
+              ? `${state.operation === "rollback" ? "回退" : "更新"}版本 v${stripVersionPrefix(state.availableVersion ?? state.currentVersion)}，${statusLabel}`
+              : `当前版本 v${stripVersionPrefix(state.currentVersion)}，${statusLabel}`}
+          </span>
 
           <div className="app-update-scroll-region">
             <section
@@ -355,29 +367,23 @@ export function AppUpdateControl() {
                 ? `从 ${state.currentVersion} ${state.operation === "rollback" ? "回退" : "更新"}到 ${state.availableVersion}`
                 : `当前版本 v${stripVersionPrefix(state.currentVersion)}`}
             >
-              <div className="app-update-version-strip">
-                <div className="app-update-version-block">
-                  <span>{hasTarget ? "当前" : "当前版本"}</span>
+              <div className="app-update-version-route">
+                <div className="app-update-version-node is-current">
+                  <span>当前版本</span>
                   <strong>v{stripVersionPrefix(state.currentVersion)}</strong>
+                  {!hasTarget ? <em>{statusLabel}</em> : null}
                 </div>
                 {hasTarget ? <>
-                  <span className="app-update-version-flow" aria-hidden="true">
-                    {state.operation === "rollback" ? <RotateCcw size={17} /> : <ArrowRight size={18} />}
+                  <span className="app-update-version-rail" aria-hidden="true">
+                    <span>{state.operation === "rollback" ? "回退" : "升级"}</span>
+                    <i />
                   </span>
-                  <div className="app-update-version-block is-target">
-                    <span>{state.operation === "rollback" ? "回退至" : "更新至"}</span>
+                  <div className="app-update-version-node is-target">
+                    <span>{state.operation === "rollback" ? "回退版本" : "最新版本"}</span>
                     <strong>v{stripVersionPrefix(state.availableVersion ?? state.currentVersion)}</strong>
+                    <em>{statusLabel}</em>
                   </div>
                 </> : null}
-              </div>
-              <div className="app-update-overview-meta" data-phase={state.phase} data-operation={state.operation} aria-live="polite">
-                <span className="app-update-overview-status">
-                  <span className="app-update-status-icon"><UpdateIcon phase={state.phase} operation={state.operation} size={13} /></span>
-                  <strong>{statusLabel}</strong>
-                </span>
-                <button type="button" className="app-update-release-link" onClick={() => openRelease()}>
-                  <ExternalLink size={13} />发布页
-                </button>
               </div>
             </section>
 
@@ -399,32 +405,21 @@ export function AppUpdateControl() {
               </div>
             ) : null}
 
-            {hasTarget && releaseNotes ? (
-              <section className="app-update-notes" aria-labelledby="app-update-notes-title">
-                <div className="app-update-notes-heading">
-                  <div>
-                    <h3 id="app-update-notes-title">版本说明</h3>
-                    {state.releaseDate ? <time dateTime={state.releaseDate}>{formatReleaseDate(state.releaseDate)}</time> : null}
-                  </div>
-                </div>
-                <div className="app-update-notes-content">{releaseNotes}</div>
-              </section>
-            ) : null}
-
             <section className="app-update-history" data-expanded={historyExpanded}>
               <button
                 type="button"
                 className="app-update-history-toggle"
                 title="仅显示带 SHA-256 校验的 GitHub 正式安装版"
                 aria-expanded={historyExpanded}
+                aria-controls="app-update-history-body"
                 onClick={() => setHistoryExpanded((current) => !current)}
               >
                 <span className="app-update-history-title"><History size={16} /><strong>历史版本</strong>{historyItems.length > 0 ? <small>{historyItems.length}</small> : null}</span>
                 <ChevronDown size={16} />
               </button>
 
-              {historyExpanded ? (
-                <div className="app-update-history-body">
+              <div id="app-update-history-body" className="app-update-history-body" hidden={!historyExpanded}>
+                {historyExpanded ? <>
                   {historyLoading ? (
                     <div className="app-update-history-empty"><LoaderCircle className="app-update-spin" size={16} />正在读取历史版本</div>
                   ) : historyError ? (
@@ -458,25 +453,22 @@ export function AppUpdateControl() {
                   )}
 
                   {historyItems.length > 0 ? (
-                    <>
-                      <div className="app-update-history-caution"><ShieldCheck size={13} /><span>程序回退，项目保留；旧版可能不兼容当前配置。</span></div>
-                      <button
-                        type="button"
-                        className="app-update-prepare-rollback"
-                        disabled={!selectedHistoryVersion || actionPending || selectedRollbackPrepared || ["downloading", "downloaded", "installing"].includes(state.phase)}
-                        onClick={() => void prepareRollback()}
-                      >
-                        {selectedRollbackPrepared
-                          ? <CheckCircle2 size={15} />
-                          : actionPending
-                            ? <LoaderCircle className="app-update-spin" size={15} />
-                            : <ArrowDownToLine size={15} />}
-                        {selectedRollbackPrepared ? `已选择 v${selectedHistoryVersion}` : `选为回退目标`}
-                      </button>
-                    </>
+                    <button
+                      type="button"
+                      className="app-update-prepare-rollback"
+                      disabled={!selectedHistoryVersion || actionPending || selectedRollbackPrepared || ["downloading", "downloaded", "installing"].includes(state.phase)}
+                      onClick={() => void prepareRollback()}
+                    >
+                      {selectedRollbackPrepared
+                        ? <CheckCircle2 size={15} />
+                        : actionPending
+                          ? <LoaderCircle className="app-update-spin" size={15} />
+                          : <ArrowDownToLine size={15} />}
+                      {selectedRollbackPrepared ? `已选择 v${selectedHistoryVersion}` : `选为回退目标`}
+                    </button>
                   ) : null}
-                </div>
-              ) : null}
+                </> : null}
+              </div>
             </section>
           </div>
 
@@ -542,43 +534,13 @@ function phaseLabel(state: UpdateState): string {
     case "error":
       return rollback ? "回退未完成" : "更新未完成";
     default:
-      return rollback ? "已选择回退版本" : "发现新版本";
-  }
-}
-
-function releaseNotesForDisplay(value: string | undefined): string {
-  if (!value) {
-    return "";
-  }
-
-  return value
-    .replace(/\r\n/g, "\n")
-    .split("\n")
-    .filter((line) => !isGeneratedChangelogLine(line))
-    .join("\n")
-    .trim();
-}
-
-function isGeneratedChangelogLine(line: string): boolean {
-  const normalized = line.replace(/\*\*/g, "").trim();
-  const prefix = "Full Changelog:";
-  if (!normalized.startsWith(prefix)) {
-    return false;
-  }
-
-  try {
-    const url = new URL(normalized.slice(prefix.length).trim());
-    return url.protocol === "https:" &&
-      url.hostname === "github.com" &&
-      url.pathname.startsWith("/zjx150504-lgtm/Git_UI_Pro/compare/");
-  } catch {
-    return false;
+      return rollback ? "已选择" : "可更新";
   }
 }
 
 function triggerContent(state: UpdateState): { title: string; attention: boolean } {
   if (state.phase === "available") {
-    return { title: state.operation === "rollback" ? `已准备回退到 v${state.availableVersion}` : `发现新版本 v${state.availableVersion}`, attention: true };
+    return { title: state.operation === "rollback" ? `已准备回退到 v${state.availableVersion}` : `可更新至 v${state.availableVersion}`, attention: true };
   }
   if (state.phase === "downloading") {
     return { title: `${state.operation === "rollback" ? "回退包" : "更新包"}下载中`, attention: true };
