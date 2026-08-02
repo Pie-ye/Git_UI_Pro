@@ -16,6 +16,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import packageInfo from "../../package.json";
 import type { ReleaseHistoryItem, UpdateOperation, UpdatePhase, UpdateState } from "../types/electron";
+import { PathTooltip } from "./PathTooltip";
 
 const TARGET_PHASES = new Set<UpdatePhase>(["available", "downloading", "downloaded", "installing"]);
 const MOCK_PHASES = new Set<UpdatePhase>(["idle", "checking", "up-to-date", "available", "downloading", "downloaded", "error"]);
@@ -33,7 +34,6 @@ export function AppUpdateControl() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState("");
   const [actionPending, setActionPending] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const mockTimerRef = useRef<number>();
@@ -84,7 +84,14 @@ export function AppUpdateControl() {
     }
 
     function handlePointerDown(event: PointerEvent) {
-      if (!rootRef.current?.contains(event.target as Node)) {
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
+
+      const clickedTrigger = triggerRef.current?.contains(target) ?? false;
+      const clickedPanel = panelRef.current?.contains(target) ?? false;
+      if (!clickedTrigger && !clickedPanel) {
         setOpen(false);
       }
     }
@@ -337,25 +344,26 @@ export function AppUpdateControl() {
   }
 
   return (
-    <div className="app-update-control" ref={rootRef}>
-      <button
-        ref={triggerRef}
-        type="button"
-        className="app-update-trigger"
-        data-phase={state.phase}
-        data-operation={state.operation}
-        title={triggerLabel.title}
-        aria-label={triggerLabel.title}
-        aria-expanded={open}
-        aria-controls="app-update-popover"
-        onClick={() => setOpen((current) => !current)}
-      >
-        <span className="app-update-trigger-version">v{stripVersionPrefix(state.currentVersion)}</span>
-        <span className="app-update-trigger-state" aria-hidden="true">
-          <UpdateIcon phase={state.phase} operation={state.operation} size={12} />
-        </span>
-        {triggerLabel.attention ? <span className="app-update-trigger-dot" aria-hidden="true" /> : null}
-      </button>
+    <div className="app-update-control">
+      <PathTooltip content={triggerLabel.title} className="app-update-trigger-tooltip">
+        <button
+          ref={triggerRef}
+          type="button"
+          className="app-update-trigger"
+          data-phase={state.phase}
+          data-operation={state.operation}
+          aria-label={triggerLabel.title}
+          aria-expanded={open}
+          aria-controls="app-update-popover"
+          onClick={() => setOpen((current) => !current)}
+        >
+          <span className="app-update-trigger-version">v{stripVersionPrefix(state.currentVersion)}</span>
+          <span className="app-update-trigger-state" aria-hidden="true">
+            <UpdateIcon phase={state.phase} operation={state.operation} size={12} />
+          </span>
+          {triggerLabel.attention ? <span className="app-update-trigger-dot" aria-hidden="true" /> : null}
+        </button>
+      </PathTooltip>
 
       {open ? (
         <div
@@ -370,21 +378,29 @@ export function AppUpdateControl() {
           <div className="app-update-panel-header">
             <h2 id="app-update-title">版本与更新</h2>
             <div className="app-update-header-actions">
-              <button
-                type="button"
-                className="app-update-icon-button"
-                title={`查看 v${stripVersionPrefix(state.availableVersion ?? state.currentVersion)} 发布页`}
-                aria-label={`查看 v${stripVersionPrefix(state.availableVersion ?? state.currentVersion)} 发布页`}
-                onClick={() => openRelease()}
+              <PathTooltip
+                content={`查看 v${stripVersionPrefix(state.availableVersion ?? state.currentVersion)} 发布页`}
+                className="app-update-action-tooltip"
               >
-                <ExternalLink size={15} />
-              </button>
-              <button type="button" className="app-update-icon-button" title="检查最新版本" aria-label="检查最新版本" disabled={!canCheck} onClick={() => void checkForUpdates()}>
-                <RefreshCw className={state.phase === "checking" ? "app-update-spin" : ""} size={15} />
-              </button>
-              <button type="button" className="app-update-icon-button" title="关闭版本窗口" aria-label="关闭版本窗口" onClick={closePanel}>
-                <X size={16} />
-              </button>
+                <button
+                  type="button"
+                  className="app-update-icon-button"
+                  aria-label={`查看 v${stripVersionPrefix(state.availableVersion ?? state.currentVersion)} 发布页`}
+                  onClick={() => openRelease()}
+                >
+                  <ExternalLink size={15} />
+                </button>
+              </PathTooltip>
+              <PathTooltip content="检查最新版本" className="app-update-action-tooltip">
+                <button type="button" className="app-update-icon-button" aria-label="检查最新版本" disabled={!canCheck} onClick={() => void checkForUpdates()}>
+                  <RefreshCw className={state.phase === "checking" ? "app-update-spin" : ""} size={15} />
+                </button>
+              </PathTooltip>
+              <PathTooltip content="关闭版本窗口" className="app-update-action-tooltip">
+                <button type="button" className="app-update-icon-button" aria-label="关闭版本窗口" onClick={closePanel}>
+                  <X size={16} />
+                </button>
+              </PathTooltip>
             </div>
           </div>
 
@@ -403,21 +419,21 @@ export function AppUpdateControl() {
                 ? `从 ${state.currentVersion} ${state.operation === "rollback" ? "回退" : "更新"}到 ${state.availableVersion}`
                 : `当前版本 v${stripVersionPrefix(state.currentVersion)}`}
             >
-              <div className="app-update-version-route">
+              <div className={`app-update-version-route ${hasTarget ? "has-target" : "is-current-only"}`}>
                 <div className="app-update-version-node is-current">
-                  <span>当前版本</span>
-                  <strong>v{stripVersionPrefix(state.currentVersion)}</strong>
-                  {!hasTarget ? <em>{statusLabel}</em> : null}
+                  <span className="app-update-version-label">当前版本</span>
+                  <strong className="app-update-version-value">v{stripVersionPrefix(state.currentVersion)}</strong>
+                  {!hasTarget ? <em className="app-update-version-status">{statusLabel}</em> : null}
                 </div>
                 {hasTarget ? <>
                   <span className="app-update-version-rail" aria-hidden="true">
-                    <span>{state.operation === "rollback" ? "回退" : "升级"}</span>
-                    <i />
+                    <span className="app-update-version-action">{state.operation === "rollback" ? "回退" : "升级"}</span>
+                    <i className="app-update-version-track" />
                   </span>
                   <div className="app-update-version-node is-target">
-                    <span>{state.operation === "rollback" ? "回退版本" : "最新版本"}</span>
-                    <strong>v{stripVersionPrefix(state.availableVersion ?? state.currentVersion)}</strong>
-                    <em>{statusLabel}</em>
+                    <span className="app-update-version-label">{state.operation === "rollback" ? "回退版本" : "最新版本"}</span>
+                    <strong className="app-update-version-value">v{stripVersionPrefix(state.availableVersion ?? state.currentVersion)}</strong>
+                    <em className="app-update-version-status">{statusLabel}</em>
                   </div>
                 </> : null}
               </div>
@@ -442,17 +458,19 @@ export function AppUpdateControl() {
             ) : null}
 
             <section className="app-update-history" data-expanded={historyExpanded}>
-              <button
-                type="button"
-                className="app-update-history-toggle"
-                title="仅显示带 SHA-256 校验的 GitHub 正式安装版"
-                aria-expanded={historyExpanded}
-                aria-controls="app-update-history-body"
-                onClick={() => setHistoryExpanded((current) => !current)}
-              >
-                <span className="app-update-history-title"><History size={16} /><strong>历史版本</strong>{historyItems.length > 0 ? <small>{historyItems.length}</small> : null}</span>
-                <ChevronDown size={16} />
-              </button>
+              <PathTooltip content="仅显示带 SHA-256 校验的 GitHub 正式安装版" className="app-update-history-tooltip">
+                <button
+                  type="button"
+                  className="app-update-history-toggle"
+                  aria-label="历史版本，仅显示带 SHA-256 校验的 GitHub 正式安装版"
+                  aria-expanded={historyExpanded}
+                  aria-controls="app-update-history-body"
+                  onClick={() => setHistoryExpanded((current) => !current)}
+                >
+                  <span className="app-update-history-title"><History size={16} /><strong>历史版本</strong>{historyItems.length > 0 ? <small>{historyItems.length}</small> : null}</span>
+                  <ChevronDown size={16} />
+                </button>
+              </PathTooltip>
 
               <div id="app-update-history-body" className="app-update-history-body" hidden={!historyExpanded}>
                 {historyExpanded ? <>
@@ -461,7 +479,9 @@ export function AppUpdateControl() {
                   ) : historyError ? (
                     <div className="app-update-history-error" role="alert">
                       <AlertTriangle size={14} /><span>{historyError}</span>
-                      <button type="button" className="app-update-icon-button" title="重新读取历史版本" aria-label="重新读取历史版本" onClick={() => void loadReleaseHistory(true)}><RefreshCw size={14} /></button>
+                      <PathTooltip content="重新读取历史版本" className="app-update-action-tooltip">
+                        <button type="button" className="app-update-icon-button" aria-label="重新读取历史版本" onClick={() => void loadReleaseHistory(true)}><RefreshCw size={14} /></button>
+                      </PathTooltip>
                     </div>
                   ) : historyItems.length > 0 ? (
                     <div className="app-update-history-list" role="radiogroup" aria-label="选择回退版本">
@@ -480,7 +500,9 @@ export function AppUpdateControl() {
                             <span className="app-update-history-meta"><strong>v{item.version}</strong><small>{formatReleaseDate(item.publishedAt)}</small></span>
                             <span className="app-update-history-size">{formatBytes(item.installerSize)}</span>
                           </label>
-                          <button type="button" className="app-update-icon-button" title={`查看 v${item.version} 发布页`} aria-label={`查看 v${item.version} 发布页`} onClick={() => openRelease(item.releaseUrl)}><ExternalLink size={13} /></button>
+                          <PathTooltip content={`查看 v${item.version} 发布页`} className="app-update-action-tooltip">
+                            <button type="button" className="app-update-icon-button" aria-label={`查看 v${item.version} 发布页`} onClick={() => openRelease(item.releaseUrl)}><ExternalLink size={13} /></button>
+                          </PathTooltip>
                         </div>
                       ))}
                     </div>

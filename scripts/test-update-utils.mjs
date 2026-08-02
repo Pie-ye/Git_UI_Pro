@@ -5,10 +5,63 @@ import updateService from "../dist-electron/updateService.js";
 import updateUtils from "../dist-electron/updateUtils.js";
 
 const { buildReleaseHistoryCatalog, createRollbackUpdaterOptions } = releaseHistory;
-const { parseLatestStableGithubRelease, resolveFreshUpgradeCheck, startFreshUpgradeDownload } = updateService;
+const {
+  UPDATE_CHECK_INITIAL_DELAY_MS,
+  UPDATE_CHECK_INTERVAL_MS,
+  UpdateCheckGate,
+  parseLatestStableGithubRelease,
+  resolveFreshUpgradeCheck,
+  startFreshUpgradeDownload
+} = updateService;
 const { githubReleaseUrl, normalizeReleaseNotes, updateErrorMessage } = updateUtils;
 
 const SHA256 = "a".repeat(64);
+
+test("正式版后台更新检查使用短周期调度", () => {
+  assert.equal(UPDATE_CHECK_INITIAL_DELAY_MS, 8_000);
+  assert.equal(UPDATE_CHECK_INTERVAL_MS, 5 * 60 * 1_000);
+});
+
+test("后台检查与手动刷新共享同一个进行中请求", async () => {
+  const gate = new UpdateCheckGate();
+  let resolveCheck;
+  let checkCalls = 0;
+  const check = () => {
+    checkCalls += 1;
+    return new Promise((resolve) => {
+      resolveCheck = resolve;
+    });
+  };
+
+  const backgroundRequest = gate.run(check);
+  const manualRequest = gate.run(check);
+  assert.equal(manualRequest, backgroundRequest);
+  assert.equal(checkCalls, 0);
+
+  await Promise.resolve();
+  assert.equal(checkCalls, 1);
+  resolveCheck({ phase: "available", availableVersion: "0.1.20" });
+  assert.deepEqual(await manualRequest, { phase: "available", availableVersion: "0.1.20" });
+  assert.equal(gate.getActiveRequest(), null);
+
+  const nextRequest = gate.run(async () => {
+    checkCalls += 1;
+    return { phase: "up-to-date" };
+  });
+  assert.notEqual(nextRequest, backgroundRequest);
+  assert.deepEqual(await nextRequest, { phase: "up-to-date" });
+  assert.equal(checkCalls, 2);
+});
+
+test("失败的更新检查完成后允许下一次定时检查", async () => {
+  const gate = new UpdateCheckGate();
+  const failedRequest = gate.run(async () => {
+    throw new Error("network unavailable");
+  });
+  await assert.rejects(failedRequest, /network unavailable/);
+  assert.equal(gate.getActiveRequest(), null);
+  assert.equal(await gate.run(async () => "recovered"), "recovered");
+});
 
 function githubRelease(version, overrides = {}) {
   const tagName = overrides.tag_name ?? `v${version}`;

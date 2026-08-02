@@ -10,8 +10,8 @@ import {
 } from "./releaseHistory";
 import { githubReleaseUrl, normalizeReleaseNotes, updateErrorMessage } from "./updateUtils";
 
-const INITIAL_CHECK_DELAY_MS = 8_000;
-const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1_000;
+export const UPDATE_CHECK_INITIAL_DELAY_MS = 8_000;
+export const UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1_000;
 const RELEASE_HISTORY_CACHE_MS = 15 * 60 * 1_000;
 const RELEASE_HISTORY_URL = "https://api.github.com/repos/zjx150504-lgtm/Git_UI_Pro/releases?per_page=20";
 const LATEST_RELEASE_URL = "https://api.github.com/repos/zjx150504-lgtm/Git_UI_Pro/releases/latest";
@@ -71,6 +71,34 @@ export type FreshUpgradeDownload = {
   downloadPromise: Promise<string[]> | null;
   cancellationToken: CancellationToken | null;
 };
+
+export class UpdateCheckGate<T> {
+  private activeRequest: Promise<T> | null = null;
+
+  getActiveRequest(): Promise<T> | null {
+    return this.activeRequest;
+  }
+
+  run(task: () => Promise<T>): Promise<T> {
+    if (this.activeRequest) {
+      return this.activeRequest;
+    }
+
+    const request = Promise.resolve().then(task);
+    this.activeRequest = request;
+    void request.then(
+      () => this.clear(request),
+      () => this.clear(request)
+    );
+    return request;
+  }
+
+  private clear(request: Promise<T>): void {
+    if (this.activeRequest === request) {
+      this.activeRequest = null;
+    }
+  }
+}
 
 export async function resolveFreshUpgradeCheck(
   updater: Pick<UpgradeDownloadUpdater, "checkForUpdates">,
@@ -217,8 +245,8 @@ function parseExactGithubDownloadUrl(value: string, expectedPath: string): strin
 export class UpdateService {
   private state: UpdateState;
   private started = false;
-  private initialCheckTimer: NodeJS.Timeout | null = null;
-  private intervalTimer: NodeJS.Timeout | null = null;
+  private backgroundCheckTimer: NodeJS.Timeout | null = null;
+  private readonly updateCheckGate = new UpdateCheckGate<UpdateState>();
   private upgradeUpdater: NsisUpdater | null = null;
   private upgradeCancellationToken: CancellationToken | null = null;
   private upgradeGeneration = 0;
@@ -251,20 +279,14 @@ export class UpdateService {
       return;
     }
 
-    this.initialCheckTimer = setTimeout(() => void this.checkForUpdates(), INITIAL_CHECK_DELAY_MS);
-    this.initialCheckTimer.unref();
-    this.intervalTimer = setInterval(() => void this.checkForUpdates(), CHECK_INTERVAL_MS);
-    this.intervalTimer.unref();
+    this.scheduleBackgroundCheck(UPDATE_CHECK_INITIAL_DELAY_MS);
   }
 
   stop(): void {
-    if (this.initialCheckTimer) {
-      clearTimeout(this.initialCheckTimer);
-      this.initialCheckTimer = null;
-    }
-    if (this.intervalTimer) {
-      clearInterval(this.intervalTimer);
-      this.intervalTimer = null;
+    this.started = false;
+    if (this.backgroundCheckTimer) {
+      clearTimeout(this.backgroundCheckTimer);
+      this.backgroundCheckTimer = null;
     }
     this.disposeUpgradeUpdater();
     this.rollbackCancellationToken?.cancel();
@@ -284,7 +306,12 @@ export class UpdateService {
     return catalog.entries.map((entry) => ({ ...entry }));
   }
 
-  async checkForUpdates(): Promise<UpdateState> {
+  checkForUpdates(): Promise<UpdateState> {
+    const activeRequest = this.updateCheckGate.getActiveRequest();
+    if (activeRequest) {
+      return activeRequest;
+    }
+
     if (
       !this.supported ||
       this.state.operation === "rollback" ||
@@ -293,9 +320,13 @@ export class UpdateService {
       this.state.phase === "downloaded" ||
       this.state.phase === "installing"
     ) {
-      return this.getState();
+      return Promise.resolve(this.getState());
     }
 
+    return this.updateCheckGate.run(() => this.performUpdateCheck());
+  }
+
+  private async performUpdateCheck(): Promise<UpdateState> {
     this.setState({
       phase: "checking",
       operation: "upgrade",
@@ -324,6 +355,24 @@ export class UpdateService {
       checkUpdater?.removeAllListeners();
     }
     return this.getState();
+  }
+
+  private scheduleBackgroundCheck(delayMs: number): void {
+    if (!this.started || !this.supported) {
+      return;
+    }
+
+    this.backgroundCheckTimer = setTimeout(() => {
+      this.backgroundCheckTimer = null;
+      void this.checkForUpdates().then(
+        () => this.scheduleBackgroundCheck(UPDATE_CHECK_INTERVAL_MS),
+        (error) => {
+          console.error("后台更新检查异常", error);
+          this.scheduleBackgroundCheck(UPDATE_CHECK_INTERVAL_MS);
+        }
+      );
+    }, delayMs);
+    this.backgroundCheckTimer.unref();
   }
 
   async prepareRollback(version: string): Promise<UpdateState> {

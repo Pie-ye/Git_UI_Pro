@@ -1919,6 +1919,13 @@ select:not([disabled]):focus {
   padding-left: 3px;
 }
 
+.app-update-trigger-tooltip {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  min-width: 0;
+}
+
 .app-update-trigger {
   display: inline-flex;
   gap: 5px;
@@ -1983,6 +1990,16 @@ select:not([disabled]):focus {
   height: 6px;
 }
 
+.app-update-trigger[data-phase="available"][data-operation="upgrade"] .app-update-trigger-dot {
+  transform-origin: center;
+  animation: app-update-attention-dot 1.9s ease-in-out infinite;
+}
+
+.app-update-trigger[data-phase="available"][data-operation="upgrade"] .app-update-trigger-state svg {
+  transform-origin: center;
+  animation: app-update-attention-icon 1.9s ease-in-out infinite;
+}
+
 .app-update-popover {
   left: -86px;
   width: min(404px, calc(100vw - 20px));
@@ -1999,6 +2016,14 @@ select:not([disabled]):focus {
   display: flex;
   gap: 5px;
   align-items: center;
+}
+
+.app-update-action-tooltip {
+  display: grid;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  place-items: center;
 }
 
 .app-update-icon-button {
@@ -2025,6 +2050,11 @@ select:not([disabled]):focus {
 .app-update-icon-button:disabled {
   cursor: default;
   opacity: 0.42;
+}
+
+.app-update-action-tooltip > .app-update-icon-button {
+  width: 100%;
+  height: 100%;
 }
 
 .app-update-scroll-region {
@@ -2076,7 +2106,8 @@ select:not([disabled]):focus {
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(58px, 0.72fr) minmax(0, 1fr);
+  grid-template-columns: minmax(112px, 1fr) minmax(56px, 0.58fr) minmax(112px, 1fr);
+  gap: 8px;
   align-items: center;
   min-height: 108px;
   padding: 18px 18px 16px;
@@ -2084,6 +2115,9 @@ select:not([disabled]):focus {
 
 .app-update-overview[data-has-target="false"] .app-update-version-route {
   grid-template-columns: minmax(0, 1fr);
+  place-items: center;
+  min-height: 104px;
+  padding-inline: 24px;
 }
 
 .app-update-version-node {
@@ -2118,6 +2152,28 @@ select:not([disabled]):focus {
 
 .app-update-overview[data-has-target="false"] .app-update-version-node.is-current > strong {
   color: var(--text-strong);
+}
+
+.app-update-overview[data-has-target="false"] .app-update-version-node.is-current {
+  grid-template-columns: max-content max-content;
+  column-gap: 10px;
+  justify-content: center;
+  align-items: center;
+  width: min(100%, 250px);
+  text-align: center;
+}
+
+.app-update-overview[data-has-target="false"] .app-update-version-label {
+  grid-column: 1 / -1;
+}
+
+.app-update-overview[data-has-target="false"] .app-update-version-status {
+  align-self: center;
+  border: 1px solid color-mix(in srgb, var(--success) 26%, var(--glass-edge));
+  border-radius: 999px;
+  padding: 3px 7px;
+  background: color-mix(in srgb, var(--success) 8%, var(--surface));
+  line-height: 1.2;
 }
 
 .app-update-version-node > em {
@@ -2312,6 +2368,12 @@ select:not([disabled]):focus {
 .app-update-history {
   margin: 3px 16px 5px;
   border-top: 1px solid var(--border);
+}
+
+.app-update-history-tooltip {
+  display: block;
+  width: 100%;
+  min-width: 0;
 }
 
 .app-update-history-toggle {
@@ -2525,6 +2587,34 @@ select:not([disabled]):focus {
   -webkit-backdrop-filter: blur(22px) saturate(150%);
 }
 
+@keyframes app-update-attention-dot {
+  0%,
+  100% {
+    opacity: 0.72;
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--blue) 10%, transparent);
+    transform: scale(0.86);
+  }
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--blue) 18%, transparent), 0 0 8px color-mix(in srgb, var(--blue) 36%, transparent);
+    transform: scale(1.08);
+  }
+}
+
+@keyframes app-update-attention-icon {
+  0%,
+  100% {
+    opacity: 0.82;
+    filter: drop-shadow(0 0 0 transparent);
+    transform: scale(0.94);
+  }
+  50% {
+    opacity: 1;
+    filter: drop-shadow(0 0 4px color-mix(in srgb, var(--blue) 44%, transparent));
+    transform: scale(1.06);
+  }
+}
+
 @media (max-width: 520px) {
   .app-update-popover {
     right: 8px;
@@ -2573,5 +2663,12 @@ select:not([disabled]):focus {
   .app-update-history-toggle > svg {
     transition: none;
     animation: none !important;
+  }
+
+  .app-update-trigger[data-phase="available"][data-operation="upgrade"] .app-update-trigger-dot,
+  .app-update-trigger[data-phase="available"][data-operation="upgrade"] .app-update-trigger-state svg {
+    animation: none !important;
+    filter: none;
+    transform: none;
   }
 }
