@@ -33,12 +33,12 @@ type ThemeName = "light" | "dark";
 type TerminalStatus = "starting" | "running" | "exited" | "error";
 
 const TERMINAL_RESIZE_DEBOUNCE_MS = 140;
+const TERMINAL_FONT_FAMILY = '"Cascadia Code", Consolas, "Courier New", monospace';
+const TERMINAL_FONT_SIZE = 12;
 
 interface ConsolePanelProps {
   project?: GitProject;
   theme: ThemeName;
-  fontFamily: string;
-  fontSize: number;
   visible: boolean;
   maximized: boolean;
   onToggleMaximized: () => void;
@@ -79,7 +79,7 @@ interface TerminalRuntime {
   captureState: TerminalCaptureState;
 }
 
-export function ConsolePanel({ project, theme, fontFamily, fontSize, visible, maximized, onToggleMaximized, onHide, onConfirmCloseTabs, onConfirmClearHistory }: ConsolePanelProps) {
+export function ConsolePanel({ project, theme, visible, maximized, onToggleMaximized, onHide, onConfirmCloseTabs, onConfirmClearHistory }: ConsolePanelProps) {
   const [tabs, setTabs] = useState<TerminalTab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [activeHasSelection, setActiveHasSelection] = useState(false);
@@ -97,8 +97,6 @@ export function ConsolePanel({ project, theme, fontFamily, fontSize, visible, ma
   const tabBySessionRef = useRef(new Map<string, string>());
   const terminalSeedRef = useRef(0);
   const themeRef = useRef<ThemeName>(theme);
-  const fontFamilyRef = useRef(fontFamily);
-  const fontSizeRef = useRef(fontSize);
   const loadedHistoryProjectsRef = useRef(new Set<string>());
 
   const projectTabs = useMemo(() => (project ? tabs.filter((tab) => tab.projectId === project.id) : []), [project, tabs]);
@@ -187,19 +185,6 @@ export function ConsolePanel({ project, theme, fontFamily, fontSize, visible, ma
   }, [theme]);
 
   useEffect(() => {
-    fontFamilyRef.current = fontFamily;
-    fontSizeRef.current = fontSize;
-    window.requestAnimationFrame(() => {
-      const host = panelRef.current ?? document.documentElement;
-      for (const runtime of runtimeByTabRef.current.values()) {
-        runtime.terminal.options.fontFamily = resolveTerminalFontFamily(host, fontFamilyRef.current);
-        runtime.terminal.options.fontSize = fontSizeRef.current;
-        if (runtime.host && isVisible(runtime.host)) runtime.fitAddon.fit();
-      }
-    });
-  }, [fontFamily, fontSize]);
-
-  useEffect(() => {
     if (!project || loadedHistoryProjectsRef.current.has(project.id)) {
       return;
     }
@@ -263,12 +248,7 @@ export function ConsolePanel({ project, theme, fontFamily, fontSize, visible, ma
     }
 
     const tabId = `terminal-tab-${Date.now()}-${++terminalSeedRef.current}`;
-    const terminal = createTerminal(
-      panelRef.current ?? document.documentElement,
-      themeRef.current,
-      fontFamilyRef.current,
-      fontSizeRef.current
-    );
+    const terminal = createTerminal(panelRef.current ?? document.documentElement, themeRef.current);
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
 
@@ -1056,13 +1036,13 @@ export function ConsolePanel({ project, theme, fontFamily, fontSize, visible, ma
   );
 }
 
-function createTerminal(host: HTMLElement, theme: ThemeName, fontFamily: string, fontSize: number): Terminal {
+function createTerminal(host: HTMLElement, theme: ThemeName): Terminal {
   return new Terminal({
     allowProposedApi: false,
     convertEol: true,
     cursorBlink: true,
-    fontFamily: resolveTerminalFontFamily(host, fontFamily),
-    fontSize,
+    fontFamily: TERMINAL_FONT_FAMILY,
+    fontSize: TERMINAL_FONT_SIZE,
     lineHeight: 1.25,
     minimumContrastRatio: terminalContrastRatio(theme),
     scrollback: 5000,
@@ -1110,13 +1090,6 @@ function cssVar(style: CSSStyleDeclaration, name: string, fallback: string): str
 
 function isVisible(element: HTMLElement): boolean {
   return element.getClientRects().length > 0 && element.clientWidth > 0 && element.clientHeight > 0;
-}
-
-function resolveTerminalFontFamily(host: HTMLElement, preference: string): string {
-  if (preference === "monospace") {
-    return cssVar(getComputedStyle(host), "--mono-font", '"Cascadia Code", Consolas, "Courier New", monospace');
-  }
-  return preference;
 }
 
 function formatTerminalHistoryTime(value: string): string {

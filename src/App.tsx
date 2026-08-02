@@ -2822,8 +2822,6 @@ export function App() {
                 <ConsolePanel
                   project={selectedProject}
                   theme={resolvedTheme}
-                  fontFamily={uiPreferences.fontFamily}
-                  fontSize={uiPreferences.fontSize}
                   visible={consoleOpen}
                   maximized={consoleMaximized}
                   onToggleMaximized={toggleConsoleMaximized}
