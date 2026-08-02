@@ -309,12 +309,12 @@ export function ProjectRail({
         <span className="project-rail-main">
           <PathTooltip content={projectLocationLabel(project)} className="project-rail-name"><span className="project-rail-name-text">{project.name}</span></PathTooltip>
           <span className="project-rail-meta">
-            <PathTooltip content="切换分支" className="project-rail-branch-tooltip">
-              <button type="button" className="project-rail-branch" aria-label="切换分支" onClick={(event) => { event.stopPropagation(); onSelectProject(project.id); onSwitchBranch(project); }}>
-                <GitBranch size={12} /><span>{project.status?.currentBranch ?? "未知分支"}</span>
+            <PathTooltip content={project.statusError ?? "切换分支"} className="project-rail-branch-tooltip">
+              <button type="button" className="project-rail-branch" aria-label="切换分支" disabled={Boolean(project.statusError)} onClick={(event) => { event.stopPropagation(); onSelectProject(project.id); onSwitchBranch(project); }}>
+                <GitBranch size={12} /><span>{project.statusError ? "状态不可用" : project.status?.currentBranch ?? "未知分支"}</span>
               </button>
             </PathTooltip>
-            {projectStatusTags(project).map((status) => <span className={`project-status ${status.tone}`} key={`${project.id}-${status.tone}-${status.label}`}>{status.label}</span>)}
+            {projectStatusTags(project).map((status) => <span className={`project-status ${status.tone}`} title={status.title} key={`${project.id}-${status.tone}-${status.label}`}>{status.label}</span>)}
           </span>
         </span>
         {project.favorite ? <PathTooltip content="已置顶" className="project-rail-pin-tooltip"><span className="project-rail-pin-indicator" aria-label="已置顶"><Pin size={12} /></span></PathTooltip> : null}
@@ -628,7 +628,11 @@ function normalizeSearchText(value: string): string {
 
 type ProjectStatusTone = "unknown" | "conflict" | "dirty" | "sync" | "clean";
 
-function projectStatusTags(project: GitProject): Array<{ label: string; tone: ProjectStatusTone }> {
+function projectStatusTags(project: GitProject): Array<{ label: string; tone: ProjectStatusTone; title?: string }> {
+  if (project.statusError) {
+    return [{ label: "状态不可用", tone: "unknown", title: project.statusError }];
+  }
+
   const status = project.status;
   if (!status) {
     return [{ label: "未加载", tone: "unknown" }];

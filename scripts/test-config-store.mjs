@@ -76,12 +76,14 @@ test("项目分组、最近项目和界面偏好保持一致", async () => {
       fontSize: 16,
       sidebarPosition: "right",
       diffViewMode: "inline",
+      pullStrategy: "rebase-autostash",
       shortcuts: { "repository.center": "Ctrl+Alt+R" }
     });
     assert.equal(preferences.theme, "dark");
     assert.equal(preferences.fontSize, 16);
     assert.equal(preferences.sidebarPosition, "right");
     assert.equal(preferences.diffViewMode, "inline");
+    assert.equal(preferences.pullStrategy, "rebase-autostash");
     assert.equal(preferences.shortcuts["repository.center"], "Ctrl+Alt+R");
     const normalizedShortcuts = await store.updateUiPreferences({ shortcuts: { "repository.center": "R + shift + Control" } });
     assert.equal(normalizedShortcuts.shortcuts["repository.center"], "Ctrl+Shift+R");

@@ -136,6 +136,7 @@ export interface RepositoryRemote {
   name: string;
   fetchUrl: string;
   pushUrl: string;
+  explicitPushUrl?: string;
   isDefaultFetch?: boolean;
   isDefaultPush?: boolean;
 }
@@ -232,6 +233,7 @@ export interface RepositoryProjectSummary {
   changedFiles: number;
   ahead: number;
   behind: number;
+  statusError?: string;
   lastOpenedAt?: string;
 }
 
@@ -253,6 +255,7 @@ export interface RepositoryPreferences {
   fontSize: number;
   diffMode: "split" | "inline";
   diffWrap: boolean;
+  pullStrategy: "ff-only" | "rebase" | "rebase-autostash";
   density: "compact" | "comfortable";
   sidebarPosition: "left" | "right";
   sidebarWidth: number;
@@ -287,7 +290,7 @@ export interface RepositoryRemoteInput {
   id?: string;
   name: string;
   fetchUrl: string;
-  pushUrl: string;
+  pushUrl?: string | null;
 }
 
 export interface RepositoryCloneInput {
@@ -305,6 +308,7 @@ export interface RepositoryInitInput {
 }
 
 export type RepositoryBatchAction = "refresh" | "fetch" | "pull" | "prune";
+export type RepositoryActionFeedback = void | string | Promise<void | string>;
 
 export interface RepositoryCenterActions {
   onClose: () => void;
@@ -316,7 +320,7 @@ export interface RepositoryCenterActions {
   onContinueOperation: (kind: RepositoryOperationKind) => void | Promise<void>;
   onSkipOperation: (kind: RepositoryOperationKind) => void | Promise<void>;
   onAbortOperation: (kind: RepositoryOperationKind) => void | Promise<void>;
-  onMarkBisect: (result: "good" | "bad") => void | Promise<void>;
+  onMarkBisect: (result: "good" | "bad") => RepositoryActionFeedback;
   onStartBisect: (input: { badRef: string; goodRef: string }) => void | Promise<void>;
   onLoadRebasePlan: (target: string) => Promise<RepositoryRebasePlanItem[]>;
   onStartRebase: (input: { target: string; interactive: boolean; onto?: string; plan?: RepositoryRebasePlanItem[] }) => void | Promise<void>;
@@ -345,7 +349,7 @@ export interface RepositoryCenterActions {
   onPruneLfs: () => void | Promise<void>;
   onSaveGitignore: (content: string, expectedRevision: string) => void | Promise<void>;
   onSaveSigning: (settings: RepositorySigningSettings) => void | Promise<void>;
-  onTestSigning: (settings: RepositorySigningSettings) => void | Promise<void>;
+  onTestSigning: (settings: RepositorySigningSettings) => RepositoryActionFeedback;
   onOpenHostingLink: (linkId: string) => void | Promise<void>;
   onCopyHostingLink: (linkId: string) => void | Promise<void>;
   onCloneRepository: (input: RepositoryCloneInput) => void | Promise<void>;
@@ -418,17 +422,24 @@ export function RepositoryCenter({ open, repository, data, actions, initialTab =
   const [activeTab, setActiveTab] = useState<RepositoryCenterTab>(initialTab);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [actionError, setActionError] = useState("");
+  const [actionNotice, setActionNotice] = useState("");
   const dialogRef = useRef<HTMLElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
   const closeActionRef = useRef(actions.onClose);
+  const pendingActionRef = useRef<string | null>(null);
 
   useEffect(() => {
     closeActionRef.current = actions.onClose;
   }, [actions.onClose]);
 
   useEffect(() => {
+    pendingActionRef.current = pendingAction;
+  }, [pendingAction]);
+
+  useEffect(() => {
     if (open) {
       setActionError("");
+      setActionNotice("");
       setActiveTab(initialTab);
     }
   }, [initialTab, open]);
@@ -442,7 +453,9 @@ export function RepositoryCenter({ open, repository, data, actions, initialTab =
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        closeActionRef.current();
+        if (pendingActionRef.current === null) {
+          closeActionRef.current();
+        }
         return;
       }
       if (event.key !== "Tab" || !dialogRef.current) {
@@ -476,17 +489,23 @@ export function RepositoryCenter({ open, repository, data, actions, initialTab =
     return null;
   }
 
-  async function runAction(key: string, task: () => void | Promise<void>) {
+  async function runAction(key: string, task: () => RepositoryActionFeedback) {
     if (pendingAction !== null) {
       return;
     }
+    pendingActionRef.current = key;
     setPendingAction(key);
     setActionError("");
+    setActionNotice("");
     try {
-      await task();
+      const feedback = await task();
+      if (typeof feedback === "string" && feedback.trim()) {
+        setActionNotice(feedback.trim());
+      }
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
     } finally {
+      pendingActionRef.current = null;
       setPendingAction(null);
     }
   }
@@ -500,7 +519,7 @@ export function RepositoryCenter({ open, repository, data, actions, initialTab =
   return (
     <DestructiveConfirmationContext.Provider value={data.preferences.data.confirmDestructiveActions !== false}>
     <div className="repository-center-backdrop" role="presentation">
-      <section ref={dialogRef} tabIndex={-1} className="repository-center" role="dialog" aria-modal="true" aria-labelledby="repository-center-title">
+      <section ref={dialogRef} tabIndex={-1} className="repository-center" role="dialog" aria-modal="true" aria-labelledby="repository-center-title" aria-busy={pendingAction !== null}>
         <header className="repository-center-header">
           <div className="repository-center-heading">
             <span className="repository-center-heading-icon"><FolderGit2 size={19} /></span>
@@ -518,7 +537,7 @@ export function RepositoryCenter({ open, repository, data, actions, initialTab =
               <span>{repository.changedFiles} 项变更</span>
             </span>
           </div>
-          <button className="repository-center-icon-button" type="button" title="关闭仓库中心" aria-label="关闭仓库中心" onClick={actions.onClose}>
+          <button className="repository-center-icon-button" type="button" title={pendingAction ? "操作完成后才能关闭" : "关闭仓库中心"} aria-label="关闭仓库中心" disabled={pendingAction !== null} onClick={actions.onClose}>
             <X size={18} />
           </button>
         </header>
@@ -528,6 +547,13 @@ export function RepositoryCenter({ open, repository, data, actions, initialTab =
             <CircleAlert size={16} />
             <span>{actionError}</span>
             <button type="button" aria-label="关闭错误提示" title="关闭错误提示" onClick={() => setActionError("")}><X size={15} /></button>
+          </div>
+        ) : null}
+        {actionNotice ? (
+          <div className="repository-center-action-notice" role="status">
+            <Check size={16} />
+            <span>{actionNotice}</span>
+            <button type="button" aria-label="关闭操作结果" title="关闭操作结果" onClick={() => setActionNotice("")}><X size={15} /></button>
           </div>
         ) : null}
 
@@ -541,6 +567,7 @@ export function RepositoryCenter({ open, repository, data, actions, initialTab =
                   type="button"
                   className={activeTab === tab.id ? "active" : ""}
                   aria-current={activeTab === tab.id ? "page" : undefined}
+                  disabled={pendingAction !== null}
                   onClick={() => setActiveTab(tab.id)}
                 >
                   <Icon size={17} />
@@ -576,7 +603,7 @@ export function RepositoryCenter({ open, repository, data, actions, initialTab =
   );
 }
 
-type RunAction = (key: string, task: () => void | Promise<void>) => Promise<void>;
+type RunAction = (key: string, task: () => RepositoryActionFeedback) => Promise<void>;
 
 interface WorkspaceProps {
   data: RepositoryCenterData;
@@ -789,7 +816,7 @@ function RefsWorkspace({ data, actions, pendingAction, runAction, reload }: Work
 
   useEffect(() => {
     if (data.rebaseTargets.status === "ready" && !data.rebaseTargets.data.some((target) => target.ref === rebaseTarget)) {
-      setRebaseTarget(data.rebaseTargets.data.find((target) => !target.isCurrent)?.ref ?? "");
+      setRebaseTarget("");
     }
   }, [data.rebaseTargets, rebaseTarget]);
 
@@ -847,10 +874,10 @@ function RefsWorkspace({ data, actions, pendingAction, runAction, reload }: Work
           plan: interactive ? rebasePlan : undefined
         }));
       }}>
-        <label className="repository-center-field grow"><span>目标引用</span><select value={rebaseTarget} onChange={(event) => setRebaseTarget(event.target.value)}>{targets.map((target) => <option key={target.ref} value={target.ref} disabled={target.isCurrent}>{target.label} · {target.kind}{target.isCurrent ? "（当前）" : ""}</option>)}</select></label>
+        <label className="repository-center-field grow"><span>目标引用</span><select value={rebaseTarget} onChange={(event) => setRebaseTarget(event.target.value)}><option value="">请选择目标引用</option>{targets.map((target) => <option key={target.ref} value={target.ref} disabled={target.isCurrent}>{target.label} · {target.kind}{target.isCurrent ? "（当前）" : ""}</option>)}</select></label>
         <label className="repository-center-field"><span>onto（可选）</span><input value={rebaseOnto} onChange={(event) => setRebaseOnto(event.target.value)} placeholder="新的基底" /></label>
         <label className="repository-center-check"><input type="checkbox" checked={interactive} onChange={(event) => setInteractive(event.target.checked)} /><span>交互式变基</span></label>
-        <ActionButton label="开始变基" actionKey="rebase:start" pendingAction={pendingAction} disabled={!rebaseTarget || rebasePlanLoading || (interactive && (rebasePlan.length === 0 || rebasePlan[0]?.action === "squash" || rebasePlan[0]?.action === "fixup"))} type="submit" icon={<Play size={15} />} tone="primary" requiresConfirmation={interactive && rebasePlan.some((item) => item.action === "drop")} confirmLabel="确认删除计划中的提交" />
+        <ActionButton label="开始变基" actionKey="rebase:start" pendingAction={pendingAction} disabled={!rebaseTarget || rebasePlanLoading || (interactive && (rebasePlan.length === 0 || rebasePlan[0]?.action === "squash" || rebasePlan[0]?.action === "fixup"))} type="submit" icon={<Play size={15} />} tone="primary" requiresConfirmation confirmLabel={interactive && rebasePlan.some((item) => item.action === "drop") ? "确认变基并删除计划中的提交" : "确认开始变基"} />
       </form>}</ResourceBoundary>
       {interactive ? (
         <div className="repository-rebase-plan">
@@ -923,8 +950,8 @@ function BranchRow({ branch, branches, actions, pendingAction, runAction }: { br
     <span className="repository-center-record-leading"><GitBranch size={16} /></span>
     <span className="repository-center-record-main"><strong>{branch.name}{branch.current ? <em>当前</em> : null}{branch.kind === "remote" ? <em>远程</em> : null}</strong><small><code>{branch.headHash}</code> · ↑ {branch.ahead ?? "?"} ↓ {branch.behind ?? "?"}{branch.merged === undefined ? "" : ` · ${branch.merged ? "已合并" : "未合并"}`}</small></span>
     {branch.kind === "local" ? <div className="repository-center-row-editor">
-      <label><span>名称</span><input value={name} disabled={branch.current} onChange={(event) => setName(event.target.value)} /></label>
-      <ActionButton label="重命名" actionKey={`branch:rename:${branch.id}`} pendingAction={pendingAction} disabled={branch.current || !name.trim() || name.trim() === branch.name} onClick={() => void runAction(`branch:rename:${branch.id}`, () => actions.onRenameBranch({ branchId: branch.id, nextName: name.trim() }))} icon={<Pencil size={14} />} />
+      <label><span>名称</span><input value={name} onChange={(event) => setName(event.target.value)} /></label>
+      <ActionButton label="重命名" actionKey={`branch:rename:${branch.id}`} pendingAction={pendingAction} disabled={!name.trim() || name.trim() === branch.name} onClick={() => void runAction(`branch:rename:${branch.id}`, () => actions.onRenameBranch({ branchId: branch.id, nextName: name.trim() }))} icon={<Pencil size={14} />} />
       <label><span>上游</span><select value={upstream} onChange={(event) => setUpstream(event.target.value)}><option value="">不跟踪</option>{branches.filter((candidate) => candidate.kind === "remote").map((candidate) => <option key={candidate.id} value={candidate.name}>{candidate.name}</option>)}</select></label>
       <ActionButton label="保存上游" actionKey={`branch:upstream:${branch.id}`} pendingAction={pendingAction} disabled={upstream === (branch.upstream ?? "")} onClick={() => void runAction(`branch:upstream:${branch.id}`, () => actions.onSetBranchUpstream({ branchId: branch.id, upstream: upstream || null }))} icon={<Save size={14} />} />
       <ActionButton label="删除" actionKey={`branch:delete:${branch.id}`} pendingAction={pendingAction} disabled={branch.current} onClick={() => void runAction(`branch:delete:${branch.id}`, () => actions.onDeleteBranch(branch.id, false))} icon={<Trash2 size={14} />} tone="danger" requiresConfirmation confirmLabel="确认删除分支" />
@@ -938,7 +965,7 @@ function BranchRow({ branch, branches, actions, pendingAction, runAction }: { br
 function RemotesWorkspace({ data, actions, pendingAction, runAction, reload }: WorkspaceProps) {
   const [editing, setEditing] = useState<RepositoryRemoteInput>({ name: "", fetchUrl: "", pushUrl: "" });
   function editRemote(remote?: RepositoryRemote) {
-    setEditing(remote ? { id: remote.id, name: remote.name, fetchUrl: remote.fetchUrl, pushUrl: remote.pushUrl } : { name: "", fetchUrl: "", pushUrl: "" });
+    setEditing(remote ? { id: remote.id, name: remote.name, fetchUrl: remote.fetchUrl, pushUrl: remote.explicitPushUrl ?? "" } : { name: "", fetchUrl: "", pushUrl: "" });
   }
   return <div className="repository-center-workspace">
     <section className="repository-center-section">
@@ -946,19 +973,20 @@ function RemotesWorkspace({ data, actions, pendingAction, runAction, reload }: W
       <form className="repository-center-composer multi-row" onSubmit={(event) => {
         event.preventDefault();
         void runAction("remote:save", async () => {
-          await actions.onSaveRemote({ ...editing, name: editing.name.trim(), fetchUrl: editing.fetchUrl.trim(), pushUrl: editing.pushUrl.trim() });
+          const pushUrl = editing.pushUrl?.trim();
+          await actions.onSaveRemote({ ...editing, name: editing.name.trim(), fetchUrl: editing.fetchUrl.trim(), pushUrl: pushUrl || (editing.id ? null : undefined) });
           editRemote();
         });
       }}>
         <label className="repository-center-field"><span>名称</span><input value={editing.name} onChange={(event) => setEditing((value) => ({ ...value, name: event.target.value }))} placeholder="origin" /></label>
         <label className="repository-center-field grow"><span>Fetch URL</span><input value={editing.fetchUrl} onChange={(event) => setEditing((value) => ({ ...value, fetchUrl: event.target.value }))} placeholder="git@github.com:owner/repository.git" /></label>
-        <label className="repository-center-field grow"><span>Push URL</span><input value={editing.pushUrl} onChange={(event) => setEditing((value) => ({ ...value, pushUrl: event.target.value }))} placeholder="git@github.com:owner/repository.git" /></label>
-        <ActionButton label={editing.id ? "保存远程" : "添加远程"} actionKey="remote:save" pendingAction={pendingAction} disabled={!editing.name.trim() || !editing.fetchUrl.trim() || !editing.pushUrl.trim()} type="submit" icon={editing.id ? <Save size={15} /> : <Plus size={15} />} tone="primary" />
+        <label className="repository-center-field grow"><span>Push URL（可选）</span><input value={editing.pushUrl ?? ""} onChange={(event) => setEditing((value) => ({ ...value, pushUrl: event.target.value }))} placeholder="留空则使用 Fetch URL" /><small>编辑时留空会清除独立 Push URL。</small></label>
+        <ActionButton label={editing.id ? "保存远程" : "添加远程"} actionKey="remote:save" pendingAction={pendingAction} disabled={!editing.name.trim() || !editing.fetchUrl.trim()} type="submit" icon={editing.id ? <Save size={15} /> : <Plus size={15} />} tone="primary" />
         {editing.id ? <button className="repository-center-button secondary" type="button" onClick={() => editRemote()}><X size={15} />取消编辑</button> : null}
       </form>
       <ResourceBoundary section="remotes" resource={data.remotes} reload={reload}>{(remotes) => remotes.length === 0 ? <EmptyState icon={<Cloud size={20} />} title="没有远程仓库" description="添加 fetch 和 push 地址后可执行同步。" /> : <div className="repository-center-record-list">{remotes.map((remote) => <div className="repository-center-record" key={remote.id}>
         <span className="repository-center-record-leading"><Cloud size={16} /></span>
-        <span className="repository-center-record-main"><strong>{remote.name}{remote.isDefaultFetch ? <em>默认拉取</em> : null}{remote.isDefaultPush ? <em>默认推送</em> : null}</strong><small title={remote.fetchUrl}>取：{remote.fetchUrl}</small><small title={remote.pushUrl}>推：{remote.pushUrl}</small></span>
+        <span className="repository-center-record-main"><strong>{remote.name}{remote.isDefaultFetch ? <em>默认拉取</em> : null}{remote.isDefaultPush ? <em>默认推送</em> : null}</strong><small title={remote.fetchUrl}>取：{remote.fetchUrl}</small><small title={remote.pushUrl}>推：{remote.pushUrl}{remote.explicitPushUrl === undefined ? "（继承 Fetch URL）" : ""}</small></span>
         <div className="repository-center-row-actions wrap">
           <ActionButton label="编辑" actionKey={`remote:edit:${remote.id}`} pendingAction={pendingAction} onClick={() => editRemote(remote)} icon={<Pencil size={14} />} />
           <ActionButton label="获取" actionKey={`remote:fetch:${remote.id}`} pendingAction={pendingAction} onClick={() => void runAction(`remote:fetch:${remote.id}`, () => actions.onFetchRemote(remote.id))} icon={<Download size={14} />} />
@@ -1013,7 +1041,10 @@ function ToolsWorkspace({ data, actions, pendingAction, runAction, reload }: Wor
       <ResourceBoundary section="worktrees" resource={data.worktrees} reload={reload}>{(worktrees) => worktrees.length === 0 ? <EmptyState icon={<Layers3 size={20} />} title="没有工作树" description="主工作区之外尚未创建 Git worktree。" /> : <div className="repository-center-record-list">{worktrees.map((worktree) => <div className="repository-center-record" key={worktree.id}>
         <span className="repository-center-record-leading"><FolderGit2 size={16} /></span>
         <span className="repository-center-record-main"><strong>{worktree.branch ?? "游离 HEAD"}{worktree.isMain ? <em>主工作树</em> : null}{worktree.locked ? <em>已锁定</em> : null}{worktree.prunable ? <em>可清理</em> : null}</strong><small title={worktree.path}>{worktree.path} · <code>{worktree.headHash}</code></small></span>
-        {!worktree.isMain ? <ActionButton label={worktree.locked ? "强制移除" : "移除"} actionKey={`worktree:remove:${worktree.id}`} pendingAction={pendingAction} onClick={() => void runAction(`worktree:remove:${worktree.id}`, () => actions.onRemoveWorktree(worktree.id, worktree.locked))} icon={worktree.locked ? <CircleAlert size={14} /> : <Trash2 size={14} />} tone="danger" requiresConfirmation confirmLabel={worktree.locked ? "确认强制移除锁定工作树" : "确认移除工作树"} /> : null}
+        {!worktree.isMain ? <div className="repository-center-row-actions">
+          {!worktree.locked ? <ActionButton label="移除" actionKey={`worktree:remove:${worktree.id}`} pendingAction={pendingAction} onClick={() => void runAction(`worktree:remove:${worktree.id}`, () => actions.onRemoveWorktree(worktree.id, false))} icon={<Trash2 size={14} />} tone="danger" requiresConfirmation confirmLabel="确认移除工作树" /> : null}
+          <ActionButton label="强制移除" actionKey={`worktree:force-remove:${worktree.id}`} pendingAction={pendingAction} onClick={() => void runAction(`worktree:force-remove:${worktree.id}`, () => actions.onRemoveWorktree(worktree.id, true))} icon={<CircleAlert size={14} />} tone="danger" requiresConfirmation confirmLabel={worktree.locked ? "确认强制移除锁定工作树" : "确认强制移除含未提交修改的工作树"} />
+        </div> : null}
       </div>)}</div>}</ResourceBoundary>
     </section>
 
@@ -1101,8 +1132,8 @@ function ProjectsWorkspace({ data, actions, pendingAction, runAction, reload }: 
     </section>
 
     <section className="repository-center-section">
-      <SectionHeader icon={<SlidersHorizontal size={17} />} title="多项目批量操作" description="对选中的仓库统一刷新、获取、拉取或清理远程引用" actions={<div className="repository-center-row-actions"><select className="repository-center-compact-select" value={batchAction} onChange={(event) => setBatchAction(event.target.value as RepositoryBatchAction)}><option value="refresh">刷新状态</option><option value="fetch">获取远程</option><option value="pull">拉取更新</option><option value="prune">清理远程引用</option></select><ActionButton label={`执行（${selectedProjects.length}）`} actionKey="batch:run" pendingAction={pendingAction} disabled={selectedProjects.length === 0} onClick={() => void runAction("batch:run", () => actions.onRunBatchAction({ projectIds: selectedProjects, action: batchAction }))} icon={<Play size={14} />} tone="primary" /></div>} />
-      <ResourceBoundary section="projects" resource={data.projects} reload={reload}>{(projects) => projects.length === 0 ? <EmptyState icon={<FolderGit2 size={20} />} title="没有项目" description="添加、克隆或初始化仓库后可执行批量操作。" /> : <div className="repository-center-project-table">{projects.map((project) => <label className="repository-center-project-row" key={project.id}><input type="checkbox" checked={selectedProjects.includes(project.id)} onChange={() => toggleProject(project.id)} /><span className="repository-center-record-main"><strong>{project.name}<em>{project.branch ?? "游离 HEAD"}</em></strong><small title={project.path}>{project.path}</small></span><span className="repository-center-project-stats"><span>{project.changedFiles} 变更</span><span>↑ {project.ahead}</span><span>↓ {project.behind}</span></span><select value={project.groupId ?? ""} onChange={(event) => void runAction(`project:group:${project.id}`, () => actions.onAssignProjectGroup({ projectId: project.id, groupId: event.target.value || null }))} aria-label={`设置 ${project.name} 的分组`}><option value="">未分组</option>{data.groups.data.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label>)}</div>}</ResourceBoundary>
+      <SectionHeader icon={<SlidersHorizontal size={17} />} title="多项目批量操作" description="对选中的仓库统一刷新、获取、拉取或清理远程引用" actions={<div className="repository-center-row-actions"><select className="repository-center-compact-select" value={batchAction} onChange={(event) => setBatchAction(event.target.value as RepositoryBatchAction)}><option value="refresh">刷新状态</option><option value="fetch">获取远程</option><option value="pull">拉取更新（{pullStrategyLabel(data.preferences.data.pullStrategy)}）</option><option value="prune">清理远程引用</option></select><ActionButton label={`执行（${selectedProjects.length}）`} actionKey="batch:run" pendingAction={pendingAction} disabled={selectedProjects.length === 0} onClick={() => void runAction("batch:run", () => actions.onRunBatchAction({ projectIds: selectedProjects, action: batchAction }))} icon={<Play size={14} />} tone="primary" /></div>} />
+      <ResourceBoundary section="projects" resource={data.projects} reload={reload}>{(projects) => projects.length === 0 ? <EmptyState icon={<FolderGit2 size={20} />} title="没有项目" description="添加、克隆或初始化仓库后可执行批量操作。" /> : <div className="repository-center-project-table">{projects.map((project) => <div className="repository-center-project-row" key={project.id}><input type="checkbox" aria-label={`选择 ${project.name}`} checked={selectedProjects.includes(project.id)} onChange={() => toggleProject(project.id)} /><span className="repository-center-record-main"><strong>{project.name}<em>{project.statusError ? "状态不可用" : project.branch ?? "游离 HEAD"}</em></strong><small title={project.statusError ?? project.path}>{project.path}</small></span>{project.statusError ? <span className="repository-center-project-status-error" title={project.statusError}>状态读取失败</span> : <span className="repository-center-project-stats"><span>{project.changedFiles} 变更</span><span>↑ {project.ahead}</span><span>↓ {project.behind}</span></span>}<select value={project.groupId ?? ""} onChange={(event) => void runAction(`project:group:${project.id}`, () => actions.onAssignProjectGroup({ projectId: project.id, groupId: event.target.value || null }))} aria-label={`设置 ${project.name} 的分组`}><option value="">未分组</option>{data.groups.data.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></div>)}</div>}</ResourceBoundary>
     </section>
   </div>;
 }
@@ -1128,6 +1159,7 @@ function PreferencesWorkspace({ data, actions, pendingAction, runAction, reload 
         <fieldset><legend>外观主题</legend><div className="repository-center-segmented">{(["system", "light", "dark"] as const).map((theme) => <button type="button" key={theme} className={preferences.theme === theme ? "active" : ""} onClick={() => setPreferences((value) => ({ ...value, theme }))}>{theme === "system" ? "跟随系统" : theme === "light" ? "浅色" : "深色"}</button>)}</div></fieldset>
         <fieldset><legend>字体</legend><div className="repository-center-inline-settings"><label className="repository-center-field"><span>字体族</span><select value={preferences.fontFamily} onChange={(event) => setPreferences((value) => ({ ...value, fontFamily: event.target.value as RepositoryPreferences["fontFamily"] }))}><option value="system">系统界面字体</option><option value="mono">等宽字体</option></select></label><label className="repository-center-field"><span>字号</span><input type="number" min={11} max={20} value={preferences.fontSize} onChange={(event) => setPreferences((value) => ({ ...value, fontSize: Number(event.target.value) }))} /></label></div></fieldset>
         <fieldset><legend>差异视图</legend><div className="repository-center-segmented">{(["split", "inline"] as const).map((mode) => <button type="button" key={mode} className={preferences.diffMode === mode ? "active" : ""} onClick={() => setPreferences((value) => ({ ...value, diffMode: mode }))}>{mode === "split" ? "左右对比" : "行内对比"}</button>)}</div><label className="repository-center-switch"><input type="checkbox" checked={preferences.diffWrap} onChange={(event) => setPreferences((value) => ({ ...value, diffWrap: event.target.checked }))} /><span>自动换行</span></label></fieldset>
+        <fieldset><legend>拉取策略</legend><div className="repository-center-segmented">{(["ff-only", "rebase", "rebase-autostash"] as const).map((strategy) => <button type="button" key={strategy} className={preferences.pullStrategy === strategy ? "active" : ""} onClick={() => setPreferences((value) => ({ ...value, pullStrategy: strategy }))}>{strategy === "ff-only" ? "仅快进" : strategy === "rebase" ? "变基" : "变基并暂存"}</button>)}</div></fieldset>
         <fieldset><legend>工作区布局</legend><div className="repository-center-inline-settings"><label className="repository-center-field"><span>密度</span><select value={preferences.density} onChange={(event) => setPreferences((value) => ({ ...value, density: event.target.value as RepositoryPreferences["density"] }))}><option value="compact">紧凑</option><option value="comfortable">舒适</option></select></label><label className="repository-center-field"><span>项目栏位置</span><select value={preferences.sidebarPosition} onChange={(event) => setPreferences((value) => ({ ...value, sidebarPosition: event.target.value as RepositoryPreferences["sidebarPosition"] }))}><option value="left">左侧</option><option value="right">右侧</option></select></label></div><label className="repository-center-switch"><input type="checkbox" checked={preferences.bottomConsoleVisible} onChange={(event) => setPreferences((value) => ({ ...value, bottomConsoleVisible: event.target.checked }))} /><span>显示底部控制台</span></label></fieldset>
         <fieldset className="wide"><legend>面板尺寸</legend><div className="repository-center-inline-settings"><label className="repository-center-field"><span>项目栏宽度</span><input type="number" min={180} max={340} value={preferences.sidebarWidth} onChange={(event) => setPreferences((value) => ({ ...value, sidebarWidth: Number(event.target.value) }))} /></label><label className="repository-center-field"><span>变更区宽度</span><input type="number" min={280} max={720} value={preferences.rightPanelWidth} onChange={(event) => setPreferences((value) => ({ ...value, rightPanelWidth: Number(event.target.value) }))} /></label><label className="repository-center-field"><span>控制台高度</span><input type="number" min={80} max={720} value={preferences.consoleHeight} onChange={(event) => setPreferences((value) => ({ ...value, consoleHeight: Number(event.target.value) }))} /></label></div></fieldset>
         <fieldset className="wide"><legend>危险操作</legend><label className="repository-center-switch"><input type="checkbox" checked={preferences.confirmDestructiveActions} onChange={(event) => setPreferences((value) => ({ ...value, confirmDestructiveActions: event.target.checked }))} /><span>执行强制重置、删除分支和清理工作树前要求确认</span></label></fieldset>
@@ -1159,4 +1191,8 @@ function dialogFocusableElements(root: HTMLElement): HTMLElement[] {
 
 function submoduleStatusLabel(status: RepositorySubmodule["status"]): string {
   return status === "ready" ? "已同步" : status === "uninitialized" ? "未初始化" : status === "modified" ? "提交已变化" : "存在冲突";
+}
+
+function pullStrategyLabel(strategy: RepositoryPreferences["pullStrategy"]): string {
+  return strategy === "ff-only" ? "仅快进" : strategy === "rebase" ? "变基" : "变基并暂存";
 }

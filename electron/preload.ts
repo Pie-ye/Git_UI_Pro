@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
-import type { RepositoryTarget } from "./gitService";
+import type { GitPullStrategy, RepositoryTarget } from "./gitService";
 import type { ReleaseHistoryItem } from "./releaseHistory";
 import type { UpdateState } from "./updateService";
 
@@ -89,9 +89,11 @@ contextBridge.exposeInMainWorld("gitUI", {
     filePath: string,
     input: { choice: "content" | "current" | "incoming"; content?: string; expectedToken: string }
   ) => ipcRenderer.invoke("git:resolveConflictFile", repositoryPath, filePath, input),
-  stageFile: (repositoryPath: RepositoryTarget, filePath: string) => ipcRenderer.invoke("git:stageFile", repositoryPath, filePath),
+  stageFile: (repositoryPath: RepositoryTarget, file: { path: string; oldPath?: string; status: string; staged: boolean }) =>
+    ipcRenderer.invoke("git:stageFile", repositoryPath, file),
   stageAll: (repositoryPath: RepositoryTarget) => ipcRenderer.invoke("git:stageAll", repositoryPath),
-  unstageFile: (repositoryPath: RepositoryTarget, filePath: string) => ipcRenderer.invoke("git:unstageFile", repositoryPath, filePath),
+  unstageFile: (repositoryPath: RepositoryTarget, file: { path: string; oldPath?: string; status: string; staged: boolean }) =>
+    ipcRenderer.invoke("git:unstageFile", repositoryPath, file),
   unstageAll: (repositoryPath: RepositoryTarget) => ipcRenderer.invoke("git:unstageAll", repositoryPath),
   discardFile: (repositoryPath: RepositoryTarget, file: { path: string; oldPath?: string; status: string; staged: boolean }) =>
     ipcRenderer.invoke("git:discardFile", repositoryPath, file),
@@ -107,7 +109,7 @@ contextBridge.exposeInMainWorld("gitUI", {
     ipcRenderer.invoke("git:commit", repositoryPath, input),
   fetch: (repositoryPath: RepositoryTarget) => ipcRenderer.invoke("git:fetch", repositoryPath),
   fetchRemote: (repositoryPath: RepositoryTarget, remoteName: string, prune = false) => ipcRenderer.invoke("git:fetchRemote", repositoryPath, remoteName, prune),
-  pull: (repositoryPath: RepositoryTarget) => ipcRenderer.invoke("git:pull", repositoryPath),
+  pull: (repositoryPath: RepositoryTarget, strategy: GitPullStrategy) => ipcRenderer.invoke("git:pull", repositoryPath, strategy),
   mergeRemote: (repositoryPath: RepositoryTarget) => ipcRenderer.invoke("git:mergeRemote", repositoryPath),
   push: (repositoryPath: RepositoryTarget) => ipcRenderer.invoke("git:push", repositoryPath),
   getRemotes: (repositoryPath: RepositoryTarget) => ipcRenderer.invoke("git:getRemotes", repositoryPath),

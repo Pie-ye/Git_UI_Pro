@@ -98,6 +98,13 @@ test("回退版本严格按语义版本倒序并最多返回三条", () => {
   assert.equal(catalog.entries[0].publishedAt, "2026-07-23T08:05:52.000Z");
 });
 
+test("发布历史响应不是数组时明确拒绝", () => {
+  assert.throws(
+    () => buildReleaseHistoryCatalog({ message: "rate limited" }, "0.1.13"),
+    /GitHub Releases 响应格式无效/
+  );
+});
+
 test("渲染层记录不暴露安装包地址和校验值，内部目标仍可解析", () => {
   const catalog = buildReleaseHistoryCatalog([githubRelease("0.1.12")], "v0.1.13");
   const item = catalog.entries[0];

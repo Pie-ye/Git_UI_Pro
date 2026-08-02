@@ -29,7 +29,7 @@ interface RepositoryCenterContainerProps {
   projects: GitProject[];
   initialTab?: RepositoryCenterTab;
   onClose: () => void;
-  onOpenProject: (projectId: string) => void;
+  onOpenProject: (projectId: string, openedProject?: GitProject) => void;
   onProjectsChange: (projects: GitProject[]) => void;
   onLibraryChange: (library: ProjectLibraryState) => void;
   onRepositoryChange: () => void | Promise<void>;
@@ -58,7 +58,12 @@ export function RepositoryCenterContainer({
   onPreferencesChange
 }: RepositoryCenterContainerProps) {
   const [data, setData] = useState<RepositoryCenterData>(() => emptyCenterData());
+  const [repositoryStatus, setRepositoryStatus] = useState<GitStatusSummary | undefined>(project?.status);
   const loadTokenRef = useRef(0);
+
+  useEffect(() => {
+    setRepositoryStatus(project?.status);
+  }, [project?.id, project?.status]);
 
   const loadAll = useCallback(async (projectSource: GitProject[] = projects) => {
     const loadToken = ++loadTokenRef.current;
@@ -100,6 +105,7 @@ export function RepositoryCenterContainer({
     if (library.status === "ready") {
       onLibraryChange(library.data);
     }
+    setRepositoryStatus(resolvedStatus);
 
     const libraryData = library.status === "ready" ? library.data : { groups: [], recentProjectIds: [] };
     const projectSummaries = projectSource.map(projectSummary);
@@ -122,18 +128,19 @@ export function RepositoryCenterContainer({
           ? errorResource(tags.error, [])
           : readyResource([
               ...branches.data.map((branch) => ({
-                ref: branch.name,
+                ref: branch.fullName,
                 label: branch.name,
                 kind: branch.type === "local" ? "local" as const : "remote" as const,
                 isCurrent: branch.current
               })),
-              ...tags.data.map((tag) => ({ ref: tag.name, label: tag.name, kind: "tag" as const }))
+              ...tags.data.map((tag) => ({ ref: `refs/tags/${tag.name}`, label: tag.name, kind: "tag" as const }))
             ]),
       remotes: mapResource(remotes, (entries) => entries.map((remote) => ({
         id: remote.name,
         name: remote.name,
         fetchUrl: remote.fetchUrls[0] ?? "",
-        pushUrl: remote.pushUrls[0] ?? remote.fetchUrls[0] ?? "",
+        pushUrl: remote.pushUrls[0] ?? "",
+        explicitPushUrl: remote.explicitPushUrls[0],
         isDefaultFetch: remote.defaultFetch,
         isDefaultPush: remote.defaultPush
       })), []),
@@ -217,10 +224,16 @@ export function RepositoryCenterContainer({
     }
   }, [loadAll, open]);
 
-  async function completeGit(resultPromise: Promise<GitOperationResult>) {
-    ensureGitSuccess(await resultPromise);
+  async function completeGit(resultPromise: Promise<GitOperationResult>): Promise<void>;
+  async function completeGit(resultPromise: Promise<GitOperationResult>, includeFeedback: true): Promise<string>;
+  async function completeGit(resultPromise: Promise<GitOperationResult>, includeFeedback = false): Promise<void | string> {
+    const result = await resultPromise;
+    ensureGitSuccess(result);
     await onRepositoryChange();
     await loadAll();
+    if (includeFeedback) {
+      return operationFeedback(result);
+    }
   }
 
   async function reloadProjects() {
@@ -277,7 +290,7 @@ export function RepositoryCenterContainer({
       if (kind === "revert") return completeGit(apiClient.abortRevert(selected));
       return completeGit(apiClient.resetBisect(selected));
     },
-    onMarkBisect: (result) => completeGit(result === "good" ? apiClient.markBisectGood(requireProject()) : apiClient.markBisectBad(requireProject())),
+    onMarkBisect: (result) => completeGit(result === "good" ? apiClient.markBisectGood(requireProject()) : apiClient.markBisectBad(requireProject()), true),
     onStartBisect: ({ badRef, goodRef }) => completeGit(apiClient.startBisect(requireProject(), badRef, goodRef)),
     onLoadRebasePlan: async (target) => apiClient.getRebasePlan(requireProject(), target),
     onStartRebase: ({ target, interactive, onto, plan }) => interactive
@@ -289,14 +302,21 @@ export function RepositoryCenterContainer({
         await completeGit(apiClient.updateRemote(selected, input.id, { name: input.name, fetchUrl: input.fetchUrl, pushUrl: input.pushUrl }));
         return;
       }
-      ensureGitSuccess(await apiClient.addRemote(selected, input.name, input.fetchUrl, input.pushUrl));
+      ensureGitSuccess(await apiClient.addRemote(selected, input.name, input.fetchUrl, input.pushUrl ?? undefined));
       await onRepositoryChange();
       await loadAll();
     },
     onDeleteRemote: (remoteId) => completeGit(apiClient.removeRemote(requireProject(), remoteId)),
     onFetchRemote: (remoteId) => completeGit(apiClient.fetchRemote(requireProject(), remoteId)),
     onPruneRemote: (remoteId) => completeGit(apiClient.fetchRemote(requireProject(), remoteId, true)),
-    onSetDefaultRemote: ({ remoteId, role }) => completeGit(apiClient.setDefaultRemote(requireProject(), remoteId, role, requireProject().status?.currentBranch ?? undefined)),
+    onSetDefaultRemote: async ({ remoteId, role }) => {
+      const selected = requireProject();
+      const latestStatus = await apiClient.getProjectStatus(selected);
+      if (!latestStatus) {
+        throw new Error("无法读取当前分支状态，未修改默认远程仓库。");
+      }
+      await completeGit(apiClient.setDefaultRemote(selected, remoteId, role, latestStatus.currentBranch ?? undefined));
+    },
     onRenameBranch: ({ branchId, nextName }) => completeGit(apiClient.renameBranch(requireProject(), findBranch(branchId).name, nextName)),
     onDeleteBranch: (branchId, force) => completeGit(apiClient.deleteBranch(requireProject(), findBranch(branchId).name, force)),
     onDeleteRemoteBranch: (branchId) => {
@@ -338,7 +358,7 @@ export function RepositoryCenterContainer({
       format: settings.format,
       signingKey: settings.key || null
     })),
-    onTestSigning: () => completeGit(apiClient.verifyCommitSignature(requireProject(), "HEAD")),
+    onTestSigning: () => completeGit(apiClient.verifyCommitSignature(requireProject(), "HEAD"), true),
     onOpenHostingLink: async (linkId) => {
       const link = data.hosting.data.find((item) => item.id === linkId);
       if (!link) throw new Error("托管平台链接已变化，请刷新后重试。");
@@ -367,7 +387,13 @@ export function RepositoryCenterContainer({
     onRenameGroup: async ({ groupId, name }) => { await apiClient.renameProjectGroup(groupId, name); await loadAll(); },
     onDeleteGroup: async (groupId) => { await apiClient.deleteProjectGroup(groupId); await reloadProjects(); },
     onAssignProjectGroup: async ({ projectId, groupId }) => { await apiClient.setProjectGroup(projectId, groupId ?? undefined); await reloadProjects(); },
-    onOpenProject: async (projectId) => { await apiClient.markProjectOpened(projectId); onOpenProject(projectId); await loadAll(); },
+    onOpenProject: async (projectId) => {
+      const openedProject = await apiClient.markProjectOpened(projectId);
+      const updatedProjects = projects.map((item) => item.id === openedProject.id ? { ...item, ...openedProject } : item);
+      onProjectsChange(updatedProjects);
+      onOpenProject(projectId, openedProject);
+      await loadAll(updatedProjects);
+    },
     onRemoveRecentProject: async (projectId) => { await apiClient.removeRecentProject(projectId); await loadAll(); },
     onRunBatchAction: async ({ projectIds, action }) => {
       const results = await Promise.all(projectIds.map(async (projectId) => {
@@ -379,7 +405,7 @@ export function RepositoryCenterContainer({
           if (action === "fetch") {
             ensureGitSuccess(await apiClient.fetch(target));
           } else if (action === "pull") {
-            ensureGitSuccess(await apiClient.pull(target));
+            ensureGitSuccess(await apiClient.pull(target, data.preferences.data.pullStrategy));
           } else if (action === "prune") {
             const targetRemotes = await apiClient.getRemotes(target);
             for (const remote of targetRemotes) {
@@ -392,10 +418,20 @@ export function RepositoryCenterContainer({
         }
       }));
 
-      const statusById = new Map(results.flatMap((result) => result.status ? [[result.projectId, result.status] as const] : []));
-      const updatedProjects = projects.map((item) => statusById.has(item.id) ? { ...item, status: statusById.get(item.id) } : item);
+      const resultById = new Map(results.map((result) => [result.projectId, result] as const));
+      const updatedProjects = projects.map((item) => {
+        const result = resultById.get(item.id);
+        if (!result) {
+          return item;
+        }
+        if (result.error) {
+          return { ...item, status: undefined, statusError: result.error };
+        }
+        return { ...item, status: result.status, statusError: undefined };
+      });
       onProjectsChange(updatedProjects);
       await loadAll(updatedProjects);
+      await onRepositoryChange();
 
       const failures = results.filter((result) => result.error);
       if (failures.length > 0) {
@@ -404,7 +440,6 @@ export function RepositoryCenterContainer({
           ...failures.map((result) => `${result.name}：${result.error}`)
         ].join("\n"));
       }
-      await onRepositoryChange();
     },
     onSavePreferences: async (preferences) => {
       const saved = await apiClient.updateUiPreferences(fromRepositoryPreferences(preferences));
@@ -413,7 +448,7 @@ export function RepositoryCenterContainer({
     }
   }), [data, loadAll, onClose, onOpenProject, onPreferencesChange, onProjectsChange, onRepositoryChange, project, projects]);
 
-  const currentStatus = project?.status;
+  const currentStatus = repositoryStatus;
   return (
     <RepositoryCenter
       open={open}
@@ -502,6 +537,7 @@ function projectSummary(project: GitProject): RepositoryProjectSummary {
     changedFiles: status ? status.stagedCount + status.unstagedCount + status.untrackedCount + status.conflictedCount : 0,
     ahead: status?.ahead ?? 0,
     behind: status?.behind ?? 0,
+    statusError: project.statusError,
     lastOpenedAt: project.lastOpenedAt
   };
 }
@@ -560,6 +596,7 @@ function toRepositoryPreferences(value: UiPreferences): RepositoryPreferences {
     fontSize: value.fontSize,
     diffMode: value.diffViewMode,
     diffWrap: value.diffWrap,
+    pullStrategy: value.pullStrategy,
     density: value.density,
     sidebarPosition: value.sidebarPosition,
     sidebarWidth: value.sidebarWidth,
@@ -578,6 +615,7 @@ function fromRepositoryPreferences(value: RepositoryPreferences): Partial<UiPref
     fontSize: value.fontSize,
     diffViewMode: value.diffMode,
     diffWrap: value.diffWrap,
+    pullStrategy: value.pullStrategy,
     density: value.density,
     sidebarPosition: value.sidebarPosition,
     sidebarWidth: value.sidebarWidth,
@@ -589,10 +627,16 @@ function fromRepositoryPreferences(value: RepositoryPreferences): Partial<UiPref
   };
 }
 
+function operationFeedback(result: GitOperationResult): string {
+  return [result.messageZh?.trim(), result.stdout.trim(), result.stderr.trim()]
+    .filter((value): value is string => Boolean(value))
+    .join("\n") || "Git 操作已完成。";
+}
+
 function defaultPreferences(): UiPreferences {
   return {
     theme: "system", language: "zh-CN", bottomConsoleVisible: true, sidebarWidth: 240, rightPanelWidth: 420, consoleHeight: 240,
-    fontSize: 14, fontFamily: "system-ui", diffViewMode: "split", diffWrap: false, density: "comfortable", sidebarPosition: "left",
+    fontSize: 14, fontFamily: "system-ui", diffViewMode: "split", diffWrap: false, pullStrategy: "ff-only", density: "comfortable", sidebarPosition: "left",
     confirmDestructiveActions: true, shortcuts: {}
   };
 }

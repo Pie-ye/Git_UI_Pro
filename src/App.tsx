@@ -47,6 +47,7 @@ import type {
   GitOperationResult,
   GitProject,
   GitResetMode,
+  GitStatusSummary,
   ProjectLibraryState,
   RemoteProjectInput,
   RemoteProjectTestResult,
@@ -89,6 +90,7 @@ const defaultUiPreferences = (): UiPreferences => ({
   fontFamily: "system-ui",
   diffViewMode: "split",
   diffWrap: false,
+  pullStrategy: "ff-only",
   density: "comfortable",
   sidebarPosition: "left",
   confirmDestructiveActions: true,
@@ -97,9 +99,9 @@ const defaultUiPreferences = (): UiPreferences => ({
 
 type ResizeTarget = "sidebar" | "detail" | "sourceSplit" | "console";
 type ToastId = string | number;
-type ProjectStatusRefresh = { projectId: string; status: GitProject["status"] };
+type ProjectStatusRefresh = { projectId: string; status: GitStatusSummary };
 type ProjectDataSnapshot = {
-  status: GitProject["status"];
+  status: GitStatusSummary;
   history: CommitNode[];
   historyRefs: GitHistoryRef[];
   worktree: WorktreeState;
@@ -260,8 +262,13 @@ export function App() {
     setPendingConfirm(null);
   }
 
-  function selectProject(projectId: string | null) {
+  function selectProject(projectId: string | null, openedProject?: GitProject) {
     setSelectedProjectId((current) => (current === projectId ? current : projectId));
+    if (openedProject) {
+      setProjects((current) => current.map((project) => (project.id === openedProject.id ? { ...project, ...openedProject } : project)));
+      return;
+    }
+
     if (projectId && window.gitUI) {
       void apiClient.markProjectOpened(projectId).then((updatedProject) => {
         setProjects((current) => current.map((project) => (project.id === updatedProject.id ? { ...project, ...updatedProject } : project)));
@@ -285,24 +292,35 @@ export function App() {
     return `custom:${[...(filter.refIds ?? [])].sort().join("|")}`;
   }
 
-  function applyProjectStatus(projectId: string, status: GitProject["status"]) {
-    if (!status) {
-      return;
-    }
-
+  function applyProjectStatus(projectId: string, status: GitStatusSummary) {
     setProjects((current) => {
       let changed = false;
       const nextProjects = current.map((item) => {
-        if (item.id !== projectId || statusSignature(item.status) === statusSignature(status)) {
+        if (item.id !== projectId) {
+          return item;
+        }
+
+        if (statusSignature(item.status) === statusSignature(status) && !item.statusError) {
           return item;
         }
 
         changed = true;
-        return { ...item, status };
+        return { ...item, status, statusError: undefined };
       });
 
       return changed ? nextProjects : current;
     });
+  }
+
+  function markProjectStatusUnavailable(projectId: string, error: unknown) {
+    const statusError = errorText(error, "无法读取仓库状态");
+    invalidateProjectCaches(projectId);
+    setProjects((current) => current.map((item) => {
+      if (item.id !== projectId || (!item.status && item.statusError === statusError)) {
+        return item;
+      }
+      return { ...item, status: undefined, statusError };
+    }));
   }
 
   function applyProjectDataSnapshot(project: GitProject, snapshot: ProjectDataSnapshot, options: { clearTabs?: boolean; cached?: boolean } = {}) {
@@ -479,7 +497,7 @@ export function App() {
 
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
-  }, [consoleOpen, leftCollapsed, selectedProject?.id, selectedProjectGitReady, uiPreferences.shortcuts]);
+  }, [consoleOpen, leftCollapsed, selectedProject?.id, selectedProjectGitReady, uiPreferences.pullStrategy, uiPreferences.shortcuts]);
 
   useEffect(() => {
     window.clearTimeout(selectedProjectLoadTimerRef.current);
@@ -707,6 +725,7 @@ export function App() {
     historyFilter = graphHistoryFilter,
     options: { preferCache?: boolean; clearTabs?: boolean; historyQuery?: AdvancedHistoryQuery } = {}
   ) {
+    let statusReadSucceeded = false;
     try {
       const advancedQuery = options.historyQuery ?? graphHistoryQuery;
       const cacheAllowed = !hasAdvancedHistoryQuery(advancedQuery);
@@ -725,7 +744,7 @@ export function App() {
         rememberStatus(`正在加载 ${project.name} 的 Git 状态...`);
       }
 
-      const [status, historyPage, historyRefs, worktreeState] = await Promise.all([
+      const [statusResult, historyPageResult, historyRefsResult, worktreeResult] = await Promise.allSettled([
         apiClient.getProjectStatus(project),
         apiClient.getHistoryPage(project, { filter: historyFilter, ...advancedQuery, skip: 0, limit: HISTORY_PAGE_SIZE }),
         apiClient.getHistoryRefs(project),
@@ -736,7 +755,25 @@ export function App() {
         return;
       }
 
-      applyProjectStatus(project.id, status);
+      if (statusResult.status === "rejected") {
+        throw statusResult.reason;
+      }
+      statusReadSucceeded = true;
+      applyProjectStatus(project.id, statusResult.value);
+      if (historyPageResult.status === "rejected") {
+        throw historyPageResult.reason;
+      }
+      if (historyRefsResult.status === "rejected") {
+        throw historyRefsResult.reason;
+      }
+      if (worktreeResult.status === "rejected") {
+        throw worktreeResult.reason;
+      }
+
+      const status = statusResult.value;
+      const historyPage = historyPageResult.value;
+      const historyRefs = historyRefsResult.value;
+      const worktreeState = worktreeResult.value;
       const history = historyPage.commits;
       if (cacheAllowed) {
         writeProjectDataCache(project, historyFilter, {
@@ -770,6 +807,9 @@ export function App() {
         return;
       }
 
+      if (!statusReadSucceeded) {
+        markProjectStatusUnavailable(project.id, error);
+      }
       setCommits([]);
       setGraphHistoryRefs([]);
       setGraphHistoryHasMore(false);
@@ -806,6 +846,7 @@ export function App() {
     setGraphHistoryFilter(filter);
     setSelectedCommitHash("");
     setGraphLoading(true);
+    setGraphHistoryLoadingMore(false);
     const cacheAllowed = !hasAdvancedHistoryQuery(graphHistoryQuery);
     const cachedHistory = cacheAllowed ? readFreshGraphHistoryCache(selectedProject.id, filter) : undefined;
     if (cachedHistory) {
@@ -815,6 +856,10 @@ export function App() {
       setGraphHistoryNextSkip(cachedHistory.historyNextSkip);
       rememberStatus("已恢复最近一次图表结果，正在后台刷新...");
     } else {
+      setCommits([]);
+      setGraphHistoryRefs([]);
+      setGraphHistoryHasMore(false);
+      setGraphHistoryNextSkip(0);
       rememberStatus("正在按新的图表引用加载提交...");
     }
 
@@ -846,6 +891,12 @@ export function App() {
         return;
       }
 
+      if (!cachedHistory) {
+        setCommits([]);
+        setGraphHistoryRefs([]);
+        setGraphHistoryHasMore(false);
+        setGraphHistoryNextSkip(0);
+      }
       notifyError(error instanceof Error ? error.message : "无法加载图表引用。");
     } finally {
       if (isCurrentProjectLoad(requestId)) {
@@ -855,49 +906,59 @@ export function App() {
   }
 
   async function refreshProjectChanges(project: GitProject) {
-    try {
-      const [status, worktreeState] = await Promise.all([apiClient.getProjectStatus(project), apiClient.getWorktree(project)]);
+    const [statusResult, worktreeResult] = await Promise.allSettled([
+      apiClient.getProjectStatus(project),
+      apiClient.getWorktree(project)
+    ]);
+    if (selectedProjectIdRef.current !== project.id) {
+      return;
+    }
 
-      if (selectedProjectIdRef.current !== project.id) {
-        return;
-      }
+    const refreshErrors: string[] = [];
+    if (statusResult.status === "fulfilled") {
+      applyProjectStatus(project.id, statusResult.value);
+    } else {
+      markProjectStatusUnavailable(project.id, statusResult.reason);
+      refreshErrors.push(`仓库状态：${errorText(statusResult.reason, "读取失败")}`);
+    }
 
-      if (status) {
-        setProjects((current) => {
-          let changed = false;
-          const nextProjects = current.map((item) => {
-            if (item.id !== project.id) {
-              return item;
-            }
+    if (worktreeResult.status === "fulfilled") {
+      setWorktree((current) => (worktreeSignature(current) === worktreeSignature(worktreeResult.value) ? current : worktreeResult.value));
+    } else {
+      setWorktree(emptyWorktree);
+      refreshErrors.push(`工作区：${errorText(worktreeResult.reason, "读取失败")}`);
+    }
 
-            if (statusSignature(item.status) === statusSignature(status)) {
-              return item;
-            }
-
-            changed = true;
-            return { ...item, status };
-          });
-
-          return changed ? nextProjects : current;
-        });
-      }
-
-      setWorktree((current) => (worktreeSignature(current) === worktreeSignature(worktreeState) ? current : worktreeState));
-    } catch {
-      // Background refresh should not replace the user's current status message.
+    const refreshToastId = `project-refresh:${project.id}`;
+    if (refreshErrors.length > 0) {
+      notifyError("项目后台刷新失败", refreshErrors.join("\n"), refreshToastId);
+    } else {
+      toast.dismiss(refreshToastId);
     }
   }
 
   async function reloadProjectWorktree(project: GitProject): Promise<WorktreeState> {
-    const [status, worktreeState] = await Promise.all([apiClient.getProjectStatus(project), apiClient.getWorktree(project)]);
+    const [statusResult, worktreeResult] = await Promise.allSettled([
+      apiClient.getProjectStatus(project),
+      apiClient.getWorktree(project)
+    ]);
     if (selectedProjectIdRef.current !== project.id) {
       throw new Error("当前项目已切换，已取消刷新。");
     }
 
     invalidateProjectCaches(project.id);
-    applyProjectStatus(project.id, status);
-    setWorktree(worktreeState);
-    return worktreeState;
+    if (statusResult.status === "rejected") {
+      markProjectStatusUnavailable(project.id, statusResult.reason);
+      setWorktree(emptyWorktree);
+      throw statusResult.reason;
+    }
+    applyProjectStatus(project.id, statusResult.value);
+    if (worktreeResult.status === "rejected") {
+      setWorktree(emptyWorktree);
+      throw worktreeResult.reason;
+    }
+    setWorktree(worktreeResult.value);
+    return worktreeResult.value;
   }
 
   async function refreshProjectListStatuses(
@@ -915,7 +976,8 @@ export function App() {
     }
 
     busyRef.current = true;
-    const statusUpdates = new Map<string, GitProject["status"]>();
+    const statusUpdates = new Map<string, GitStatusSummary>();
+    const statusErrors = new Map<string, string>();
     const batchSize = remoteMode ? 1 : PROJECT_LIST_STATUS_BATCH_SIZE;
     try {
       for (let index = 0; index < projectSnapshot.length && !isDisposed(); index += batchSize) {
@@ -927,14 +989,18 @@ export function App() {
           }))
         );
 
-        for (const result of results) {
-          if (result.status === "fulfilled" && result.value.status) {
+        for (let resultIndex = 0; resultIndex < results.length; resultIndex += 1) {
+          const result = results[resultIndex];
+          const project = batch[resultIndex];
+          if (result.status === "fulfilled") {
             statusUpdates.set(result.value.projectId, result.value.status);
+          } else {
+            statusErrors.set(project.id, errorText(result.reason, "无法读取仓库状态"));
           }
         }
       }
 
-      if (isDisposed() || statusUpdates.size === 0) {
+      if (isDisposed() || (statusUpdates.size === 0 && statusErrors.size === 0)) {
         return;
       }
 
@@ -942,12 +1008,22 @@ export function App() {
         let changed = false;
         const nextProjects = current.map((project) => {
           const nextStatus = statusUpdates.get(project.id);
-          if (!nextStatus || statusSignature(project.status) === statusSignature(nextStatus)) {
+          const statusError = statusErrors.get(project.id);
+          if (statusError) {
+            if (!project.status && project.statusError === statusError) {
+              return project;
+            }
+
+            changed = true;
+            return { ...project, status: undefined, statusError };
+          }
+
+          if (!nextStatus || (statusSignature(project.status) === statusSignature(nextStatus) && !project.statusError)) {
             return project;
           }
 
           changed = true;
-          return { ...project, status: nextStatus };
+          return { ...project, status: nextStatus, statusError: undefined };
         });
 
         return changed ? nextProjects : current;
@@ -1452,10 +1528,10 @@ export function App() {
       return;
     }
 
-    const label = { fetch: "抓取", pull: "拉取", push: "推送" }[action];
+    const label = action === "pull" ? `拉取（${pullStrategyLabel(uiPreferences.pullStrategy)}）` : { fetch: "抓取", push: "推送" }[action];
     const toastId = notifyLoading(`正在${label}...`);
 
-    const result = await apiClient[action](project);
+    const result = action === "pull" ? await apiClient.pull(project, uiPreferences.pullStrategy) : await apiClient[action](project);
     if (!notifyGitResult(result, `${label}完成`, `${label}失败，请查看原始 Git 输出。`, toastId)) {
       return;
     }
@@ -1470,7 +1546,7 @@ export function App() {
 
     const toastId = notifyLoading("正在同步...");
 
-    const pullResult = await apiClient.pull(project);
+    const pullResult = await apiClient.pull(project, uiPreferences.pullStrategy);
     if (!pullResult.ok) {
       notifyGitResult(pullResult, "", "同步失败：拉取远程更改失败。", toastId);
       await loadProjectData(project);
@@ -1871,9 +1947,9 @@ export function App() {
       return;
     }
 
-    const commit = commits[0];
+    const commit = findCurrentHeadCommit(commits);
     if (!commit) {
-      notifyInfo("当前仓库还没有可修改的提交");
+      notifyInfo("当前图表未能精确认定 HEAD，请切换到包含当前提交的引用范围后重试");
       return;
     }
 
@@ -1903,6 +1979,12 @@ export function App() {
     }
 
     const project = commitMessageDialog.project;
+    const currentHeadCommit = findCurrentHeadCommit(commits);
+    if (selectedProject?.id !== project.id || currentHeadCommit?.hash !== commitMessageDialog.commit.hash) {
+      notifyInfo("当前 HEAD 已变化或不在图表范围内，请刷新后重试");
+      return;
+    }
+
     if (isCommitHistoryPublished(project)) {
       const confirmed = await requestDestructiveConfirm({
         title: "修改已发布提交",
@@ -1941,12 +2023,11 @@ export function App() {
       return;
     }
 
-    if (commits.length === 0) {
-      notifyInfo("当前仓库还没有可撤销的提交");
+    const commitToRestore = findCurrentHeadCommit(commits);
+    if (!commitToRestore) {
+      notifyInfo("当前图表未能精确认定 HEAD，请切换到包含当前提交的引用范围后重试");
       return;
     }
-
-    const commitToRestore = commits[0];
     const modeText = mode === "soft" ? "保留更改并保持暂存" : "保留更改但取消暂存";
     const publishedWarning = isCommitHistoryPublished(selectedProject) ? "\n\n注意：上次提交可能已经同步到远程，撤销会改写历史。" : "";
     if (
@@ -1982,8 +2063,7 @@ export function App() {
   }
 
   function isCommitLocalOnly(project: GitProject, commit: CommitNode): boolean {
-    const commitIndex = commits.findIndex((item) => item.hash === commit.hash);
-    if (commitIndex < 0) {
+    if (!project.status || !isCurrentHeadCommit(commit)) {
       return false;
     }
 
@@ -1991,16 +2071,11 @@ export function App() {
       return true;
     }
 
-    return commitIndex < (project.status.ahead ?? 0);
+    return (project.status.ahead ?? 0) > 0;
   }
 
-  function isCurrentHeadCommit(project: GitProject, commit: CommitNode): boolean {
-    const currentBranch = project.status?.currentBranch;
-    if (currentBranch) {
-      return commit.refs.some((ref) => ref.type === "localBranch" && ref.name === currentBranch);
-    }
-
-    return commit.hash === commits[0]?.hash;
+  function isCurrentHeadCommit(commit: CommitNode): boolean {
+    return commit.refs.some((ref) => ref.type === "head");
   }
 
   function restoreCommitMessageDraft(commit: CommitNode) {
@@ -2040,8 +2115,9 @@ export function App() {
     }
 
     if (action === "amendMessage") {
-      if (commit.hash !== commits[0]?.hash) {
-        notifyInfo("当前仅支持直接修改最新提交的信息");
+      const currentHeadCommit = findCurrentHeadCommit(commits);
+      if (currentHeadCommit?.hash !== commit.hash) {
+        notifyInfo("当前仅支持修改由 HEAD 精确认定的提交信息");
         return;
       }
 
@@ -2111,7 +2187,13 @@ export function App() {
   }
 
   async function runResetToCommit(project: GitProject, commit: CommitNode, mode: GitResetMode) {
-    const undoHead = isCurrentHeadCommit(project, commit);
+    const currentHeadCommit = findCurrentHeadCommit(commits);
+    if (!currentHeadCommit || !commits.some((item) => item.hash === commit.hash)) {
+      notifyInfo("当前图表未能精确认定 HEAD，无法执行 reset");
+      return;
+    }
+
+    const undoHead = currentHeadCommit.hash === commit.hash;
     const resetTarget = undoHead ? commit.parents[0] : commit.hash;
     if (!resetTarget) {
       notifyInfo("根提交没有父提交，暂不支持从这里撤销");
@@ -2190,7 +2272,7 @@ export function App() {
       return;
     }
 
-    const result = await apiClient.stageFile(selectedProject, file.path);
+    const result = await apiClient.stageFile(selectedProject, file);
     notifyGitResult(result, `已暂存：${file.path}`, "暂存失败");
     clearWorktreeEditorTabs();
     await loadProjectData(selectedProject);
@@ -2220,7 +2302,7 @@ export function App() {
       return;
     }
 
-    const result = await apiClient.unstageFile(selectedProject, file.path);
+    const result = await apiClient.unstageFile(selectedProject, file);
     notifyGitResult(result, `已取消暂存：${file.path}`, "取消暂存失败");
     clearWorktreeEditorTabs();
     await loadProjectData(selectedProject);
@@ -2320,6 +2402,11 @@ export function App() {
     }
 
     if (input.amend) {
+      if (!findCurrentHeadCommit(commits)) {
+        notifyInfo("当前图表未能精确认定 HEAD，无法执行 amend");
+        return false;
+      }
+
       const confirmed = await requestDestructiveConfirm({
         title: "修改上一次提交",
         description: "amend 会改写上一次提交。",
@@ -2636,7 +2723,7 @@ export function App() {
                 onUndoLastCommit={(mode) => void handleUndoLastCommit(mode)}
                 onSyncChanges={() => (selectedProject ? runSyncOperation(selectedProject) : Promise.resolve())}
                 onMergeRemote={() => (selectedProject ? runMergeRemoteOperation(selectedProject) : Promise.resolve())}
-                hasCommits={commits.length > 0}
+                hasCommits={Boolean(findCurrentHeadCommit(commits))}
                 focusRequest={commitFocusRequest}
                 messageDraftRequest={commitMessageDraftRequest}
                 panelOpen={changesPanelOpen}
@@ -2728,8 +2815,8 @@ export function App() {
           projects={projects}
           initialTab={repositoryCenterInitialTab}
           onClose={() => setRepositoryCenterOpen(false)}
-          onOpenProject={(projectId) => {
-            selectProject(projectId);
+          onOpenProject={(projectId, openedProject) => {
+            selectProject(projectId, openedProject);
             setRepositoryCenterOpen(false);
           }}
           onProjectsChange={(nextProjects) => setProjects(orderProjectsWithPinnedFirst(nextProjects))}
@@ -3198,6 +3285,11 @@ function addProjectWithPinnedOrder(projects: GitProject[], project: GitProject):
   return project.favorite ? [project, ...remainingProjects] : placeProjectAfterPinned(remainingProjects, project);
 }
 
+function findCurrentHeadCommit(commits: CommitNode[]): CommitNode | undefined {
+  const headCommits = commits.filter((commit) => commit.refs.some((ref) => ref.type === "head"));
+  return headCommits.length === 1 ? headCommits[0] : undefined;
+}
+
 function commitMessageDraft(commit: CommitNode): Pick<CommitMessageDialogState, "subject" | "body"> {
   return {
     subject: commit.subject === "(无提交信息)" ? "" : commit.subject,
@@ -3330,6 +3422,10 @@ function remoteProjectAddress(project: GitProject): string | undefined {
   const destination = project.remote.username ? `${project.remote.username}@${project.remote.host}` : project.remote.host;
   const port = project.remote.port ? `:${project.remote.port}` : "";
   return `${destination}${port}:${project.path}`;
+}
+
+function pullStrategyLabel(strategy: UiPreferences["pullStrategy"]): string {
+  return strategy === "ff-only" ? "仅快进" : strategy === "rebase" ? "变基" : "变基并自动暂存";
 }
 
 function upsertWorktreeTab(tabs: WorktreeEditorTab[], incomingTab: WorktreeEditorTab, forcePinned: boolean): WorktreeEditorTab[] {

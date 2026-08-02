@@ -3,7 +3,7 @@ import path from "node:path";
 import { existsSync } from "node:fs";
 import * as pty from "@homebridge/node-pty-prebuilt-multiarch";
 import { ConfigStore, type RemoteProjectInput, type UiPreferences } from "./configStore";
-import { buildSshArgs, GitService, normalizeRepositoryTarget, shellQuote, sshDestination, type RepositoryLocation } from "./gitService";
+import { buildSshArgs, GitService, normalizeRepositoryTarget, shellQuote, sshDestination, type ChangedFile, type GitPullStrategy, type RepositoryLocation } from "./gitService";
 import { UpdateService, type UpdateState } from "./updateService";
 
 let mainWindow: BrowserWindow | null = null;
@@ -221,9 +221,9 @@ function registerIpc(): void {
   ipcMain.handle("git:resolveConflictFile", (_event, repositoryPath: RepositoryLocation, filePath: string, input) =>
     gitService.resolveConflictFile(repositoryPath, filePath, input)
   );
-  ipcMain.handle("git:stageFile", (_event, repositoryPath: RepositoryLocation, filePath: string) => gitService.stageFile(repositoryPath, filePath));
+  ipcMain.handle("git:stageFile", (_event, repositoryPath: RepositoryLocation, file: ChangedFile) => gitService.stageFile(repositoryPath, file));
   ipcMain.handle("git:stageAll", (_event, repositoryPath: RepositoryLocation) => gitService.stageAll(repositoryPath));
-  ipcMain.handle("git:unstageFile", (_event, repositoryPath: RepositoryLocation, filePath: string) => gitService.unstageFile(repositoryPath, filePath));
+  ipcMain.handle("git:unstageFile", (_event, repositoryPath: RepositoryLocation, file: ChangedFile) => gitService.unstageFile(repositoryPath, file));
   ipcMain.handle("git:unstageAll", (_event, repositoryPath: RepositoryLocation) => gitService.unstageAll(repositoryPath));
   ipcMain.handle("git:discardFile", (_event, repositoryPath: RepositoryLocation, file) => gitService.discardFile(repositoryPath, file));
   ipcMain.handle("git:getStashes", (_event, repositoryPath: RepositoryLocation) => gitService.getStashes(repositoryPath));
@@ -242,7 +242,7 @@ function registerIpc(): void {
   ipcMain.handle("git:fetchRemote", (_event, repositoryPath: RepositoryLocation, remoteName: string, prune: boolean) =>
     gitService.fetchRemote(repositoryPath, remoteName, prune)
   );
-  ipcMain.handle("git:pull", (_event, repositoryPath: RepositoryLocation) => gitService.pull(repositoryPath));
+  ipcMain.handle("git:pull", (_event, repositoryPath: RepositoryLocation, strategy: GitPullStrategy) => gitService.pull(repositoryPath, strategy));
   ipcMain.handle("git:mergeRemote", (_event, repositoryPath: RepositoryLocation) => gitService.mergeRemote(repositoryPath));
   ipcMain.handle("git:push", (_event, repositoryPath: RepositoryLocation) => gitService.push(repositoryPath));
   ipcMain.handle("git:getRemotes", (_event, repositoryPath: RepositoryLocation) => gitService.getRemotes(repositoryPath));

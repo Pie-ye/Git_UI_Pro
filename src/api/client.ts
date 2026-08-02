@@ -21,6 +21,7 @@ import type {
   GitMergePreview,
   GitMergeStrategy,
   GitOperationResult,
+  GitPullStrategy,
   GitProject,
   GitReflogEntry,
   GitRebasePlanItem,
@@ -70,6 +71,7 @@ let browserUiPreferences: UiPreferences = {
   fontFamily: "system-ui",
   diffViewMode: "split",
   diffWrap: false,
+  pullStrategy: "ff-only",
   density: "comfortable",
   sidebarPosition: "left",
   confirmDestructiveActions: true,
@@ -283,12 +285,16 @@ export const apiClient = {
     return mockProjects.find((project) => project.id === projectId) ? { ...mockProjects.find((project) => project.id === projectId)!, favorite } : undefined;
   },
 
-  async getProjectStatus(project: GitProject): Promise<GitStatusSummary | undefined> {
+  async getProjectStatus(project: GitProject): Promise<GitStatusSummary> {
     if (window.gitUI) {
       return window.gitUI.getProjectStatus(repositoryTarget(project));
     }
 
     await wait(mockDelay);
+    if (!project.status) {
+      throw new Error(`无法读取项目 ${project.name} 的仓库状态。`);
+    }
+
     return project.status;
   },
 
@@ -420,13 +426,13 @@ export const apiClient = {
     return okResult(`git add -- ${filePath}`);
   },
 
-  async stageFile(project: GitProject, filePath: string): Promise<GitOperationResult> {
+  async stageFile(project: GitProject, file: ChangedFile): Promise<GitOperationResult> {
     if (window.gitUI) {
-      return window.gitUI.stageFile(repositoryTarget(project), filePath);
+      return window.gitUI.stageFile(repositoryTarget(project), file);
     }
 
     await wait(mockDelay);
-    return okResult(`git add -- ${filePath}`);
+    return okResult(`git add -- ${[file.oldPath, file.path].filter(Boolean).join(" ")}`);
   },
 
   async stageAll(project: GitProject): Promise<GitOperationResult> {
@@ -438,13 +444,13 @@ export const apiClient = {
     return okResult("git add -A");
   },
 
-  async unstageFile(project: GitProject, filePath: string): Promise<GitOperationResult> {
+  async unstageFile(project: GitProject, file: ChangedFile): Promise<GitOperationResult> {
     if (window.gitUI) {
-      return window.gitUI.unstageFile(repositoryTarget(project), filePath);
+      return window.gitUI.unstageFile(repositoryTarget(project), file);
     }
 
     await wait(mockDelay);
-    return okResult(`git restore --staged -- ${filePath}`);
+    return okResult(`git restore --staged -- ${[file.oldPath, file.path].filter(Boolean).join(" ")}`);
   },
 
   async unstageAll(project: GitProject): Promise<GitOperationResult> {
@@ -483,13 +489,16 @@ export const apiClient = {
     return okResult("git fetch --prune");
   },
 
-  async pull(project: GitProject): Promise<GitOperationResult> {
+  async pull(project: GitProject, strategy: GitPullStrategy): Promise<GitOperationResult> {
     if (window.gitUI) {
-      return window.gitUI.pull(repositoryTarget(project));
+      return window.gitUI.pull(repositoryTarget(project), strategy);
     }
 
     await wait(mockDelay);
-    return okResult("git pull --ff-only");
+    if (strategy === "ff-only") return okResult("git pull --ff-only");
+    if (strategy === "rebase") return okResult("git pull --rebase");
+    if (strategy === "rebase-autostash") return okResult("git pull --rebase --autostash");
+    throw new Error(`不支持的拉取策略：${String(strategy)}`);
   },
 
   async mergeRemote(project: GitProject): Promise<GitOperationResult> {

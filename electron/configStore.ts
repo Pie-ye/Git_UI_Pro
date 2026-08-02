@@ -37,6 +37,7 @@ export interface ProjectGroup {
 }
 
 export type DiffViewMode = "split" | "inline";
+export type GitPullStrategy = "ff-only" | "rebase" | "rebase-autostash";
 
 export interface UiPreferences {
   theme: "system" | "light" | "dark";
@@ -49,6 +50,7 @@ export interface UiPreferences {
   fontFamily: string;
   diffViewMode: DiffViewMode;
   diffWrap: boolean;
+  pullStrategy: GitPullStrategy;
   density: "compact" | "comfortable";
   sidebarPosition: "left" | "right";
   confirmDestructiveActions: boolean;
@@ -88,6 +90,7 @@ const defaultConfig: AppConfig = {
     fontFamily: "system-ui",
     diffViewMode: "split",
     diffWrap: false,
+    pullStrategy: "ff-only",
     density: "comfortable",
     sidebarPosition: "left",
     confirmDestructiveActions: true,
@@ -567,6 +570,7 @@ function normalizeUiPreferences(preferences: Partial<UiPreferences>): UiPreferen
     fontFamily: typeof merged.fontFamily === "string" && merged.fontFamily.trim() ? merged.fontFamily.trim() : defaultConfig.ui.fontFamily,
     diffViewMode: merged.diffViewMode === "inline" ? "inline" : "split",
     diffWrap: Boolean(merged.diffWrap),
+    pullStrategy: merged.pullStrategy === "rebase" || merged.pullStrategy === "rebase-autostash" ? merged.pullStrategy : "ff-only",
     density: merged.density === "compact" ? "compact" : "comfortable",
     sidebarPosition: merged.sidebarPosition === "right" ? "right" : "left",
     confirmDestructiveActions: merged.confirmDestructiveActions !== false,

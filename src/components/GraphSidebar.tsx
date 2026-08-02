@@ -228,7 +228,6 @@ export function GraphSidebar({
       ? { label: "合并远程更改", title: `合并 ${project?.status?.upstream ?? "远程分支"} 的新提交`, icon: GitPullRequest }
       : operation
   );
-  const localOnlyCount = project?.status?.upstream ? project.status.ahead : commits.length;
   const virtualGraphEnabled = filteredCommits.length > GRAPH_VIRTUAL_THRESHOLD && !expandedHash;
   const graphVirtualRange = useMemo(() => {
     if (!virtualGraphEnabled) {
@@ -571,17 +570,17 @@ export function GraphSidebar({
     setHoveredCommit(undefined);
     setHoveredDotHash(commit.hash);
 
-    const commitIndex = commits.findIndex((item) => item.hash === commit.hash);
-    const currentBranch = project?.status?.currentBranch;
-    const isHead = currentBranch ? commit.refs.some((ref) => ref.type === "localBranch" && ref.name === currentBranch) : commitIndex === 0;
-    const isLocalOnly = commitIndex >= 0 && commitIndex < localOnlyCount;
+    const headCommits = commits.filter((item) => item.refs.some((ref) => ref.type === "head"));
+    const identifiedHead = headCommits.length === 1 ? headCommits[0] : undefined;
+    const isHead = identifiedHead?.hash === commit.hash;
+    const isLocalOnly = Boolean(project?.status) && isHead && (!project?.status?.upstream || (project.status.ahead ?? 0) > 0);
     setCommitContextMenu({
       commit,
       x: Math.min(event.clientX, window.innerWidth - 246),
       y: Math.min(event.clientY, window.innerHeight - 330),
       isHead,
       isLocalOnly,
-      canUndoHead: !isHead || commit.parents.length > 0
+      canUndoHead: Boolean(identifiedHead) && (!isHead || commit.parents.length > 0)
     });
   }
 

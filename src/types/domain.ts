@@ -9,6 +9,7 @@ export interface GitProject {
   createdAt: string;
   updatedAt: string;
   status?: GitStatusSummary;
+  statusError?: string;
 }
 
 export interface SshConnection {
@@ -56,6 +57,7 @@ export interface GitStatusSummary {
 export type GitOperationState = "merge" | "rebase" | "cherry-pick" | "revert" | "bisect";
 export type GitMergeStrategy = "ff" | "no-ff";
 export type GitMergeMode = "up-to-date" | "fast-forward" | "merge-commit";
+export type GitPullStrategy = "ff-only" | "rebase" | "rebase-autostash";
 
 export interface GitMergePreview {
   sourceBranch: string;
@@ -173,6 +175,7 @@ export interface UiPreferences {
   fontFamily: string;
   diffViewMode: "split" | "inline";
   diffWrap: boolean;
+  pullStrategy: GitPullStrategy;
   density: "compact" | "comfortable";
   sidebarPosition: "left" | "right";
   confirmDestructiveActions: boolean;
@@ -210,6 +213,7 @@ export interface GitRemoteInfo {
   name: string;
   fetchUrls: string[];
   pushUrls: string[];
+  explicitPushUrls: string[];
   defaultFetch?: boolean;
   defaultPush?: boolean;
 }

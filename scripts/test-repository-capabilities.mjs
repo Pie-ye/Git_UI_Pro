@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -102,10 +102,19 @@ test("repository, remote, branch, tag, reflog, and hosting capabilities use real
 
   await writeFile(path.join(repositoryPath, "second.txt"), "second\n", "utf8");
   git(repositoryPath, "add", "second.txt");
-  git(repositoryPath, "commit", "-m", "second");
+  git(
+    repositoryPath,
+    "commit",
+    "--author=Historical Author <historical@example.com>",
+    "--date=2001-01-01T00:00:00+00:00",
+    "-m",
+    "second"
+  );
   const reflog = await service.getReflog(repositoryPath, 10);
   assert.match(reflog[0].selector, /@\{0\}$/);
   assert.equal(reflog[0].action, "commit");
+  assert.equal(reflog[0].authorName, "Capability Test");
+  assert.notEqual(reflog[0].authorDate.slice(0, 4), "2001", "reflog 必须显示引用变更时间，而不是提交作者时间");
   assertSuccess(await service.resetToReflogEntry(repositoryPath, reflog[1].hash, "mixed"));
 
   assertSuccess(await service.addRemote(repositoryPath, "github", "git@github.com:sample-org/sample-repo.git"));
@@ -231,6 +240,71 @@ test("remote creation removes the new remote when its custom push URL cannot be 
   assert.equal(git(repositoryPath, "remote"), "");
 });
 
+test("branch pushRemote wins default-push selection and an empty push URL clears the explicit value", async () => {
+  const repositoryPath = await createRepository("remote-default-priority");
+  const service = new GitService();
+  const originPath = path.join(testRoot, "remote-default-origin.git");
+  const mirrorPath = path.join(testRoot, "remote-default-mirror.git");
+  await mkdir(originPath);
+  await mkdir(mirrorPath);
+  git(originPath, "init", "--bare", "--initial-branch=main");
+  git(mirrorPath, "init", "--bare", "--initial-branch=main");
+  assertSuccess(await service.addRemote(repositoryPath, "origin", originPath));
+  assertSuccess(await service.addRemote(repositoryPath, "mirror", mirrorPath, originPath));
+  git(repositoryPath, "config", "branch.main.remote", "origin");
+  git(repositoryPath, "config", "remote.pushDefault", "origin");
+  git(repositoryPath, "config", "branch.main.pushRemote", "mirror");
+
+  const remotes = await service.getRemotes(repositoryPath);
+  assert.equal(remotes.find((remote) => remote.name === "mirror")?.defaultPush, true);
+  assert.equal(remotes.find((remote) => remote.name === "origin")?.defaultPush, false);
+
+  assertSuccess(await service.updateRemote(repositoryPath, "mirror", { pushUrl: "" }));
+  assert.throws(
+    () => git(repositoryPath, "config", "--local", "--get-all", "remote.mirror.pushurl"),
+    (error) => error?.status === 1
+  );
+  assert.equal(git(repositoryPath, "remote", "get-url", "--push", "mirror").replace(/\\/g, "/"), mirrorPath.replace(/\\/g, "/"));
+
+  const inheritedRemote = (await service.getRemotes(repositoryPath)).find((remote) => remote.name === "mirror");
+  assert.deepEqual(inheritedRemote?.explicitPushUrls, []);
+  assert.equal(inheritedRemote?.pushUrls[0].replace(/\\/g, "/"), mirrorPath.replace(/\\/g, "/"));
+
+  const nextMirrorPath = path.join(testRoot, "remote-default-next-mirror.git");
+  await mkdir(nextMirrorPath);
+  git(nextMirrorPath, "init", "--bare", "--initial-branch=main");
+  assertSuccess(await service.updateRemote(repositoryPath, "mirror", { fetchUrl: nextMirrorPath, pushUrl: null }));
+  assert.throws(
+    () => git(repositoryPath, "config", "--local", "--get-all", "remote.mirror.pushurl"),
+    (error) => error?.status === 1
+  );
+  const movedInheritedRemote = (await service.getRemotes(repositoryPath)).find((remote) => remote.name === "mirror");
+  assert.deepEqual(movedInheritedRemote?.explicitPushUrls, []);
+  assert.equal(movedInheritedRemote?.pushUrls[0].replace(/\\/g, "/"), nextMirrorPath.replace(/\\/g, "/"));
+});
+
+test("history marks the exact attached and detached HEAD even when it is not the first graph row", async () => {
+  const repositoryPath = await createRepository("history-head-identity");
+  const service = new GitService();
+  await writeFile(path.join(repositoryPath, "second.txt"), "second\n", "utf8");
+  git(repositoryPath, "add", "second.txt");
+  git(repositoryPath, "commit", "-m", "second");
+
+  const attachedHistory = await service.getHistory(repositoryPath, { mode: "all" });
+  const attachedHeadCommits = attachedHistory.filter((commit) => commit.refs.some((ref) => ref.type === "head"));
+  assert.equal(attachedHeadCommits.length, 1);
+  assert.equal(attachedHeadCommits[0].hash, git(repositoryPath, "rev-parse", "HEAD"));
+  assert.equal(attachedHeadCommits[0].refs.some((ref) => ref.type === "localBranch" && ref.name === "main"), true);
+
+  git(repositoryPath, "checkout", "--detach", "HEAD~1");
+  const detachedHeadHash = git(repositoryPath, "rev-parse", "HEAD");
+  const detachedHistory = await service.getHistory(repositoryPath, { mode: "all" });
+  const detachedHeadCommits = detachedHistory.filter((commit) => commit.refs.some((ref) => ref.type === "head"));
+  assert.equal(detachedHeadCommits.length, 1);
+  assert.equal(detachedHeadCommits[0].hash, detachedHeadHash);
+  assert.notEqual(detachedHistory[0].hash, detachedHeadHash);
+});
+
 test("signing updates restore every exact prior local value after a later key fails", async () => {
   const repositoryPath = await createRepository("signing-transaction");
   const service = new GitService();
@@ -311,7 +385,94 @@ test("branch divergence and conflict counts reflect each real ref and conflicted
   const conflictStatus = await service.getStatus(conflictPath);
   assert.equal(conflictStatus.hasConflicts, true);
   assert.equal(conflictStatus.conflictedCount, 1);
+  const conflictDetails = await service.getConflictFileDetails(conflictPath, "tracked.txt");
+  assert.equal(conflictDetails.currentContent, "main\n");
+  assert.equal(conflictDetails.incomingContent, "side\n");
   git(conflictPath, "merge", "--abort");
+});
+
+test("renamed files stage, unstage, and discard both the original and current path", async () => {
+  const repositoryPath = await createRepository("renamed-files");
+  const service = new GitService();
+  const oldPath = "tracked.txt";
+  const newPath = "renamed.txt";
+  await rename(path.join(repositoryPath, oldPath), path.join(repositoryPath, newPath));
+
+  const renameFile = { path: newPath, oldPath, status: "renamed", staged: false };
+  assertSuccess(await service.stageFile(repositoryPath, renameFile));
+  assert.equal(git(repositoryPath, "diff", "--cached", "--name-status", "-M"), `R100\t${oldPath}\t${newPath}`);
+
+  const stagedRename = (await service.getWorktree(repositoryPath)).stagedFiles.find((file) => file.status === "renamed");
+  assert.deepEqual({ path: stagedRename?.path, oldPath: stagedRename?.oldPath }, { path: newPath, oldPath });
+  assertSuccess(await service.unstageFile(repositoryPath, stagedRename));
+  assert.equal(git(repositoryPath, "diff", "--cached", "--name-status"), "");
+
+  assertSuccess(await service.stageFile(repositoryPath, renameFile));
+  const stagedForDiscard = (await service.getWorktree(repositoryPath)).stagedFiles.find((file) => file.status === "renamed");
+  assertSuccess(await service.discardFile(repositoryPath, stagedForDiscard));
+  assert.equal(await readFile(path.join(repositoryPath, oldPath), "utf8"), "base\n");
+  await assert.rejects(readFile(path.join(repositoryPath, newPath), "utf8"), { code: "ENOENT" });
+  assert.equal(git(repositoryPath, "status", "--porcelain"), "");
+});
+
+test("ignored files and directories never enter status or worktree changes", async () => {
+  const repositoryPath = await createRepository("ignored-worktree");
+  await writeFile(path.join(repositoryPath, ".gitignore"), "*.log\ncache/\n", "utf8");
+  git(repositoryPath, "add", ".gitignore");
+  git(repositoryPath, "commit", "-m", "add ignore rules");
+
+  await writeFile(path.join(repositoryPath, "tracked.txt"), "modified\n", "utf8");
+  await writeFile(path.join(repositoryPath, "visible.txt"), "visible\n", "utf8");
+  await writeFile(path.join(repositoryPath, "ignored.log"), "ignored\n", "utf8");
+  await mkdir(path.join(repositoryPath, "cache"));
+  await writeFile(path.join(repositoryPath, "cache", "nested.txt"), "ignored directory\n", "utf8");
+
+  const service = new GitService();
+  const statusCommands = [];
+  const originalRun = service.run.bind(service);
+  service.run = async (location, args, options) => {
+    if (args[0] === "status") {
+      statusCommands.push([...args]);
+    }
+    return originalRun(location, args, options);
+  };
+
+  const status = await service.getStatus(repositoryPath);
+  assert.deepEqual(
+    {
+      stagedCount: status.stagedCount,
+      unstagedCount: status.unstagedCount,
+      untrackedCount: status.untrackedCount
+    },
+    { stagedCount: 0, unstagedCount: 1, untrackedCount: 1 }
+  );
+  assert.equal(statusCommands[0].includes("--ignored=matching"), false);
+
+  const worktree = await service.getWorktree(repositoryPath);
+  assert.deepEqual(worktree.stagedFiles, []);
+  assert.deepEqual(
+    worktree.unstagedFiles.map((file) => ({ path: file.path, status: file.status })),
+    [
+      { path: "tracked.txt", status: "modified" },
+      { path: "visible.txt", status: "untracked" }
+    ]
+  );
+
+  const defensiveService = new GitService();
+  const defensiveRun = defensiveService.run.bind(defensiveService);
+  defensiveService.run = (location, args, options) => defensiveRun(
+    location,
+    args[0] === "status" ? [...args, "--ignored=matching"] : args,
+    options
+  );
+  const defensiveStatus = await defensiveService.getStatus(repositoryPath);
+  const defensiveWorktree = await defensiveService.getWorktree(repositoryPath);
+  assert.equal(defensiveStatus.unstagedCount, 1);
+  assert.equal(defensiveStatus.untrackedCount, 1);
+  assert.deepEqual(
+    defensiveWorktree.unstagedFiles.map((file) => file.path),
+    ["tracked.txt", "visible.txt"]
+  );
 });
 
 test("clone, linked worktree, gitignore, signing, LFS, and signature checks are executable", async () => {
@@ -325,7 +486,11 @@ test("clone, linked worktree, gitignore, signing, LFS, and signature checks are 
   assertSuccess(await service.addLinkedWorktree(repositoryPath, { path: linkedPath, newBranch: "worktree/test" }));
   const linked = await service.getLinkedWorktrees(repositoryPath);
   assert.equal(linked.some((item) => item.branch === "worktree/test"), true);
-  assertSuccess(await service.removeLinkedWorktree(repositoryPath, linkedPath));
+  await writeFile(path.join(linkedPath, "dirty.txt"), "dirty\n", "utf8");
+  git(repositoryPath, "worktree", "lock", linkedPath);
+  const lockedRemoval = await service.removeLinkedWorktree(repositoryPath, linkedPath);
+  assert.equal(lockedRemoval.ok, false);
+  assertSuccess(await service.removeLinkedWorktree(repositoryPath, linkedPath, true));
   assertSuccess(await service.pruneLinkedWorktrees(repositoryPath, true));
 
   assert.deepEqual(await service.readGitIgnore(repositoryPath), { exists: false, content: "", revision: "missing" });
@@ -485,6 +650,28 @@ test("advanced history treats message text literally and includes the full end d
   await assert.rejects(service.getHistoryPage("repo", { before: "2026-02-30" }), /不是有效日期/);
 });
 
+test("complete history API follows every page and rejects a stalled cursor", async () => {
+  const service = new GitService();
+  const calls = [];
+  service.getHistoryPage = async (_repositoryPath, query) => {
+    calls.push(query);
+    if (query.skip === 0) {
+      return { commits: [{ hash: "first" }], hasMore: true, nextSkip: 1 };
+    }
+    return { commits: [{ hash: "second" }], hasMore: false, nextSkip: 2 };
+  };
+  const history = await service.getHistory("repo", { mode: "all" });
+  assert.deepEqual(history.map((commit) => commit.hash), ["first", "second"]);
+  assert.deepEqual(calls.map((query) => ({ filter: query.filter, skip: query.skip, limit: query.limit })), [
+    { filter: { mode: "all" }, skip: 0, limit: 500 },
+    { filter: { mode: "all" }, skip: 1, limit: 500 }
+  ]);
+
+  const stalledService = new GitService();
+  stalledService.getHistoryPage = async () => ({ commits: [], hasMore: true, nextSkip: 0 });
+  await assert.rejects(stalledService.getHistory("repo"), /分页位置没有向后推进/);
+});
+
 test("interactive rebase plan executes the submitted order and actions", async () => {
   const repositoryPath = await createRepository("interactive-rebase");
   const service = new GitService();
@@ -510,6 +697,146 @@ test("interactive rebase plan executes the submitted order and actions", async (
   assert.equal(git(repositoryPath, "show", "HEAD:three.txt"), "fix: three");
 });
 
+test("status, untracked, conflict-stage, and merge-state read failures remain explicit", async () => {
+  const operationService = new GitService();
+  operationService.run = async () => ({
+    ok: false,
+    command: "git rev-parse --git-path",
+    stdout: "",
+    stderr: "injected operation-state failure",
+    exitCode: 73,
+    messageZh: "注入的操作状态读取失败"
+  });
+  await assert.rejects(operationService.getOperationState("repo"), /注入的操作状态读取失败/);
+
+  const untrackedService = new GitService();
+  untrackedService.run = async (_cwd, args) => args[0] === "status"
+    ? { ok: true, command: "git status", stdout: "", stderr: "", exitCode: 0 }
+    : {
+        ok: false,
+        command: "git ls-files",
+        stdout: "",
+        stderr: "injected untracked failure",
+        exitCode: 74,
+        messageZh: "注入的未跟踪扫描失败"
+      };
+  await assert.rejects(untrackedService.getWorktree("repo"), /注入的未跟踪扫描失败/);
+  await assert.rejects(untrackedService.isUntrackedFile("repo", "file.txt"), /注入的未跟踪扫描失败/);
+
+  const conflictService = new GitService();
+  conflictService.run = async () => ({
+    ok: true,
+    command: "git ls-files --unmerged",
+    stdout: `100644 ${"a".repeat(40)} 2\tconflict.txt\n`,
+    stderr: "",
+    exitCode: 0
+  });
+  conflictService.runBinary = async () => ({
+    ok: false,
+    command: "git show :2:conflict.txt",
+    stdout: Buffer.alloc(0),
+    stderr: "injected blob failure",
+    exitCode: 75,
+    messageZh: "注入的冲突版本读取失败"
+  });
+  conflictService.readRepositoryFile = async () => null;
+  await assert.rejects(conflictService.loadConflictSnapshot("repo", "conflict.txt"), /注入的冲突版本读取失败/);
+
+  const cleanupService = new GitService();
+  cleanupService.getOperationState = async () => undefined;
+  cleanupService.run = async (_cwd, args) => args[0] === "status"
+    ? { ok: true, command: "git status", stdout: "# branch.head main\n", stderr: "", exitCode: 0 }
+    : {
+        ok: false,
+        command: "git rev-parse --git-path git-ui-pro-merge-state.json",
+        stdout: "",
+        stderr: "injected cleanup failure",
+        exitCode: 76,
+        messageZh: "注入的合并状态清理失败"
+      };
+  await assert.rejects(cleanupService.getStatus("repo"), /注入的合并状态清理失败/);
+
+  const removeFailureService = new GitService();
+  removeFailureService.run = async () => ({
+    ok: true,
+    command: "git rev-parse --git-path git-ui-pro-merge-state.json",
+    stdout: ".git/git-ui-pro-merge-state.json\n",
+    stderr: "",
+    exitCode: 0
+  });
+  removeFailureService.removeTargetFile = async () => {
+    throw new Error("注入的合并状态文件删除失败");
+  };
+  await assert.rejects(removeFailureService.clearManagedMergeState("repo"), /注入的合并状态文件删除失败/);
+
+  const repositoryPath = await createRepository("invalid-merge-recovery-state");
+  const statePath = git(repositoryPath, "rev-parse", "--git-path", "git-ui-pro-merge-state.json");
+  await writeFile(path.resolve(repositoryPath, statePath), "{invalid json\n", "utf8");
+  const recoveryService = new GitService();
+  await assert.rejects(recoveryService.readManagedMergeState(repositoryPath), /合并恢复状态文件无法解析/);
+});
+
+test("merge preview rejects command failures instead of treating them as divergence or zero counts", async () => {
+  const cleanStatus = {
+    currentBranch: "source",
+    ahead: 0,
+    behind: 0,
+    stagedCount: 0,
+    unstagedCount: 0,
+    untrackedCount: 0,
+    hasConflicts: false,
+    conflictedCount: 0
+  };
+  const ancestorService = new GitService();
+  ancestorService.getStatus = async () => cleanStatus;
+  ancestorService.run = async (_cwd, args) => {
+    if (args[0] === "check-ref-format" || args[0] === "show-ref") {
+      return { ok: true, command: `git ${args.join(" ")}`, stdout: "", stderr: "", exitCode: 0 };
+    }
+    if (args[0] === "merge-base" && args[1] !== "--is-ancestor") {
+      return { ok: true, command: `git ${args.join(" ")}`, stdout: `${"a".repeat(40)}\n`, stderr: "", exitCode: 0 };
+    }
+    if (args[0] === "merge-base" && args[2] === "source") {
+      return { ok: false, command: `git ${args.join(" ")}`, stdout: "", stderr: "not ancestor", exitCode: 1 };
+    }
+    return {
+      ok: false,
+      command: `git ${args.join(" ")}`,
+      stdout: "",
+      stderr: "injected ancestor failure",
+      exitCode: 128,
+      messageZh: "注入的祖先关系检查失败"
+    };
+  };
+  await assert.rejects(ancestorService.getMergePreview("repo", "target"), /注入的祖先关系检查失败/);
+
+  const divergenceService = new GitService();
+  divergenceService.getStatus = async () => cleanStatus;
+  divergenceService.run = async (_cwd, args) => {
+    if (args[0] === "check-ref-format" || args[0] === "show-ref") {
+      return { ok: true, command: `git ${args.join(" ")}`, stdout: "", stderr: "", exitCode: 0 };
+    }
+    if (args[0] === "merge-base" && args[1] !== "--is-ancestor") {
+      return { ok: true, command: `git ${args.join(" ")}`, stdout: `${"a".repeat(40)}\n`, stderr: "", exitCode: 0 };
+    }
+    if (args[0] === "merge-base") {
+      return { ok: true, command: `git ${args.join(" ")}`, stdout: "", stderr: "", exitCode: 0 };
+    }
+    if (args[0] === "for-each-ref") {
+      return { ok: true, command: `git ${args.join(" ")}`, stdout: "origin/target\n", stderr: "", exitCode: 0 };
+    }
+    return {
+      ok: false,
+      command: `git ${args.join(" ")}`,
+      stdout: "",
+      stderr: "injected divergence failure",
+      exitCode: 128,
+      messageZh: "注入的领先落后计算失败"
+    };
+  };
+  await assert.rejects(divergenceService.getMergePreview("repo", "target"), /注入的领先落后计算失败/);
+});
+
 test("operation methods issue one exact Git command and never substitute another command", async () => {
   const service = new GitService();
   const calls = [];
@@ -518,8 +845,13 @@ test("operation methods issue one exact Git command and never substitute another
     return { ok: true, command: `git ${args.join(" ")}`, stdout: "", stderr: "", exitCode: 0 };
   };
 
-  await service.unstageFile("repo", "tracked.txt");
+  await service.stageFile("repo", { path: "renamed.txt", oldPath: "tracked.txt", status: "renamed", staged: false });
+  await service.unstageFile("repo", { path: "tracked.txt", status: "modified", staged: true });
   await service.unstageAll("repo");
+  await service.pull("repo", "ff-only");
+  await service.pull("repo", "rebase");
+  await service.pull("repo", "rebase-autostash");
+  await assert.rejects(service.pull("repo", "merge"), /不支持的拉取策略/);
   await service.createBranch("repo", "feature/exact", true, "main");
   await service.switchBranch("repo", { type: "local", name: "main" });
   await service.switchBranch("repo", { type: "remote", name: "origin/feature" });
@@ -538,12 +870,17 @@ test("operation methods issue one exact Git command and never substitute another
   await service.markBisectBad("repo");
   await service.skipBisect("repo", ["one", "two"]);
   await service.resetBisect("repo");
+  await service.removeLinkedWorktree("repo", "linked", true);
 
   assert.deepEqual(calls, [
+    ["add", "--", "tracked.txt", "renamed.txt"],
     ["rev-parse", "--verify", "--quiet", "HEAD"],
     ["restore", "--staged", "--", "tracked.txt"],
     ["rev-parse", "--verify", "--quiet", "HEAD"],
     ["restore", "--staged", "--", "."],
+    ["pull", "--ff-only"],
+    ["pull", "--rebase"],
+    ["pull", "--rebase", "--autostash"],
     ["check-ref-format", "--branch", "feature/exact"],
     ["switch", "-c", "feature/exact", "main"],
     ["switch", "main"],
@@ -562,7 +899,8 @@ test("operation methods issue one exact Git command and never substitute another
     ["bisect", "good", "good"],
     ["bisect", "bad"],
     ["bisect", "skip", "one", "two"],
-    ["bisect", "reset"]
+    ["bisect", "reset"],
+    ["worktree", "remove", "--force", "--force", "linked"]
   ]);
 
   const unbornService = new GitService();
@@ -574,7 +912,7 @@ test("operation methods issue one exact Git command and never substitute another
     }
     return { ok: true, command: `git ${args.join(" ")}`, stdout: "", stderr: "", exitCode: 0 };
   };
-  await unbornService.unstageFile("repo", "first.txt");
+  await unbornService.unstageFile("repo", { path: "first.txt", status: "added", staged: true });
   assert.deepEqual(unbornCalls, [
     ["rev-parse", "--verify", "--quiet", "HEAD"],
     ["rm", "--cached", "-r", "--", "first.txt"]

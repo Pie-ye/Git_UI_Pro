@@ -36,6 +36,8 @@
     "test:config": "npm run build:electron && node --test scripts/test-config-store.mjs",
     "test:release": "node --test scripts/test-release-console.mjs",
     "test:update": "npm run build:electron && node --test scripts/test-update-utils.mjs",
+    "test:capabilities": "npm run build:electron && node --test scripts/test-repository-capabilities.mjs",
+    "test": "npm run build:electron && node --test scripts/test-config-store.mjs scripts/test-update-utils.mjs scripts/test-repository-capabilities.mjs && node scripts/test-merge-service.mjs && node --test scripts/test-release-console.mjs",
     "icons": "node scripts/generate-icons.mjs",
     "release:win": "node scripts/release-console.mjs",
     "dist": "npm run icons && npm run build && electron-builder",

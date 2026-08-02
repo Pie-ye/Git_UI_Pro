@@ -4275,6 +4275,13 @@ button {
   background: color-mix(in srgb, var(--blue) 14%, transparent);
 }
 
+.project-rail-branch:disabled {
+  color: var(--muted-strong);
+  border-color: color-mix(in srgb, var(--border-strong) 58%, transparent);
+  background: color-mix(in srgb, var(--surface) 50%, transparent);
+  cursor: not-allowed;
+}
+
 .project-rail-branch span {
   overflow: hidden;
   min-width: 0;

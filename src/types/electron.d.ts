@@ -20,6 +20,7 @@ import type {
   GitMergePreview,
   GitMergeStrategy,
   GitOperationResult,
+  GitPullStrategy,
   GitReflogEntry,
   GitRebasePlanItem,
   GitRemoteInfo,
@@ -153,9 +154,9 @@ export interface GitUIBridge {
   getWorktreeFilePreview: (repository: RepositoryTarget, file: ChangedFile) => Promise<FilePreview | null>;
   getConflictFileDetails: (repository: RepositoryTarget, filePath: string) => Promise<ConflictFileDetails>;
   resolveConflictFile: (repository: RepositoryTarget, filePath: string, input: ConflictResolutionInput) => Promise<GitOperationResult>;
-  stageFile: (repository: RepositoryTarget, filePath: string) => Promise<GitOperationResult>;
+  stageFile: (repository: RepositoryTarget, file: ChangedFile) => Promise<GitOperationResult>;
   stageAll: (repository: RepositoryTarget) => Promise<GitOperationResult>;
-  unstageFile: (repository: RepositoryTarget, filePath: string) => Promise<GitOperationResult>;
+  unstageFile: (repository: RepositoryTarget, file: ChangedFile) => Promise<GitOperationResult>;
   unstageAll: (repository: RepositoryTarget) => Promise<GitOperationResult>;
   discardFile: (repository: RepositoryTarget, file: ChangedFile) => Promise<GitOperationResult>;
   getStashes: (repository: RepositoryTarget) => Promise<GitStashEntry[]>;
@@ -166,7 +167,7 @@ export interface GitUIBridge {
   commit: (repository: RepositoryTarget, input: CommitInput) => Promise<GitOperationResult>;
   fetch: (repository: RepositoryTarget) => Promise<GitOperationResult>;
   fetchRemote: (repository: RepositoryTarget, remoteName: string, prune?: boolean) => Promise<GitOperationResult>;
-  pull: (repository: RepositoryTarget) => Promise<GitOperationResult>;
+  pull: (repository: RepositoryTarget, strategy: GitPullStrategy) => Promise<GitOperationResult>;
   mergeRemote: (repository: RepositoryTarget) => Promise<GitOperationResult>;
   push: (repository: RepositoryTarget) => Promise<GitOperationResult>;
   getRemotes: (repository: RepositoryTarget) => Promise<GitRemoteInfo[]>;

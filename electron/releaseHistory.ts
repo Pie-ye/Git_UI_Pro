@@ -94,7 +94,7 @@ export function buildReleaseHistoryCatalog(rawReleases: unknown, currentVersion:
   }
 
   if (!Array.isArray(rawReleases)) {
-    return new ReleaseHistoryCatalog([], new Map());
+    throw new Error("GitHub Releases 响应格式无效：预期发布记录数组。");
   }
 
   const releasesByVersion = new Map<string, ParsedRelease>();
