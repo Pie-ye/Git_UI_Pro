@@ -542,20 +542,22 @@ export function RepositoryCenter({ open, repository, data, actions, initialTab =
           </button>
         </header>
 
-        {actionError ? (
-          <div className="repository-center-action-error" role="alert">
-            <CircleAlert size={16} />
-            <span>{actionError}</span>
-            <button type="button" aria-label="关闭错误提示" title="关闭错误提示" onClick={() => setActionError("")}><X size={15} /></button>
-          </div>
-        ) : null}
-        {actionNotice ? (
-          <div className="repository-center-action-notice" role="status">
-            <Check size={16} />
-            <span>{actionNotice}</span>
-            <button type="button" aria-label="关闭操作结果" title="关闭操作结果" onClick={() => setActionNotice("")}><X size={15} /></button>
-          </div>
-        ) : null}
+        <div className="repository-center-feedback">
+          {actionError ? (
+            <div className="repository-center-action-error" role="alert">
+              <CircleAlert size={16} />
+              <span>{actionError}</span>
+              <button type="button" aria-label="关闭错误提示" title="关闭错误提示" onClick={() => setActionError("")}><X size={15} /></button>
+            </div>
+          ) : null}
+          {actionNotice ? (
+            <div className="repository-center-action-notice" role="status">
+              <Check size={16} />
+              <span>{actionNotice}</span>
+              <button type="button" aria-label="关闭操作结果" title="关闭操作结果" onClick={() => setActionNotice("")}><X size={15} /></button>
+            </div>
+          ) : null}
+        </div>
 
         <div className="repository-center-layout">
           <nav className="repository-center-nav" aria-label="仓库管理功能">
@@ -709,7 +711,7 @@ function RecoveryWorkspace({ data, actions, pendingAction, runAction, reload }: 
   const [bisectGoodRef, setBisectGoodRef] = useState("");
 
   return (
-    <div className="repository-center-workspace">
+    <div className="repository-center-workspace repository-center-recovery-workspace">
       <section className="repository-center-section">
         <SectionHeader icon={<Archive size={17} />} title="暂存工作区" description="保存当前修改并在需要时恢复" />
         <form className="repository-center-composer" onSubmit={(event) => {
@@ -1055,9 +1057,9 @@ function ToolsWorkspace({ data, actions, pendingAction, runAction, reload }: Wor
       </div>
       <div className="repository-center-section-column">
         <SectionHeader icon={<Package size={17} />} title="Git LFS" description="大文件扩展状态和本地对象维护" />
-        <ResourceBoundary section="lfs" resource={data.lfs} reload={reload}>{(lfs) => <div className="repository-center-metrics">
+        <ResourceBoundary section="lfs" resource={data.lfs} reload={reload}>{(lfs) => <div className="repository-center-metrics repository-center-lfs-metrics">
           <span><small>安装状态</small><strong>{lfs.installed ? "已安装" : "未安装"}</strong></span>
-          <span><small>版本</small><strong>{lfs.version || "-"}</strong></span>
+          <span className="repository-center-lfs-version"><small>版本</small><strong title={lfs.version}>{lfsVersionLabel(lfs.version)}</strong></span>
           <span><small>工作区变更</small><strong>{lfs.changedFileCount}</strong></span>
           <span><small>已暂存变更</small><strong>{lfs.stagedFileCount}</strong></span>
           <div className="repository-center-row-actions full"><ActionButton label="安装 LFS" actionKey="lfs:install" pendingAction={pendingAction} disabled={lfs.installed && lfs.initialized} onClick={() => void runAction("lfs:install", actions.onInstallLfs)} icon={<Package size={14} />} /><ActionButton label="拉取对象" actionKey="lfs:pull" pendingAction={pendingAction} disabled={!lfs.installed} onClick={() => void runAction("lfs:pull", actions.onPullLfs)} icon={<Download size={14} />} tone="primary" /><ActionButton label="清理本地对象" actionKey="lfs:prune" pendingAction={pendingAction} disabled={!lfs.installed} onClick={() => void runAction("lfs:prune", actions.onPruneLfs)} icon={<ListRestart size={14} />} requiresConfirmation confirmLabel="确认清理 LFS 对象" /></div>
@@ -1127,7 +1129,24 @@ function ProjectsWorkspace({ data, actions, pendingAction, runAction, reload }: 
       </div>
       <div className="repository-center-section-column">
         <SectionHeader icon={<FolderClock size={17} />} title="最近项目" description="快速打开或移出最近使用列表" />
-        <ResourceBoundary section="recent" resource={data.recent} reload={reload}>{(recent) => recent.length === 0 ? <EmptyState icon={<FolderClock size={20} />} title="没有最近项目" description="打开仓库后会记录在这里。" /> : <div className="repository-center-record-list compact">{recent.map((project) => <div className="repository-center-record" key={project.id}><span className="repository-center-record-leading"><FolderGit2 size={16} /></span><span className="repository-center-record-main"><strong>{project.name}</strong><small title={project.path}>{project.path}{project.lastOpenedAt ? ` · ${project.lastOpenedAt}` : ""}</small></span><div className="repository-center-row-actions"><ActionButton label="打开" actionKey={`recent:open:${project.id}`} pendingAction={pendingAction} onClick={() => void runAction(`recent:open:${project.id}`, () => actions.onOpenProject(project.id))} icon={<ArrowUpRight size={14} />} tone="primary" /><ActionButton label="移出" actionKey={`recent:remove:${project.id}`} pendingAction={pendingAction} onClick={() => void runAction(`recent:remove:${project.id}`, () => actions.onRemoveRecentProject(project.id))} icon={<X size={14} />} /></div></div>)}</div>}</ResourceBoundary>
+        <ResourceBoundary section="recent" resource={data.recent} reload={reload}>{(recent) => recent.length === 0 ? <EmptyState icon={<FolderClock size={20} />} title="没有最近项目" description="打开仓库后会记录在这里。" /> : (
+          <div className="repository-center-record-list compact repository-center-recent-list">
+            {recent.map((project) => (
+              <div className="repository-center-record repository-center-recent-record" key={project.id}>
+                <span className="repository-center-record-leading"><FolderGit2 size={16} /></span>
+                <span className="repository-center-record-main">
+                  <strong>{project.name}</strong>
+                  <small title={project.path}>{project.path}</small>
+                  {project.lastOpenedAt ? <small className="repository-center-record-time">最近打开 {formatRecentProjectTime(project.lastOpenedAt)}</small> : null}
+                </span>
+                <div className="repository-center-row-actions">
+                  <ActionButton label="打开" actionKey={`recent:open:${project.id}`} pendingAction={pendingAction} onClick={() => void runAction(`recent:open:${project.id}`, () => actions.onOpenProject(project.id))} icon={<ArrowUpRight size={14} />} tone="primary" />
+                  <ActionButton label="移出" actionKey={`recent:remove:${project.id}`} pendingAction={pendingAction} onClick={() => void runAction(`recent:remove:${project.id}`, () => actions.onRemoveRecentProject(project.id))} icon={<X size={14} />} />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}</ResourceBoundary>
       </div>
     </section>
 
@@ -1141,12 +1160,13 @@ function ProjectsWorkspace({ data, actions, pendingAction, runAction, reload }: 
 function GroupRow({ group, actions, pendingAction, runAction }: { group: RepositoryProjectGroup; actions: RepositoryCenterActions; pendingAction: string | null; runAction: RunAction }) {
   const [name, setName] = useState(group.name);
   useEffect(() => setName(group.name), [group.name]);
-  return <div className="repository-center-record"><span className="repository-center-record-leading"><Box size={16} /></span><span className="repository-center-record-main"><strong>{group.name}</strong><small>{group.projectIds.length} 个项目</small></span><div className="repository-center-row-editor"><label><span>名称</span><input value={name} onChange={(event) => setName(event.target.value)} /></label><ActionButton label="重命名" actionKey={`group:rename:${group.id}`} pendingAction={pendingAction} disabled={!name.trim() || name.trim() === group.name} onClick={() => void runAction(`group:rename:${group.id}`, () => actions.onRenameGroup({ groupId: group.id, name: name.trim() }))} icon={<Pencil size={14} />} /><ActionButton label="删除" actionKey={`group:delete:${group.id}`} pendingAction={pendingAction} onClick={() => void runAction(`group:delete:${group.id}`, () => actions.onDeleteGroup(group.id))} icon={<Trash2 size={14} />} tone="danger" requiresConfirmation confirmLabel="确认删除分组" /></div></div>;
+  return <div className="repository-center-record repository-center-group-record"><span className="repository-center-record-leading"><Box size={16} /></span><span className="repository-center-record-main"><strong>{group.name}</strong><small>{group.projectIds.length} 个项目</small></span><div className="repository-center-row-editor"><label><span>名称</span><input value={name} onChange={(event) => setName(event.target.value)} /></label><ActionButton label="重命名" actionKey={`group:rename:${group.id}`} pendingAction={pendingAction} disabled={!name.trim() || name.trim() === group.name} onClick={() => void runAction(`group:rename:${group.id}`, () => actions.onRenameGroup({ groupId: group.id, name: name.trim() }))} icon={<Pencil size={14} />} /><ActionButton label="删除" actionKey={`group:delete:${group.id}`} pendingAction={pendingAction} onClick={() => void runAction(`group:delete:${group.id}`, () => actions.onDeleteGroup(group.id))} icon={<Trash2 size={14} />} tone="danger" requiresConfirmation confirmLabel="确认删除分组" /></div></div>;
 }
 
 function PreferencesWorkspace({ data, actions, pendingAction, runAction, reload }: WorkspaceProps) {
   const [preferences, setPreferences] = useState(data.preferences.data);
   useEffect(() => setPreferences(data.preferences.data), [data.preferences.data]);
+  const hasChanges = JSON.stringify(preferences) !== JSON.stringify(data.preferences.data);
 
   function updateShortcut(id: string, keys: string) {
     setPreferences((current) => ({ ...current, shortcuts: current.shortcuts.map((shortcut) => shortcut.id === id ? { ...shortcut, keys } : shortcut) }));
@@ -1154,8 +1174,13 @@ function PreferencesWorkspace({ data, actions, pendingAction, runAction, reload 
 
   return <div className="repository-center-workspace">
     <section className="repository-center-section">
-      <SectionHeader icon={<MonitorCog size={17} />} title="显示与布局" description="主题、字体、差异视图和操作密度" actions={<ActionButton label="保存偏好" actionKey="preferences:save" pendingAction={pendingAction} disabled={data.preferences.status !== "ready"} onClick={() => void runAction("preferences:save", () => actions.onSavePreferences(preferences))} icon={<Save size={14} />} tone="primary" />} />
-      <ResourceBoundary section="preferences" resource={data.preferences} reload={reload}>{() => <div className="repository-center-preferences-grid">
+      <SectionHeader icon={<MonitorCog size={17} />} title="显示与布局" description="主题、字体、差异视图和操作密度" />
+      <ResourceBoundary section="preferences" resource={data.preferences} reload={reload}>{() => <>
+        <div className="repository-center-preferences-savebar" data-dirty={hasChanges}>
+          <span><strong>{hasChanges ? "有未保存的更改" : "偏好设置已保存"}</strong><small>{hasChanges ? "保存后立即应用到主界面。" : "修改任意选项后即可保存。"}</small></span>
+          <ActionButton label={hasChanges ? "保存设置" : "已保存"} actionKey="preferences:save" pendingAction={pendingAction} disabled={!hasChanges} onClick={() => void runAction("preferences:save", () => actions.onSavePreferences(preferences))} icon={hasChanges ? <Save size={14} /> : <Check size={14} />} tone={hasChanges ? "primary" : "secondary"} />
+        </div>
+        <div className="repository-center-preferences-grid">
         <fieldset><legend>外观主题</legend><div className="repository-center-segmented">{(["system", "light", "dark"] as const).map((theme) => <button type="button" key={theme} className={preferences.theme === theme ? "active" : ""} onClick={() => setPreferences((value) => ({ ...value, theme }))}>{theme === "system" ? "跟随系统" : theme === "light" ? "浅色" : "深色"}</button>)}</div></fieldset>
         <fieldset><legend>字体</legend><div className="repository-center-inline-settings"><label className="repository-center-field"><span>字体族</span><select value={preferences.fontFamily} onChange={(event) => setPreferences((value) => ({ ...value, fontFamily: event.target.value as RepositoryPreferences["fontFamily"] }))}><option value="system">系统界面字体</option><option value="mono">等宽字体</option></select></label><label className="repository-center-field"><span>字号</span><input type="number" min={11} max={20} value={preferences.fontSize} onChange={(event) => setPreferences((value) => ({ ...value, fontSize: Number(event.target.value) }))} /></label></div></fieldset>
         <fieldset><legend>差异视图</legend><div className="repository-center-segmented">{(["split", "inline"] as const).map((mode) => <button type="button" key={mode} className={preferences.diffMode === mode ? "active" : ""} onClick={() => setPreferences((value) => ({ ...value, diffMode: mode }))}>{mode === "split" ? "左右对比" : "行内对比"}</button>)}</div><label className="repository-center-switch"><input type="checkbox" checked={preferences.diffWrap} onChange={(event) => setPreferences((value) => ({ ...value, diffWrap: event.target.checked }))} /><span>自动换行</span></label></fieldset>
@@ -1163,7 +1188,8 @@ function PreferencesWorkspace({ data, actions, pendingAction, runAction, reload 
         <fieldset><legend>工作区布局</legend><div className="repository-center-inline-settings"><label className="repository-center-field"><span>密度</span><select value={preferences.density} onChange={(event) => setPreferences((value) => ({ ...value, density: event.target.value as RepositoryPreferences["density"] }))}><option value="compact">紧凑</option><option value="comfortable">舒适</option></select></label><label className="repository-center-field"><span>项目栏位置</span><select value={preferences.sidebarPosition} onChange={(event) => setPreferences((value) => ({ ...value, sidebarPosition: event.target.value as RepositoryPreferences["sidebarPosition"] }))}><option value="left">左侧</option><option value="right">右侧</option></select></label></div><label className="repository-center-switch"><input type="checkbox" checked={preferences.bottomConsoleVisible} onChange={(event) => setPreferences((value) => ({ ...value, bottomConsoleVisible: event.target.checked }))} /><span>显示底部控制台</span></label></fieldset>
         <fieldset className="wide"><legend>面板尺寸</legend><div className="repository-center-inline-settings"><label className="repository-center-field"><span>项目栏宽度</span><input type="number" min={180} max={340} value={preferences.sidebarWidth} onChange={(event) => setPreferences((value) => ({ ...value, sidebarWidth: Number(event.target.value) }))} /></label><label className="repository-center-field"><span>变更区宽度</span><input type="number" min={280} max={720} value={preferences.rightPanelWidth} onChange={(event) => setPreferences((value) => ({ ...value, rightPanelWidth: Number(event.target.value) }))} /></label><label className="repository-center-field"><span>控制台高度</span><input type="number" min={80} max={720} value={preferences.consoleHeight} onChange={(event) => setPreferences((value) => ({ ...value, consoleHeight: Number(event.target.value) }))} /></label></div></fieldset>
         <fieldset className="wide"><legend>危险操作</legend><label className="repository-center-switch"><input type="checkbox" checked={preferences.confirmDestructiveActions} onChange={(event) => setPreferences((value) => ({ ...value, confirmDestructiveActions: event.target.checked }))} /><span>执行强制重置、删除分支和清理工作树前要求确认</span></label></fieldset>
-      </div>}</ResourceBoundary>
+        </div>
+      </>}</ResourceBoundary>
     </section>
 
     <section className="repository-center-section">
@@ -1171,6 +1197,24 @@ function PreferencesWorkspace({ data, actions, pendingAction, runAction, reload 
       {data.preferences.status === "ready" ? <div className="repository-center-shortcuts">{preferences.shortcuts.length === 0 ? <EmptyState icon={<Terminal size={20} />} title="没有快捷键项目" description="宿主应用未提供可配置的命令。" /> : preferences.shortcuts.map((shortcut) => <label key={shortcut.id}><span><strong>{shortcut.label}</strong><small>{shortcut.id}</small></span><input value={shortcut.keys} onChange={(event) => updateShortcut(shortcut.id, event.target.value)} aria-label={`${shortcut.label}快捷键`} /></label>)}</div> : null}
     </section>
   </div>;
+}
+
+function lfsVersionLabel(value: string) {
+  return value.trim().split(/\s+/)[0] || "-";
+}
+
+function formatRecentProjectTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).format(date);
 }
 
 function hostingKindLabel(kind: RepositoryHostingLink["kind"]) {

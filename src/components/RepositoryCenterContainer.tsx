@@ -60,20 +60,32 @@ export function RepositoryCenterContainer({
   const [data, setData] = useState<RepositoryCenterData>(() => emptyCenterData());
   const [repositoryStatus, setRepositoryStatus] = useState<GitStatusSummary | undefined>(project?.status);
   const loadTokenRef = useRef(0);
+  const loadedProjectIdRef = useRef<string | null>(null);
+  const projectRef = useRef(project);
+  const projectsRef = useRef(projects);
+
+  projectRef.current = project;
+  projectsRef.current = projects;
 
   useEffect(() => {
     setRepositoryStatus(project?.status);
   }, [project?.id, project?.status]);
 
-  const loadAll = useCallback(async (projectSource: GitProject[] = projects) => {
+  const loadAll = useCallback(async (
+    projectSource: GitProject[] = projectsRef.current,
+    options: { showLoading?: boolean } = {}
+  ) => {
     const loadToken = ++loadTokenRef.current;
-    setData((current) => loadingCenterData(current));
+    const selectedProject = projectRef.current;
+    if (options.showLoading) {
+      setData((current) => loadingCenterData(current));
+    }
 
     const libraryPromise = asResource(() => apiClient.getProjectLibrary());
     const preferencesPromise = asResource(() => apiClient.getUiPreferences());
-    const statusPromise = project ? asResource(() => apiClient.getProjectStatus(project)) : Promise.resolve(readyResource<GitStatusSummary | undefined>(undefined));
-    const branchesPromise = project ? asResource(() => apiClient.getBranches(project)) : Promise.resolve(readyResource<BranchInfo[]>([]));
-    const remotesPromise = project ? asResource(() => apiClient.getRemotes(project)) : Promise.resolve(readyResource([]));
+    const statusPromise = selectedProject ? asResource(() => apiClient.getProjectStatus(selectedProject)) : Promise.resolve(readyResource<GitStatusSummary | undefined>(undefined));
+    const branchesPromise = selectedProject ? asResource(() => apiClient.getBranches(selectedProject)) : Promise.resolve(readyResource<BranchInfo[]>([]));
+    const remotesPromise = selectedProject ? asResource(() => apiClient.getRemotes(selectedProject)) : Promise.resolve(readyResource([]));
 
     const [library, preferences, status, branches, remotes, stashes, tags, reflog, worktrees, submodules, lfs, gitignore, signing] = await Promise.all([
       libraryPromise,
@@ -81,22 +93,22 @@ export function RepositoryCenterContainer({
       statusPromise,
       branchesPromise,
       remotesPromise,
-      project ? asResource(() => apiClient.getStashes(project)) : Promise.resolve(readyResource([])),
-      project ? asResource(() => apiClient.getTags(project)) : Promise.resolve(readyResource([])),
-      project ? asResource(() => apiClient.getReflog(project, 150)) : Promise.resolve(readyResource([])),
-      project ? asResource(() => apiClient.getLinkedWorktrees(project)) : Promise.resolve(readyResource([])),
-      project ? asResource(() => apiClient.getSubmodules(project)) : Promise.resolve(readyResource([])),
-      project ? asResource(() => apiClient.getLfsStatus(project)) : Promise.resolve(readyResource(undefined)),
-      project ? asResource(() => apiClient.readGitIgnore(project)) : Promise.resolve(readyResource(undefined)),
-      project ? asResource(() => apiClient.getSigningConfig(project)) : Promise.resolve(readyResource(undefined))
+      selectedProject ? asResource(() => apiClient.getStashes(selectedProject)) : Promise.resolve(readyResource([])),
+      selectedProject ? asResource(() => apiClient.getTags(selectedProject)) : Promise.resolve(readyResource([])),
+      selectedProject ? asResource(() => apiClient.getReflog(selectedProject, 150)) : Promise.resolve(readyResource([])),
+      selectedProject ? asResource(() => apiClient.getLinkedWorktrees(selectedProject)) : Promise.resolve(readyResource([])),
+      selectedProject ? asResource(() => apiClient.getSubmodules(selectedProject)) : Promise.resolve(readyResource([])),
+      selectedProject ? asResource(() => apiClient.getLfsStatus(selectedProject)) : Promise.resolve(readyResource(undefined)),
+      selectedProject ? asResource(() => apiClient.readGitIgnore(selectedProject)) : Promise.resolve(readyResource(undefined)),
+      selectedProject ? asResource(() => apiClient.getSigningConfig(selectedProject)) : Promise.resolve(readyResource(undefined))
     ]);
 
     const resolvedStatus = status.status === "ready" ? status.data : undefined;
-    const hosting = !project
+    const hosting = !selectedProject
       ? readyResource<RepositoryHostingLink[]>([])
       : remotes.status === "error"
         ? errorResource<RepositoryHostingLink[]>(remotes.error, [])
-        : await loadHostingResources(project, remotes.data, resolvedStatus?.currentBranch ?? undefined);
+        : await loadHostingResources(selectedProject, remotes.data, resolvedStatus?.currentBranch ?? undefined);
 
     if (loadToken !== loadTokenRef.current) {
       return;
@@ -179,7 +191,7 @@ export function RepositoryCenterContainer({
         headHash: entry.head.slice(0, 10),
         locked: Boolean(entry.lockedReason),
         prunable: Boolean(entry.prunableReason),
-        isMain: Boolean(project && normalizePath(entry.path) === normalizePath(project.path))
+        isMain: Boolean(selectedProject && normalizePath(entry.path) === normalizePath(selectedProject.path))
       })), []),
       submodules: mapResource(submodules, (entries) => entries.map((entry) => ({
         id: entry.path,
@@ -216,13 +228,17 @@ export function RepositoryCenterContainer({
       ),
       preferences: mapResource(preferences, toRepositoryPreferences, toRepositoryPreferences(defaultPreferences()))
     });
-  }, [onLibraryChange, project, projects]);
+  }, [onLibraryChange]);
 
   useEffect(() => {
-    if (open) {
-      void loadAll();
+    if (!open) {
+      return;
     }
-  }, [loadAll, open]);
+    const projectId = project?.id ?? "no-project";
+    const showLoading = loadedProjectIdRef.current !== projectId;
+    loadedProjectIdRef.current = projectId;
+    void loadAll(projectsRef.current, { showLoading });
+  }, [loadAll, open, project?.id]);
 
   async function completeGit(resultPromise: Promise<GitOperationResult>): Promise<void>;
   async function completeGit(resultPromise: Promise<GitOperationResult>, includeFeedback: true): Promise<string>;
@@ -444,7 +460,7 @@ export function RepositoryCenterContainer({
     onSavePreferences: async (preferences) => {
       const saved = await apiClient.updateUiPreferences(fromRepositoryPreferences(preferences));
       onPreferencesChange(saved);
-      await loadAll();
+      setData((current) => ({ ...current, preferences: readyResource(toRepositoryPreferences(saved)) }));
     }
   }), [data, loadAll, onClose, onOpenProject, onPreferencesChange, onProjectsChange, onRepositoryChange, project, projects]);
 

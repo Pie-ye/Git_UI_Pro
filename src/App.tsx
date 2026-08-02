@@ -10,6 +10,8 @@ import {
   Moon,
   PanelLeftClose,
   PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
   Plus,
   RefreshCw,
   Sun,
@@ -2524,11 +2526,18 @@ export function App() {
   function renderSidebarControls(collapsed: boolean) {
     const sidebarToggleLabel = collapsed ? "展开项目栏" : "收起项目栏";
     const themeToggleLabel = resolvedTheme === "dark" ? "切换浅色主题" : "切换深色主题";
+    const sidebarOnRight = uiPreferences.sidebarPosition === "right";
     return (
-      <div className={`sidebar-bottom-controls ${collapsed ? "collapsed" : ""}`} aria-label="左侧栏控制">
+      <div className={`sidebar-bottom-controls ${collapsed ? "collapsed" : ""}`} aria-label={`${sidebarOnRight ? "右" : "左"}侧栏控制`}>
         <PathTooltip content={sidebarToggleLabel} className="sidebar-control-tooltip">
           <button type="button" className="icon-button compact-icon" aria-label={sidebarToggleLabel} onClick={() => setLeftCollapsed(!collapsed)}>
-            {collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+            {collapsed ? (
+              sidebarOnRight ? <PanelRightOpen size={16} /> : <PanelLeftOpen size={16} />
+            ) : sidebarOnRight ? (
+              <PanelRightClose size={16} />
+            ) : (
+              <PanelLeftClose size={16} />
+            )}
           </button>
         </PathTooltip>
         <PathTooltip content={themeToggleLabel} className="sidebar-control-tooltip">
