@@ -8,6 +8,7 @@ import {
   buildCommitMessage,
   collectArtifacts,
   compareVersions,
+  createGitHubProxyTransport,
   detectProvider,
   expectedWindowsUpdateArtifacts,
   isTransientGitNetworkFailure,
@@ -17,6 +18,7 @@ import {
   parseVersion,
   recommendVersions,
   retryPush,
+  resolveGitHubProxy,
   resolveNpmInvocation,
   runGitWithNetworkRetry,
   runProcess,
@@ -81,6 +83,65 @@ test("从常见 GitHub 远端地址解析仓库", () => {
   assert.deepEqual(parseGitHubRepository("git+https://github.com/example-owner/repo.name.git"), expected);
   assert.equal(parseGitHubRepository("https://gitee.com/example-owner/repo.name.git"), null);
   assert.equal(parseGitHubRepository("https://github.com/example-owner/repo/extra"), null);
+});
+
+test("GitHub 正式版检查复用 Git URL 匹配代理", async () => {
+  const commandCalls = [];
+  const proxyUrl = await resolveGitHubProxy(
+    "https://github.com/example/repo/releases/download/v1.0.0/latest.yml",
+    {
+      runCommand: async (args, options) => {
+        commandCalls.push({ args, options });
+        return { code: 0, stdout: "http://127.0.0.1:7897\n", stderr: "", timedOut: false };
+      }
+    }
+  );
+  assert.equal(proxyUrl, "http://127.0.0.1:7897/");
+  assert.deepEqual(commandCalls, [{
+    args: ["config", "--get-urlmatch", "http.proxy", "https://github.com/example/repo/releases/download/v1.0.0/latest.yml"],
+    options: { allowFailure: true }
+  }]);
+
+  let receivedDispatcher = null;
+  let dispatcherClosed = false;
+  const dispatcher = { close: async () => { dispatcherClosed = true; } };
+  const transport = createGitHubProxyTransport(proxyUrl, {
+    createDispatcher: (url) => {
+      assert.equal(url, proxyUrl);
+      return dispatcher;
+    },
+    fetchImpl: async (_url, options) => {
+      receivedDispatcher = options.dispatcher;
+      return new Response("ok");
+    }
+  });
+  assert.equal((await transport.fetchImpl("https://github.com/example/repo")).status, 200);
+  assert.equal(receivedDispatcher, dispatcher);
+  await transport.close();
+  assert.equal(dispatcherClosed, true);
+});
+
+test("GitHub 代理未配置时保持直连，配置读取失败或协议不受支持时明确拒绝", async () => {
+  assert.equal(await resolveGitHubProxy("https://github.com/example/repo", {
+    runCommand: async () => ({ code: 1, stdout: "", stderr: "", timedOut: false })
+  }), null);
+
+  assert.equal(await resolveGitHubProxy("https://github.com/example/repo", {
+    runCommand: async () => ({ code: 0, stdout: "socks5://127.0.0.1:7897", stderr: "", timedOut: false })
+  }), "socks5://127.0.0.1:7897");
+
+  await assert.rejects(
+    resolveGitHubProxy("https://github.com/example/repo", {
+      runCommand: async () => ({ code: 2, stdout: "", stderr: "配置读取失败", timedOut: false })
+    }),
+    /读取 GitHub 的 Git 代理配置失败：配置读取失败/
+  );
+  await assert.rejects(
+    resolveGitHubProxy("https://github.com/example/repo", {
+      runCommand: async () => ({ code: 0, stdout: "socks5h://127.0.0.1:7897", stderr: "", timedOut: false })
+    }),
+    /代理协议 socks5h: 不受发布控制台支持/
+  );
 });
 
 test("只将临时 Git 网络故障识别为可重试错误", () => {

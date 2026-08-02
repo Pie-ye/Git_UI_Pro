@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { ProxyAgent, fetch as undiciFetch } from "undici";
 import {
   Check,
   CheckCircle2,
@@ -911,6 +912,52 @@ function githubRequestHeaders(accept) {
   };
 }
 
+export async function resolveGitHubProxy(requestUrl, options = {}) {
+  const runCommand = options.runCommand ?? runGit;
+  const result = await runCommand(
+    ["config", "--get-urlmatch", "http.proxy", requestUrl],
+    { allowFailure: true }
+  );
+  const configuredProxy = result.stdout.trim();
+  if (result.code === 1 && !configuredProxy && !result.timedOut) {
+    return null;
+  }
+  if (result.code !== 0 || result.timedOut) {
+    const detail = result.timedOut
+      ? "命令执行超时"
+      : result.stderr.trim() || `退出码 ${result.code}`;
+    throw new Error(`读取 GitHub 的 Git 代理配置失败：${detail}`);
+  }
+  if (!configuredProxy) {
+    throw new Error("GitHub 的 Git 代理配置为空，请检查 http.proxy");
+  }
+
+  let parsedProxy;
+  try {
+    parsedProxy = new URL(configuredProxy);
+  } catch {
+    throw new Error("GitHub 的 Git 代理配置不是有效 URL，请检查 http.proxy");
+  }
+  if (!["http:", "https:", "socks:", "socks5:"].includes(parsedProxy.protocol)) {
+    throw new Error(`GitHub 的 Git 代理协议 ${parsedProxy.protocol} 不受发布控制台支持`);
+  }
+  return parsedProxy.toString();
+}
+
+export function createGitHubProxyTransport(proxyUrl, options = {}) {
+  const createDispatcher = options.createDispatcher ?? ((url) => new ProxyAgent(url));
+  const fetchImpl = options.fetchImpl ?? undiciFetch;
+  const dispatcher = createDispatcher(proxyUrl);
+  return {
+    fetchImpl: (url, requestOptions = {}) => fetchImpl(url, { ...requestOptions, dispatcher }),
+    close: async () => {
+      if (typeof dispatcher.close === "function") {
+        await dispatcher.close();
+      }
+    }
+  };
+}
+
 function addCacheBuster(url, value) {
   const result = new URL(url);
   result.searchParams.set("release-console", String(value));
@@ -1284,9 +1331,20 @@ async function confirmGitHubReleaseReady(job) {
   if (!repository) {
     throw new Error("GitHub 标签已推送，但无法从远端地址识别仓库，不能确认正式安装包状态");
   }
-  await waitForGitHubReleaseReady(repository, job.tag, job.version, {
-    onProgress: ({ level, message }) => addLog(job, level, message)
-  });
+  const releaseUrl = `https://github.com/${repository.owner}/${repository.repository}/releases/download/${job.tag}/latest.yml`;
+  const proxyUrl = await resolveGitHubProxy(releaseUrl);
+  const transport = proxyUrl ? createGitHubProxyTransport(proxyUrl) : null;
+  if (proxyUrl) {
+    addLog(job, "info", "GitHub 状态检查使用 Git 配置中的网络代理");
+  }
+  try {
+    await waitForGitHubReleaseReady(repository, job.tag, job.version, {
+      fetchImpl: transport?.fetchImpl,
+      onProgress: ({ level, message }) => addLog(job, level, message)
+    });
+  } finally {
+    await transport?.close();
+  }
 }
 
 async function executeRelease(job) {
