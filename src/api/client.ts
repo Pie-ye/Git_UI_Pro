@@ -15,13 +15,24 @@ import type {
   GitHistoryRef,
   GitBlameLine,
   GitHostingLinks,
+  GitHostingAccountSummary,
+  GitHostingChangeRequest,
+  GitHostingCreateChangeInput,
+  GitHostingMergeInput,
+  GitHostingProvider,
+  GitHostingReviewInput,
+  GitIdentityConfig,
+  GitIdentityUpdate,
   GitIgnoreDocument,
   GitLfsStatus,
+  GitLfsLock,
+  GitLfsMigrateOptions,
   GitLinkedWorktree,
   GitMergePreview,
   GitMergeStrategy,
   GitOperationResult,
   GitPullStrategy,
+  GitPushOptions,
   GitProject,
   GitReflogEntry,
   GitRebasePlanItem,
@@ -32,24 +43,31 @@ import type {
   GitSigningConfigUpdate,
   GitStashCreateOptions,
   GitStashEntry,
+  GitStashDetails,
+  GitSubmoduleAddOptions,
   GitStatusSummary,
   GitSubmoduleInfo,
   GitSubmoduleUpdateOptions,
   GitTagInfo,
   GitWorktreeAddOptions,
+  GitWorktreeMoveOptions,
   GitCloneOptions,
   ProjectGroup,
   ProjectLibraryState,
   RemoteProjectInput,
   RemoteProjectTestResult,
+  SshHostInspection,
   RepositoryTarget,
   RepositoryCreationResult,
   TerminalDataEvent,
   TerminalExitEvent,
+  TerminalHistoryEntry,
   TerminalSessionInfo,
   UiPreferences,
   WorktreeState
 } from "../types/domain";
+import type { GitLongOperationKind } from "../types/operations";
+import { beginGitOperation, finishGitOperation } from "./operationTracker";
 
 const mockDelay = 180;
 let browserProjectLibrary: ProjectLibraryState = {
@@ -77,6 +95,7 @@ let browserUiPreferences: UiPreferences = {
   confirmDestructiveActions: true,
   shortcuts: {}
 };
+const browserTerminalHistories: Record<string, TerminalHistoryEntry[]> = {};
 
 export const apiClient = {
   async getGitVersion(): Promise<GitOperationResult> {
@@ -100,6 +119,22 @@ export const apiClient = {
 
     window.open(url, "_blank", "noopener,noreferrer");
     return true;
+  },
+
+  async openPath(filePath: string): Promise<boolean> {
+    return desktopBridge().openPath(filePath);
+  },
+
+  async revealPath(filePath: string): Promise<boolean> {
+    return desktopBridge().revealPath(filePath);
+  },
+
+  async inspectSshHost(host: string, port?: number): Promise<SshHostInspection> {
+    return desktopBridge().inspectSshHost(host, port);
+  },
+
+  async trustSshHost(token: string, replaceExisting: boolean): Promise<boolean> {
+    return desktopBridge().trustSshHost(token, replaceExisting);
   },
 
   async startTerminal(project: GitProject): Promise<TerminalSessionInfo> {
@@ -140,6 +175,31 @@ export const apiClient = {
 
     void sessionId;
     return true;
+  },
+
+  async getTerminalHistory(projectId: string): Promise<TerminalHistoryEntry[]> {
+    if (window.gitUI) {
+      return window.gitUI.getTerminalHistory(projectId);
+    }
+    return (browserTerminalHistories[projectId] ?? []).map((entry) => ({ ...entry }));
+  },
+
+  async appendTerminalHistory(projectId: string, command: string): Promise<TerminalHistoryEntry[]> {
+    if (window.gitUI) {
+      return window.gitUI.appendTerminalHistory(projectId, command);
+    }
+    const entry = { id: crypto.randomUUID(), command, executedAt: new Date().toISOString() };
+    browserTerminalHistories[projectId] = [entry, ...(browserTerminalHistories[projectId] ?? [])].slice(0, 200);
+    return browserTerminalHistories[projectId].map((item) => ({ ...item }));
+  },
+
+  async clearTerminalHistory(projectId: string): Promise<boolean> {
+    if (window.gitUI) {
+      return window.gitUI.clearTerminalHistory(projectId);
+    }
+    const existed = projectId in browserTerminalHistories;
+    delete browserTerminalHistories[projectId];
+    return existed;
   },
 
   onTerminalData(callback: (event: TerminalDataEvent) => void): () => void {
@@ -481,24 +541,26 @@ export const apiClient = {
   },
 
   async fetch(project: GitProject): Promise<GitOperationResult> {
-    if (window.gitUI) {
-      return window.gitUI.fetch(repositoryTarget(project));
-    }
-
-    await wait(mockDelay);
-    return okResult("git fetch --prune");
+    return runTrackedGitOperation("fetch", "获取远程更新", project.path, async (operationId) => {
+      if (window.gitUI) {
+        return window.gitUI.fetch(repositoryTarget(project), { operationId });
+      }
+      await wait(mockDelay);
+      return okResult("git fetch --progress --prune");
+    });
   },
 
   async pull(project: GitProject, strategy: GitPullStrategy): Promise<GitOperationResult> {
-    if (window.gitUI) {
-      return window.gitUI.pull(repositoryTarget(project), strategy);
-    }
-
-    await wait(mockDelay);
-    if (strategy === "ff-only") return okResult("git pull --ff-only");
-    if (strategy === "rebase") return okResult("git pull --rebase");
-    if (strategy === "rebase-autostash") return okResult("git pull --rebase --autostash");
-    throw new Error(`不支持的拉取策略：${String(strategy)}`);
+    return runTrackedGitOperation("pull", "拉取当前分支", project.path, async (operationId) => {
+      if (window.gitUI) {
+        return window.gitUI.pull(repositoryTarget(project), strategy, { operationId });
+      }
+      await wait(mockDelay);
+      if (strategy === "ff-only") return okResult("git pull --progress --ff-only");
+      if (strategy === "rebase") return okResult("git pull --progress --rebase");
+      if (strategy === "rebase-autostash") return okResult("git pull --progress --rebase --autostash");
+      throw new Error(`不支持的拉取策略：${String(strategy)}`);
+    });
   },
 
   async mergeRemote(project: GitProject): Promise<GitOperationResult> {
@@ -510,13 +572,14 @@ export const apiClient = {
     return okResult(`git fetch --prune ; git merge --no-edit ${project.status?.upstream ?? "@{upstream}"}`);
   },
 
-  async push(project: GitProject): Promise<GitOperationResult> {
-    if (window.gitUI) {
-      return window.gitUI.push(repositoryTarget(project));
-    }
-
-    await wait(mockDelay);
-    return okResult("git push");
+  async push(project: GitProject, options: GitPushOptions = {}): Promise<GitOperationResult> {
+    return runTrackedGitOperation("push", options.forceWithLease ? "安全强制推送" : "推送当前分支", project.path, async (operationId) => {
+      if (window.gitUI) {
+        return window.gitUI.push(repositoryTarget(project), { ...options, operationId });
+      }
+      await wait(mockDelay);
+      return okResult(`git push --progress${options.forceWithLease ? " --force-with-lease" : ""}`);
+    });
   },
 
   async getBranches(project: GitProject): Promise<BranchInfo[]> {
@@ -632,7 +695,7 @@ export const apiClient = {
     return okResult(`git commit --amend -m ${input.subject}`);
   },
 
-  async resetLastCommit(project: GitProject, mode: Exclude<GitResetMode, "hard">): Promise<GitOperationResult> {
+  async resetLastCommit(project: GitProject, mode: GitResetMode): Promise<GitOperationResult> {
     if (window.gitUI) {
       return window.gitUI.resetLastCommit(repositoryTarget(project), mode);
     }
@@ -714,7 +777,9 @@ export const apiClient = {
   },
 
   async fetchRemote(project: GitProject, remoteName: string, prune = false): Promise<GitOperationResult> {
-    return desktopBridge().fetchRemote(repositoryTarget(project), remoteName, prune);
+    return runTrackedGitOperation("fetch", `获取 ${remoteName}`, project.path, (operationId) =>
+      desktopBridge().fetchRemote(repositoryTarget(project), remoteName, prune, { operationId })
+    );
   },
 
   async getProjectLibrary(): Promise<ProjectLibraryState> {
@@ -815,11 +880,23 @@ export const apiClient = {
   },
 
   async cloneRepository(sourceUrl: string, destinationPath: string, options: GitCloneOptions): Promise<RepositoryCreationResult> {
-    return desktopBridge().cloneRepository(sourceUrl, destinationPath, options);
+    const operationId = beginGitOperation("clone", "克隆仓库", destinationPath);
+    try {
+      const result = await desktopBridge().cloneRepository(sourceUrl, destinationPath, options, { operationId });
+      finishGitOperation(operationId, result.result.ok, result.result.messageZh);
+      return result;
+    } catch (error) {
+      finishGitOperation(operationId, false, errorMessage(error));
+      throw error;
+    }
   },
 
   async getStashes(project: GitProject): Promise<GitStashEntry[]> {
     return desktopBridge().getStashes(repositoryTarget(project));
+  },
+
+  async getStashDetails(project: GitProject, selector: string): Promise<GitStashDetails> {
+    return desktopBridge().getStashDetails(repositoryTarget(project), selector);
   },
 
   async createStash(project: GitProject, options: GitStashCreateOptions): Promise<GitOperationResult> {
@@ -994,6 +1071,22 @@ export const apiClient = {
     return desktopBridge().pruneLinkedWorktrees(repositoryTarget(project));
   },
 
+  async lockLinkedWorktree(project: GitProject, worktreePath: string, reason?: string): Promise<GitOperationResult> {
+    return desktopBridge().lockLinkedWorktree(repositoryTarget(project), worktreePath, reason);
+  },
+
+  async unlockLinkedWorktree(project: GitProject, worktreePath: string): Promise<GitOperationResult> {
+    return desktopBridge().unlockLinkedWorktree(repositoryTarget(project), worktreePath);
+  },
+
+  async moveLinkedWorktree(project: GitProject, options: GitWorktreeMoveOptions): Promise<GitOperationResult> {
+    return desktopBridge().moveLinkedWorktree(repositoryTarget(project), options);
+  },
+
+  async repairLinkedWorktrees(project: GitProject, worktreePaths: string[] = []): Promise<GitOperationResult> {
+    return desktopBridge().repairLinkedWorktrees(repositoryTarget(project), worktreePaths);
+  },
+
   async getSubmodules(project: GitProject): Promise<GitSubmoduleInfo[]> {
     return desktopBridge().getSubmodules(repositoryTarget(project));
   },
@@ -1010,6 +1103,22 @@ export const apiClient = {
     return desktopBridge().syncSubmodules(repositoryTarget(project), recursive);
   },
 
+  async addSubmodule(project: GitProject, options: GitSubmoduleAddOptions): Promise<GitOperationResult> {
+    return desktopBridge().addSubmodule(repositoryTarget(project), options);
+  },
+
+  async setSubmoduleBranch(project: GitProject, modulePath: string, branch?: string): Promise<GitOperationResult> {
+    return desktopBridge().setSubmoduleBranch(repositoryTarget(project), modulePath, branch);
+  },
+
+  async deinitializeSubmodule(project: GitProject, modulePath: string, force = false): Promise<GitOperationResult> {
+    return desktopBridge().deinitializeSubmodule(repositoryTarget(project), modulePath, force);
+  },
+
+  async removeSubmodule(project: GitProject, modulePath: string, force = false): Promise<GitOperationResult> {
+    return desktopBridge().removeSubmodule(repositoryTarget(project), modulePath, force);
+  },
+
   async getLfsStatus(project: GitProject): Promise<GitLfsStatus> {
     return desktopBridge().getLfsStatus(repositoryTarget(project));
   },
@@ -1019,11 +1128,45 @@ export const apiClient = {
   },
 
   async pullLfs(project: GitProject, remoteName?: string, refs?: string[]): Promise<GitOperationResult> {
-    return desktopBridge().pullLfs(repositoryTarget(project), remoteName, refs);
+    return runTrackedGitOperation("lfs-pull", "拉取 LFS 对象", project.path, (operationId) =>
+      desktopBridge().pullLfs(repositoryTarget(project), remoteName, refs, { operationId })
+    );
   },
 
   async pruneLfs(project: GitProject): Promise<GitOperationResult> {
     return desktopBridge().pruneLfs(repositoryTarget(project));
+  },
+
+  async trackLfsPatterns(project: GitProject, patterns: string[]): Promise<GitOperationResult> {
+    return desktopBridge().trackLfsPatterns(repositoryTarget(project), patterns);
+  },
+
+  async untrackLfsPatterns(project: GitProject, patterns: string[]): Promise<GitOperationResult> {
+    return desktopBridge().untrackLfsPatterns(repositoryTarget(project), patterns);
+  },
+
+  async getLfsLocks(project: GitProject): Promise<GitLfsLock[]> {
+    return desktopBridge().getLfsLocks(repositoryTarget(project));
+  },
+
+  async lockLfsFile(project: GitProject, filePath: string): Promise<GitOperationResult> {
+    return desktopBridge().lockLfsFile(repositoryTarget(project), filePath);
+  },
+
+  async unlockLfsFile(project: GitProject, lockId: string, force = false): Promise<GitOperationResult> {
+    return desktopBridge().unlockLfsFile(repositoryTarget(project), lockId, force);
+  },
+
+  async migrateLfs(project: GitProject, options: GitLfsMigrateOptions): Promise<GitOperationResult> {
+    const operationId = beginGitOperation("lfs-migrate", "迁移 LFS 历史", project.path);
+    try {
+      const result = await desktopBridge().migrateLfs(repositoryTarget(project), options, { operationId });
+      finishGitOperation(operationId, result.ok, result.messageZh);
+      return result;
+    } catch (error) {
+      finishGitOperation(operationId, false, errorMessage(error));
+      throw error;
+    }
   },
 
   async readGitIgnore(project: GitProject): Promise<GitIgnoreDocument> {
@@ -1042,10 +1185,87 @@ export const apiClient = {
     return desktopBridge().setSigningConfig(repositoryTarget(project), input);
   },
 
+  async getGitIdentity(project: GitProject): Promise<GitIdentityConfig> {
+    return desktopBridge().getGitIdentity(repositoryTarget(project));
+  },
+
+  async setGitIdentity(project: GitProject, input: GitIdentityUpdate): Promise<GitOperationResult> {
+    return desktopBridge().setGitIdentity(repositoryTarget(project), input);
+  },
+
   async getHostingLinks(project: GitProject, remoteName: string, commitHash?: string, branchName?: string): Promise<GitHostingLinks> {
     return desktopBridge().getHostingLinks(repositoryTarget(project), remoteName, commitHash, branchName);
+  },
+
+  async listHostingAccounts(): Promise<GitHostingAccountSummary[]> {
+    return desktopBridge().listHostingAccounts();
+  },
+
+  async saveHostingAccount(provider: GitHostingProvider, remoteUrl: string, token: string): Promise<GitHostingAccountSummary> {
+    return desktopBridge().saveHostingAccount(provider, remoteUrl, token);
+  },
+
+  async removeHostingAccount(provider: GitHostingProvider, host: string): Promise<boolean> {
+    return desktopBridge().removeHostingAccount(provider, host);
+  },
+
+  async listHostingChangeRequests(provider: GitHostingProvider, remoteUrl: string): Promise<GitHostingChangeRequest[]> {
+    return desktopBridge().listHostingChangeRequests(provider, remoteUrl);
+  },
+
+  async getHostingChangeRequest(provider: GitHostingProvider, remoteUrl: string, number: number): Promise<GitHostingChangeRequest> {
+    return desktopBridge().getHostingChangeRequest(provider, remoteUrl, number);
+  },
+
+  async createHostingChangeRequest(
+    provider: GitHostingProvider,
+    remoteUrl: string,
+    input: GitHostingCreateChangeInput
+  ): Promise<GitHostingChangeRequest> {
+    return desktopBridge().createHostingChangeRequest(provider, remoteUrl, input);
+  },
+
+  async commentHostingChangeRequest(provider: GitHostingProvider, remoteUrl: string, number: number, body: string): Promise<boolean> {
+    return desktopBridge().commentHostingChangeRequest(provider, remoteUrl, number, body);
+  },
+
+  async reviewHostingChangeRequest(
+    provider: GitHostingProvider,
+    remoteUrl: string,
+    input: GitHostingReviewInput
+  ): Promise<boolean> {
+    return desktopBridge().reviewHostingChangeRequest(provider, remoteUrl, input);
+  },
+
+  async mergeHostingChangeRequest(
+    provider: GitHostingProvider,
+    remoteUrl: string,
+    input: GitHostingMergeInput
+  ): Promise<boolean> {
+    return desktopBridge().mergeHostingChangeRequest(provider, remoteUrl, input);
   }
 };
+
+async function runTrackedGitOperation(
+  kind: GitLongOperationKind,
+  label: string,
+  repositoryPath: string,
+  run: (operationId: string) => Promise<GitOperationResult>
+): Promise<GitOperationResult> {
+  const operationId = beginGitOperation(kind, label, repositoryPath);
+  try {
+    const result = await run(operationId);
+    finishGitOperation(operationId, result.ok, result.messageZh ?? (result.ok ? "已完成" : result.stderr.trim() || "执行失败"));
+    return result;
+  } catch (error) {
+    finishGitOperation(operationId, false, errorMessage(error));
+    throw error;
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 function repositoryTarget(project: GitProject): RepositoryTarget {
   return {

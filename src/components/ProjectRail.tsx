@@ -92,7 +92,11 @@ export function ProjectRail({
   const [filterMenuPosition, setFilterMenuPosition] = useState<CSSProperties>({ top: 0, left: 0, width: PROJECT_STATUS_FILTER_MENU_WIDTH });
   const [statusFilters, setStatusFilters] = useState<ProjectStatusFilterId[]>([]);
   const [collapsedGroupIds, setCollapsedGroupIds] = useState<string[]>([]);
+  const [reorderAnnouncement, setReorderAnnouncement] = useState("");
   const filterMenuButtonRef = useRef<HTMLButtonElement>(null);
+  const filterMenuRef = useRef<HTMLDivElement>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+  const contextMenuOpenerRef = useRef<HTMLElement | null>(null);
   const projectItemRefs = useRef(new Map<string, HTMLDivElement>());
   const contextMenuCloseTimerRef = useRef<number | undefined>();
   const keyword = query.trim();
@@ -137,23 +141,26 @@ export function ProjectRail({
       return;
     }
 
+    const focusFrame = window.requestAnimationFrame(() => focusFirstMenuItem(contextMenuRef.current));
     const closeOnPointerDown = () => closeContextMenu();
+    const closeOnWindowChange = () => closeContextMenu();
     const closeOnKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        closeContextMenu();
+        closeContextMenu(true);
       }
     };
 
     document.addEventListener("pointerdown", closeOnPointerDown);
     document.addEventListener("keydown", closeOnKeyDown);
-    window.addEventListener("blur", closeContextMenu);
-    window.addEventListener("resize", closeContextMenu);
+    window.addEventListener("blur", closeOnWindowChange);
+    window.addEventListener("resize", closeOnWindowChange);
     return () => {
+      window.cancelAnimationFrame(focusFrame);
       window.clearTimeout(contextMenuCloseTimerRef.current);
       document.removeEventListener("pointerdown", closeOnPointerDown);
       document.removeEventListener("keydown", closeOnKeyDown);
-      window.removeEventListener("blur", closeContextMenu);
-      window.removeEventListener("resize", closeContextMenu);
+      window.removeEventListener("blur", closeOnWindowChange);
+      window.removeEventListener("resize", closeOnWindowChange);
     };
   }, [contextMenu]);
 
@@ -162,22 +169,31 @@ export function ProjectRail({
       return;
     }
 
-    const closeFilterMenu = () => setFilterMenuOpen(false);
+    const focusFrame = window.requestAnimationFrame(() => focusFirstMenuItem(filterMenuRef.current));
+    const closeFilterMenu = (restoreFocus = false) => {
+      setFilterMenuOpen(false);
+      if (restoreFocus) {
+        window.requestAnimationFrame(() => filterMenuButtonRef.current?.focus());
+      }
+    };
+    const closeOnPointerDown = () => closeFilterMenu();
+    const closeOnWindowChange = () => closeFilterMenu();
     const closeOnKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        closeFilterMenu();
+        closeFilterMenu(true);
       }
     };
 
-    document.addEventListener("pointerdown", closeFilterMenu);
+    document.addEventListener("pointerdown", closeOnPointerDown);
     document.addEventListener("keydown", closeOnKeyDown);
-    window.addEventListener("blur", closeFilterMenu);
-    window.addEventListener("resize", closeFilterMenu);
+    window.addEventListener("blur", closeOnWindowChange);
+    window.addEventListener("resize", closeOnWindowChange);
     return () => {
-      document.removeEventListener("pointerdown", closeFilterMenu);
+      window.cancelAnimationFrame(focusFrame);
+      document.removeEventListener("pointerdown", closeOnPointerDown);
       document.removeEventListener("keydown", closeOnKeyDown);
-      window.removeEventListener("blur", closeFilterMenu);
-      window.removeEventListener("resize", closeFilterMenu);
+      window.removeEventListener("blur", closeOnWindowChange);
+      window.removeEventListener("resize", closeOnWindowChange);
     };
   }, [filterMenuOpen]);
 
@@ -185,9 +201,12 @@ export function ProjectRail({
     setStatusFilters((current) => (current.includes(filterId) ? current.filter((item) => item !== filterId) : [...current, filterId]));
   }
 
-  function closeContextMenu() {
+  function closeContextMenu(restoreFocus = false) {
     window.clearTimeout(contextMenuCloseTimerRef.current);
     setContextMenu(null);
+    if (restoreFocus) {
+      window.requestAnimationFrame(() => contextMenuOpenerRef.current?.focus());
+    }
   }
 
   function scheduleContextMenuClose() {
@@ -218,12 +237,41 @@ export function ProjectRail({
   function openProjectContextMenu(event: MouseEvent<HTMLDivElement>, project: GitProject) {
     event.preventDefault();
     event.stopPropagation();
+    showProjectContextMenu(project, event.clientX, event.clientY, event.currentTarget);
+  }
+
+  function showProjectContextMenu(project: GitProject, x: number, y: number, opener: HTMLElement) {
     keepContextMenuOpen();
+    contextMenuOpenerRef.current = opener;
     setContextMenu({
       project,
-      x: Math.max(8, Math.min(event.clientX, window.innerWidth - PROJECT_CONTEXT_MENU_WIDTH - 8)),
-      y: Math.max(8, Math.min(event.clientY, window.innerHeight - PROJECT_CONTEXT_MENU_HEIGHT - 8))
+      x: Math.max(8, Math.min(x, window.innerWidth - PROJECT_CONTEXT_MENU_WIDTH - 8)),
+      y: Math.max(8, Math.min(y, window.innerHeight - PROJECT_CONTEXT_MENU_HEIGHT - 8))
     });
+  }
+
+  function reorderProjectByKeyboard(project: GitProject, offset: -1 | 1) {
+    if (!canReorder) {
+      setReorderAnnouncement("筛选或分组折叠时不能调整项目顺序。");
+      return;
+    }
+
+    const groupId = visibleGroupByProjectId.get(project.id);
+    const groupProjectIds = visibleProjectIds.filter((projectId) => {
+      const candidate = projects.find((item) => item.id === projectId);
+      return visibleGroupByProjectId.get(projectId) === groupId && candidate?.favorite === project.favorite;
+    });
+    const currentIndex = groupProjectIds.indexOf(project.id);
+    const nextIndex = currentIndex + offset;
+    if (currentIndex < 0 || nextIndex < 0 || nextIndex >= groupProjectIds.length) {
+      setReorderAnnouncement(`${project.name} 已经位于当前分组${offset < 0 ? "顶部" : "底部"}。`);
+      return;
+    }
+
+    const targetProjectId = groupProjectIds[nextIndex];
+    onReorderProjects(moveProjectId(visibleProjectIds, project.id, targetProjectId, offset < 0 ? "before" : "after"));
+    setReorderAnnouncement(`${project.name} 已${offset < 0 ? "上移" : "下移"}到当前分组第 ${nextIndex + 1} 位。`);
+    focusProjectItem(project.id);
   }
 
   function handleDragStart(event: DragEvent<HTMLDivElement>, projectId: string) {
@@ -289,10 +337,27 @@ export function ProjectRail({
         tabIndex={0}
         draggable={canReorder}
         aria-grabbed={draggedProjectId === project.id}
+        aria-haspopup="menu"
+        aria-expanded={contextMenu?.project.id === project.id}
+        aria-describedby="project-reorder-help"
+        aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown Shift+F10"
         className={`project-rail-item ${project.id === selectedProjectId ? "active" : ""} ${project.favorite ? "pinned" : ""} ${draggedProjectId === project.id ? "dragging" : ""} ${dragOverProjectId === project.id ? `drag-over drag-over-${dragOverPlacement}` : ""}`}
         key={project.id}
         onClick={(event) => { event.currentTarget.focus(); onSelectProject(project.id); }}
         onKeyDown={(event) => {
+          if (event.target === event.currentTarget && ((event.shiftKey && event.key === "F10") || event.key === "ContextMenu")) {
+            event.preventDefault();
+            const rect = event.currentTarget.getBoundingClientRect();
+            showProjectContextMenu(project, rect.left + 18, rect.top + 18, event.currentTarget);
+            return;
+          }
+
+          if (event.target === event.currentTarget && event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+            event.preventDefault();
+            reorderProjectByKeyboard(project, event.key === "ArrowUp" ? -1 : 1);
+            return;
+          }
+
           if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
             event.preventDefault();
             onSelectProject(project.id);
@@ -314,7 +379,7 @@ export function ProjectRail({
                 <GitBranch size={12} /><span>{project.statusError ? "状态不可用" : project.status?.currentBranch ?? "未知分支"}</span>
               </button>
             </PathTooltip>
-            {projectStatusTags(project).map((status) => <span className={`project-status ${status.tone}`} title={status.title} key={`${project.id}-${status.tone}-${status.label}`}>{status.label}</span>)}
+            {projectStatusTags(project).map((status) => <PathTooltip content={status.title} className="project-status-tooltip" key={`${project.id}-${status.tone}-${status.label}`}><span className={`project-status ${status.tone}`}>{status.label}</span></PathTooltip>)}
           </span>
         </span>
         {project.favorite ? <PathTooltip content="已置顶" className="project-rail-pin-tooltip"><span className="project-rail-pin-indicator" aria-label="已置顶"><Pin size={12} /></span></PathTooltip> : null}
@@ -403,6 +468,7 @@ export function ProjectRail({
             ref={filterMenuButtonRef}
             type="button"
             className={`project-status-filter-button ${statusFilters.length > 0 ? "active" : ""}`}
+            aria-haspopup="menu"
             aria-expanded={filterMenuOpen}
             onPointerDown={(event) => event.stopPropagation()}
             onClick={(event) => {
@@ -420,7 +486,7 @@ export function ProjectRail({
           </button>
           {filterMenuOpen && typeof document !== "undefined"
             ? createPortal(
-                <div className="floating-menu project-status-filter-menu" role="menu" style={filterMenuPosition} onPointerDown={(event) => event.stopPropagation()}>
+                <div ref={filterMenuRef} className="floating-menu project-status-filter-menu" role="menu" style={filterMenuPosition} onPointerDown={(event) => event.stopPropagation()} onKeyDown={(event) => handleMenuKeyDown(event, () => { setFilterMenuOpen(false); window.requestAnimationFrame(() => filterMenuButtonRef.current?.focus()); })}>
                   <div className="project-status-filter-menu-header">
                     <span>筛选项目</span>
                     <small>{statusFilters.length === 0 ? "全部状态" : `已选 ${statusFilters.length}`}</small>
@@ -469,6 +535,8 @@ export function ProjectRail({
       </div>
 
       <div className="project-rail-list" tabIndex={0} onKeyDown={handleProjectListKeyDown}>
+        <span className="sr-only" id="project-reorder-help">按 Alt 加上下方向键调整项目顺序，按 Shift 加 F10 打开项目菜单。</span>
+        <span className="sr-only" aria-live="polite">{reorderAnnouncement}</span>
         {groupedProjects.map((group) => {
           const collapsed = showGroupHeaders && !hasActiveFiltering && collapsedGroupIds.includes(group.id);
           return (
@@ -494,6 +562,7 @@ export function ProjectRail({
       {contextMenu && typeof document !== "undefined"
         ? createPortal(
             <div
+              ref={contextMenuRef}
               className="floating-menu project-context-menu"
               role="menu"
               style={{ left: contextMenu.x, top: contextMenu.y }}
@@ -501,13 +570,14 @@ export function ProjectRail({
               onContextMenu={(event) => event.preventDefault()}
               onMouseEnter={keepContextMenuOpen}
               onMouseLeave={scheduleContextMenuClose}
+              onKeyDown={(event) => handleMenuKeyDown(event, () => closeContextMenu(true))}
             >
               <button
                 type="button"
                 role="menuitem"
                 onClick={() => {
                   onToggleProjectPinned(contextMenu.project.id);
-                  setContextMenu(null);
+                  closeContextMenu(true);
                 }}
               >
                 {contextMenu.project.favorite ? <PinOff size={14} /> : <Pin size={14} />}
@@ -519,7 +589,7 @@ export function ProjectRail({
                 className="danger"
                 onClick={() => {
                   onRemoveProject(contextMenu.project.id);
-                  setContextMenu(null);
+                  closeContextMenu();
                 }}
               >
                 <Trash2 size={14} />
@@ -543,6 +613,38 @@ function moveProjectId(projectIds: string[], sourceId: string, targetId: string,
 
   nextProjectIds.splice(placement === "after" ? targetIndex + 1 : targetIndex, 0, sourceId);
   return nextProjectIds;
+}
+
+function focusFirstMenuItem(menu: HTMLElement | null) {
+  menu?.querySelector<HTMLElement>("[role^='menuitem']:not([disabled])")?.focus();
+}
+
+function handleMenuKeyDown(event: ReactKeyboardEvent<HTMLDivElement>, onEscape: () => void) {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    onEscape();
+    return;
+  }
+
+  if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+    return;
+  }
+
+  const items = Array.from(event.currentTarget.querySelectorAll<HTMLElement>("[role^='menuitem']:not([disabled])"));
+  if (items.length === 0) {
+    return;
+  }
+
+  event.preventDefault();
+  const currentIndex = items.findIndex((item) => item === document.activeElement);
+  const nextIndex = event.key === "Home"
+    ? 0
+    : event.key === "End"
+      ? items.length - 1
+      : event.key === "ArrowDown"
+        ? (currentIndex + 1 + items.length) % items.length
+        : (currentIndex - 1 + items.length) % items.length;
+  items[nextIndex].focus();
 }
 
 function projectMatchesStatusFilters(project: GitProject, filters: ProjectStatusFilterId[]): boolean {

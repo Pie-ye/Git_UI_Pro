@@ -8242,3 +8242,244 @@ code,
     display: none;
   }
 }
+
+/* Responsive detail access and keyboard-first interaction polish. */
+.source-control-pane .scm-section-header {
+  cursor: default;
+}
+
+.source-control-pane .scm-section-toggle {
+  display: inline-flex;
+  flex: 1 1 auto;
+  gap: 5px;
+  align-items: center;
+  justify-content: flex-start;
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 4px 0 1px;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+}
+
+.source-control-pane .scm-section-toggle > span:not(.scm-count) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-control-pane .scm-section-toggle:focus-visible,
+.editor-tab-main:focus-visible,
+.conflict-view-tabs [role="tab"]:focus-visible,
+.console-tab-main:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 72%, transparent);
+  outline-offset: -2px;
+}
+
+.source-control-pane .scm-section-actions .compact-icon {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+}
+
+.source-control-pane .graph-section-title .graph-toolbar-tooltip .compact-icon {
+  flex-basis: 32px;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+}
+
+.source-control-pane .scm-file-trailing .compact-icon {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
+}
+
+.editor-tabs > .editor-tab {
+  gap: 0;
+  padding: 0 3px 0 0;
+}
+
+.editor-tab-row {
+  grid-template-columns: minmax(0, 1fr) max-content;
+}
+
+.editor-file-actions {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 36px;
+  align-items: center;
+  width: 36px;
+  min-width: 36px;
+}
+
+.editor-file-actions.desktop-actions-enabled {
+  width: 108px;
+  min-width: 108px;
+}
+
+.editor-file-actions .editor-action-tooltip,
+.editor-file-actions .icon-button.compact-icon {
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  min-height: 36px;
+}
+
+.editor-tab-main {
+  display: inline-flex;
+  flex: 1 1 auto;
+  gap: 7px;
+  align-items: center;
+  min-width: 0;
+  min-height: 30px;
+  padding: 0 4px 0 10px;
+  border-radius: 6px;
+  color: inherit;
+  background: transparent;
+}
+
+.editor-tab-close-tooltip {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+}
+
+.editor-tabs > .editor-tab .editor-tab-close {
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  min-height: 30px;
+}
+
+.console-tab-main[role="tab"] {
+  border-radius: 5px;
+}
+
+.console-tab {
+  height: 30px;
+}
+
+.console-tab-close,
+.console-tab-add {
+  min-width: 30px;
+  min-height: 30px;
+}
+
+.console-title .console-close {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+}
+
+.project-status-tooltip {
+  display: inline-flex;
+  min-width: 0;
+}
+
+.project-status-filter-group-title,
+.project-rail-branch span,
+.project-status {
+  font-size: 11px;
+}
+
+.graph-commit-expansion-state.error {
+  grid-template-columns: minmax(0, 1fr) max-content;
+  gap: 8px;
+  padding: 4px 8px 4px var(--graph-file-gutter);
+}
+
+.graph-commit-expansion-state.error > span {
+  position: relative;
+  z-index: 1;
+  overflow-wrap: anywhere;
+}
+
+.graph-commit-expansion-state.error > button {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  border: 1px solid color-mix(in srgb, var(--danger) 34%, var(--border));
+  border-radius: 7px;
+  padding: 0 9px;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface));
+}
+
+.graph-blame-author-tooltip {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  padding: 7px 9px;
+  text-overflow: ellipsis;
+  white-space: pre;
+}
+
+.graph-blame-author-tooltip > span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 900px) {
+  .main-grid:not(.git-dependency-grid),
+  .right-collapsed .main-grid:not(.git-dependency-grid) {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(210px, 44%) minmax(240px, 56%);
+  }
+
+  .main-grid > .source-control-pane {
+    grid-column: 1;
+    grid-row: 1;
+    border-bottom: 1px solid var(--border-strong);
+  }
+
+  .main-grid > .detail-stack,
+  .main-grid > .editor-detail-panel,
+  .main-grid > .editor-detail-panel.empty {
+    display: grid;
+    grid-column: 1;
+    grid-row: 2;
+    min-height: 0;
+  }
+
+  .main-grid > .detail-stack {
+    border-top: 1px solid color-mix(in srgb, var(--glass-edge, var(--border)) 78%, transparent);
+  }
+
+  .main-grid > .detail-resize {
+    display: none;
+  }
+
+  .editor-breadcrumb {
+    min-height: 30px;
+    padding-inline: 10px;
+  }
+}
+
+@media (max-width: 560px) {
+  .main-grid:not(.git-dependency-grid),
+  .right-collapsed .main-grid:not(.git-dependency-grid) {
+    grid-template-rows: minmax(180px, 42%) minmax(220px, 58%);
+  }
+
+  .editor-tab-row {
+    grid-template-columns: minmax(0, 1fr) max-content;
+  }
+
+  .editor-breadcrumb span:first-child {
+    display: none;
+  }
+}

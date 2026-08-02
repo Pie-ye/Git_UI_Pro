@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type MouseEvent } from "react";
 import {
   AlertTriangle,
   Check,
@@ -25,6 +25,7 @@ import { AppChrome } from "./components/AppChrome";
 import { ConsolePanel } from "./components/ConsolePanel";
 import { FeedbackConfirmDialog, type FeedbackConfirmOptions } from "./components/FeedbackConfirmDialog";
 import { GraphSidebar } from "./components/GraphSidebar";
+import { GitOperationCenter } from "./components/GitOperationCenter";
 import { PathTooltip } from "./components/PathTooltip";
 import { ProjectRail } from "./components/ProjectRail";
 import { RepositoryCenterContainer } from "./components/RepositoryCenterContainer";
@@ -56,6 +57,8 @@ import type {
   UiPreferences,
   WorktreeState
 } from "./types/domain";
+import { cancelGitOperation, dismissGitOperation, getGitOperationsSnapshot, subscribeGitOperations } from "./api/operationTracker";
+import { absoluteFilePath } from "./utils/filePath";
 
 const emptyWorktree: WorktreeState = {
   stagedFiles: [],
@@ -147,6 +150,7 @@ type CommitMessageDraftRequest = {
 };
 
 export function App() {
+  const gitOperations = useSyncExternalStore(subscribeGitOperations, getGitOperationsSnapshot, getGitOperationsSnapshot);
   const [projects, setProjects] = useState<GitProject[]>([]);
   const [projectLibrary, setProjectLibrary] = useState<ProjectLibraryState>({ groups: [], recentProjectIds: [] });
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
@@ -1906,6 +1910,28 @@ export function App() {
     setBranchDialog({ mode: "delete", project, branches, query: "" });
   }
 
+  async function handleOpenWorktreeFile(tab: WorktreeEditorTab) {
+    if (!selectedProject || selectedProject.remote || !window.gitUI) {
+      return;
+    }
+    try {
+      await apiClient.openPath(absoluteFilePath(selectedProject.path, tab.file.path));
+    } catch (error) {
+      notifyError(errorText(error, "无法使用系统默认应用打开文件。"));
+    }
+  }
+
+  async function handleRevealWorktreeFile(tab: WorktreeEditorTab) {
+    if (!selectedProject || selectedProject.remote || !window.gitUI) {
+      return;
+    }
+    try {
+      await apiClient.revealPath(absoluteFilePath(selectedProject.path, tab.file.path));
+    } catch (error) {
+      notifyError(errorText(error, "无法在文件资源管理器中定位文件。"));
+    }
+  }
+
   async function submitDeleteBranch(target: BranchInfo) {
     if (!branchDialog || branchDialog.mode !== "delete") {
       return;
@@ -2196,11 +2222,8 @@ export function App() {
     }
 
     const undoHead = currentHeadCommit.hash === commit.hash;
+    const undoRootCommit = undoHead && commit.parents.length === 0;
     const resetTarget = undoHead ? commit.parents[0] : commit.hash;
-    if (!resetTarget) {
-      notifyInfo("根提交没有父提交，暂不支持从这里撤销");
-      return;
-    }
 
     const modeText =
       mode === "soft"
@@ -2239,7 +2262,13 @@ export function App() {
     const toastId = notifyLoading("正在重置分支...");
     let result: GitOperationResult;
     try {
-      result = await withTimeout(apiClient.resetToCommit(project, resetTarget, mode), RESET_OPERATION_TIMEOUT_MS, "重置分支超时，请确认仓库未被其它 Git 进程锁定后重试");
+      result = await withTimeout(
+        undoRootCommit
+          ? apiClient.resetLastCommit(project, mode)
+          : apiClient.resetToCommit(project, resetTarget!, mode),
+        RESET_OPERATION_TIMEOUT_MS,
+        "重置分支超时，请确认仓库未被其它 Git 进程锁定后重试"
+      );
     } catch (error) {
       notifyError(error instanceof Error ? error.message : "重置分支失败", undefined, toastId);
       await loadProjectData(project);
@@ -2778,9 +2807,12 @@ export function App() {
                   tabs={worktreeTabs}
                   activeTabId={activeWorktreeTabId}
                   repositoryPath={selectedProject?.path}
+                  desktopFileActionsEnabled={Boolean(window.gitUI && selectedProject && !selectedProject.remote)}
                   onSelectTab={handleSelectWorktreeTab}
                   onCloseTab={handleCloseWorktreeTab}
                   onPinTab={handlePinWorktreeTab}
+                  onOpenFile={(tab) => void handleOpenWorktreeFile(tab)}
+                  onRevealFile={(tab) => void handleRevealWorktreeFile(tab)}
                   onResolveConflict={handleResolveConflict}
                   onRetryLoad={handleRetryWorktreeLoad}
                   diffViewMode={uiPreferences.diffViewMode}
@@ -2790,6 +2822,8 @@ export function App() {
                 <ConsolePanel
                   project={selectedProject}
                   theme={resolvedTheme}
+                  fontFamily={uiPreferences.fontFamily}
+                  fontSize={uiPreferences.fontSize}
                   visible={consoleOpen}
                   maximized={consoleMaximized}
                   onToggleMaximized={toggleConsoleMaximized}
@@ -2801,6 +2835,15 @@ export function App() {
                       detail: `${count} 个终端标签`,
                       confirmLabel: "关闭终端",
                       tone: "warning"
+                    })
+                  }
+                  onConfirmClearHistory={(count) =>
+                    requestConfirm({
+                      title: "清空命令历史",
+                      description: "已保存的终端命令历史会从本机删除，此操作无法撤销。",
+                      detail: `${count} 条命令`,
+                      confirmLabel: "清空历史",
+                      tone: "danger"
                     })
                   }
                 />
@@ -2833,6 +2876,11 @@ export function App() {
           onRepositoryChange={() => (selectedProject ? loadProjectData(selectedProject) : Promise.resolve())}
           onPreferencesChange={applyUiPreferences}
         />
+        <GitOperationCenter
+          operations={gitOperations}
+          onCancel={(operationId) => void cancelGitOperation(operationId)}
+          onDismiss={dismissGitOperation}
+        />
         <Toaster
           position="top-center"
           theme={resolvedTheme}
@@ -2844,6 +2892,8 @@ export function App() {
           <RemoteProjectDialog
             onClose={() => setRemoteProjectDialogOpen(false)}
             onChooseIdentityFile={() => apiClient.chooseIdentityFile()}
+            onInspectHost={(host, port) => apiClient.inspectSshHost(host, port)}
+            onTrustHost={(token, replaceExisting) => apiClient.trustSshHost(token, replaceExisting)}
             onTest={handleTestRemoteProject}
             onAdd={handleAddRemoteProject}
           />

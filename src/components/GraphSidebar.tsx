@@ -23,7 +23,7 @@ import {
   Undo2,
   X
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type RefObject, type UIEvent as ReactUIEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type RefObject, type UIEvent as ReactUIEvent } from "react";
 import { createPortal } from "react-dom";
 import { apiClient } from "../api/client";
 import { PathTooltip } from "./PathTooltip";
@@ -201,6 +201,7 @@ export function GraphSidebar({
   const viewMenuButtonRef = useRef<HTMLButtonElement>(null);
   const viewMenuRef = useRef<HTMLDivElement>(null);
   const commitContextMenuRef = useRef<HTMLDivElement>(null);
+  const commitContextMenuOpenerRef = useRef<HTMLButtonElement | null>(null);
   const hoverTimerRef = useRef<number | undefined>();
   const closeTimerRef = useRef<number | undefined>();
   const graphScrollFrameRef = useRef<number | undefined>();
@@ -416,6 +417,10 @@ export function GraphSidebar({
       return;
     }
 
+    const focusFrame = window.requestAnimationFrame(() => {
+      commitContextMenuRef.current?.querySelector<HTMLButtonElement>("button[role='menuitem']:not(:disabled)")?.focus();
+    });
+
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target as Node;
       if (commitContextMenuRef.current?.contains(target)) {
@@ -426,13 +431,14 @@ export function GraphSidebar({
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setCommitContextMenu(null);
+        closeCommitContextMenu(true);
       }
     };
 
     document.addEventListener("pointerdown", onPointerDown);
     document.addEventListener("keydown", onKeyDown);
     return () => {
+      window.cancelAnimationFrame(focusFrame);
       document.removeEventListener("pointerdown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown);
     };
@@ -562,13 +568,26 @@ export function GraphSidebar({
     setViewMenuOpen((value) => !value);
   }
 
-  function openCommitContextMenu(event: ReactMouseEvent, commit: CommitNode) {
+  function closeCommitContextMenu(restoreFocus = false) {
+    setCommitContextMenu(null);
+    setHoveredDotHash(null);
+    if (restoreFocus) {
+      window.requestAnimationFrame(() => commitContextMenuOpenerRef.current?.focus());
+    }
+  }
+
+  function openCommitContextMenu(event: ReactMouseEvent<HTMLButtonElement>, commit: CommitNode) {
     event.preventDefault();
     event.stopPropagation();
+    openCommitContextMenuAt(commit, event.clientX, event.clientY, event.currentTarget);
+  }
+
+  function openCommitContextMenuAt(commit: CommitNode, x: number, y: number, opener: HTMLButtonElement) {
     window.clearTimeout(hoverTimerRef.current);
     window.clearTimeout(closeTimerRef.current);
     setHoveredCommit(undefined);
     setHoveredDotHash(commit.hash);
+    commitContextMenuOpenerRef.current = opener;
 
     const headCommits = commits.filter((item) => item.refs.some((ref) => ref.type === "head"));
     const identifiedHead = headCommits.length === 1 ? headCommits[0] : undefined;
@@ -576,8 +595,8 @@ export function GraphSidebar({
     const isLocalOnly = Boolean(project?.status) && isHead && (!project?.status?.upstream || (project.status.ahead ?? 0) > 0);
     setCommitContextMenu({
       commit,
-      x: Math.min(event.clientX, window.innerWidth - 246),
-      y: Math.min(event.clientY, window.innerHeight - 330),
+      x: Math.max(8, Math.min(x, window.innerWidth - 246)),
+      y: Math.max(8, Math.min(y, window.innerHeight - 330)),
       isHead,
       isLocalOnly,
       canUndoHead: Boolean(identifiedHead) && (!isHead || commit.parents.length > 0)
@@ -585,8 +604,36 @@ export function GraphSidebar({
   }
 
   function runCommitContextAction(action: CommitGraphAction, commit: CommitNode) {
-    setCommitContextMenu(null);
+    closeCommitContextMenu(true);
     onCommitAction(action, commit);
+  }
+
+  function handleCommitContextMenuKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeCommitContextMenu(true);
+      return;
+    }
+
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      return;
+    }
+
+    const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button[role='menuitem']:not(:disabled)"));
+    if (items.length === 0) {
+      return;
+    }
+
+    event.preventDefault();
+    const currentIndex = items.findIndex((item) => item === document.activeElement);
+    const nextIndex = event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? items.length - 1
+        : event.key === "ArrowDown"
+          ? (currentIndex + 1 + items.length) % items.length
+          : (currentIndex - 1 + items.length) % items.length;
+    items[nextIndex].focus();
   }
 
   async function handleCommitClick(commit: CommitNode) {
@@ -826,7 +873,7 @@ export function GraphSidebar({
 
           <div className="graph-commit-list" role="list" aria-label="提交图" ref={graphListRef} onScroll={handleGraphListScroll}>
             {filteredCommits.length === 0 && loading ? (
-              <div className="graph-loading-state" aria-label="正在加载提交图">
+              <div className="graph-loading-state" role="status" aria-live="polite" aria-label="正在加载提交图">
                 <span aria-hidden="true" />
               </div>
             ) : null}
@@ -853,7 +900,7 @@ export function GraphSidebar({
                   graphContext={graphContext}
                   graphLayout={graphLayout}
                   tone={tone}
-                  selected={commit.hash === selectedHash || commit.hash === hoveredDotHash || commit.hash === expandedHash}
+                  selected={commit.hash === selectedHash || commit.hash === hoveredDotHash || commit.hash === expandedHash || commit.hash === commitContextMenu?.commit.hash}
                   expanded={commit.hash === expandedHash}
                   details={commitDetailsByHash[commit.hash]}
                   loadingDetails={loadingDetailsHash === commit.hash}
@@ -865,6 +912,11 @@ export function GraphSidebar({
                   isLast={index === filteredCommits.length - 1}
                   onSelect={() => void handleCommitClick(commit)}
                   onContextMenu={(event) => openCommitContextMenu(event, commit)}
+                  onContextMenuKey={(event) => {
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    openCommitContextMenuAt(commit, rect.left + 20, rect.top + rect.height / 2, event.currentTarget);
+                  }}
+                  onRetryDetails={() => void ensureCommitDetails(commit)}
                   onSelectFile={(file) => onSelectCommitFile(commit, file)}
                   onPinFile={(file) => onPinCommitFile(commit, file)}
                   onHoverStart={(row) => scheduleHover(commit, row)}
@@ -896,6 +948,7 @@ export function GraphSidebar({
               style={{ left: commitContextMenu.x, top: commitContextMenu.y }}
               ref={commitContextMenuRef}
               onPointerDown={(event) => event.stopPropagation()}
+              onKeyDown={handleCommitContextMenuKeyDown}
             >
               <button type="button" role="menuitem" onClick={() => runCommitContextAction("copyHash", commitContextMenu.commit)}>
                 <Copy size={14} />
@@ -974,7 +1027,7 @@ export function GraphSidebar({
                     <div className="graph-blame-header" role="row"><span>行</span><span>提交</span><span>作者</span><span>时间</span><span>内容</span></div>
                     {blameLines.map((line) => (
                       <div className="graph-blame-row" role="row" key={`${line.hash}-${line.lineNumber}`}>
-                        <span>{line.lineNumber}</span><code>{line.shortHash}</code><span title={line.authorEmail}>{line.authorName}</span><time>{formatBlameDate(line.authorDate)}</time><code>{line.content || " "}</code>
+                        <span>{line.lineNumber}</span><code>{line.shortHash}</code><PathTooltip content={line.authorEmail} className="graph-blame-author-tooltip"><span>{line.authorName}</span></PathTooltip><time>{formatBlameDate(line.authorDate)}</time><code>{line.content || " "}</code>
                       </div>
                     ))}
                   </div>
@@ -1029,9 +1082,11 @@ function GraphHistoryRefsMenu({
             选择图表引用
             <small>已选 {selectedCount} 项</small>
           </span>
-          <button type="button" className="icon-button compact-icon" title="关闭" onClick={onClose}>
-            <X size={14} />
-          </button>
+          <PathTooltip content="关闭引用选择" className="graph-toolbar-tooltip">
+            <button type="button" className="icon-button compact-icon" aria-label="关闭引用选择" onClick={onClose}>
+              <X size={14} />
+            </button>
+          </PathTooltip>
         </header>
 
         <div className="branch-switch-panel graph-refs-switch-panel">
@@ -1123,6 +1178,8 @@ function GraphCommitRow({
   isLast,
   onSelect,
   onContextMenu,
+  onContextMenuKey,
+  onRetryDetails,
   onSelectFile,
   onPinFile,
   onHoverStart,
@@ -1143,7 +1200,9 @@ function GraphCommitRow({
   isFirst: boolean;
   isLast: boolean;
   onSelect: () => void;
-  onContextMenu: (event: ReactMouseEvent) => void;
+  onContextMenu: (event: ReactMouseEvent<HTMLButtonElement>) => void;
+  onContextMenuKey: (event: ReactKeyboardEvent<HTMLButtonElement>) => void;
+  onRetryDetails: () => void;
   onSelectFile: (file: ChangedFile) => void;
   onPinFile: (file: ChangedFile) => void;
   onHoverStart: (row: HTMLElement) => void;
@@ -1161,8 +1220,17 @@ function GraphCommitRow({
         className={`graph-commit-row graph-tone-${tone} ${selected ? "active" : ""}`}
         style={rowStyle}
         aria-expanded={expanded}
+        aria-haspopup="menu"
+        aria-keyshortcuts="Shift+F10"
         onClick={onSelect}
         onContextMenu={onContextMenu}
+        onKeyDown={(event) => {
+          if ((event.shiftKey && event.key === "F10") || event.key === "ContextMenu") {
+            event.preventDefault();
+            event.stopPropagation();
+            onContextMenuKey(event);
+          }
+        }}
         onMouseEnter={(event) => onHoverStart(event.currentTarget)}
         onMouseLeave={onHoverEnd}
         onFocus={(event) => onHoverStart(event.currentTarget)}
@@ -1200,6 +1268,7 @@ function GraphCommitRow({
           graphLayout={graphLayout}
           loading={loadingDetails}
           error={detailsError}
+          onRetry={onRetryDetails}
           viewMode={fileViewMode}
           repositoryPath={repositoryPath}
           selectedFilePath={selectedFilePath}
@@ -1216,6 +1285,7 @@ function GraphCommitExpansion({
   graphLayout,
   loading,
   error,
+  onRetry,
   viewMode,
   repositoryPath,
   selectedFilePath,
@@ -1226,6 +1296,7 @@ function GraphCommitExpansion({
   graphLayout: GraphRowLayout;
   loading: boolean;
   error?: string;
+  onRetry: () => void;
   viewMode: GraphFileViewMode;
   repositoryPath?: string;
   selectedFilePath?: string;
@@ -1242,7 +1313,7 @@ function GraphCommitExpansion({
 
   if (loading) {
     return (
-      <div className="graph-commit-expansion graph-commit-expansion-loading" style={expansionStyle} aria-label="正在读取变更文件">
+      <div className="graph-commit-expansion graph-commit-expansion-loading" style={expansionStyle} role="status" aria-live="polite" aria-label="正在读取变更文件">
         <GraphExpansionLines lines={expansionLines} />
       </div>
     );
@@ -1250,9 +1321,10 @@ function GraphCommitExpansion({
 
   if (error) {
     return (
-      <div className="graph-commit-expansion graph-commit-expansion-state error" style={expansionStyle}>
+      <div className="graph-commit-expansion graph-commit-expansion-state error" style={expansionStyle} role="alert">
         <GraphExpansionLines lines={expansionLines} />
-        {error}
+        <span>{error}</span>
+        <button type="button" onClick={onRetry}><RefreshCw size={13} />重新读取</button>
       </div>
     );
   }

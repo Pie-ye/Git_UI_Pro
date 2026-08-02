@@ -34,10 +34,12 @@
     "build:renderer": "tsc -p tsconfig.json --noEmit && vite build",
     "test:merge": "npm run build:electron && node scripts/test-merge-service.mjs",
     "test:config": "npm run build:electron && node --test scripts/test-config-store.mjs",
+    "test:terminal": "npm run build:electron && node --test scripts/test-terminal-history.mjs",
     "test:release": "node --test scripts/test-release-console.mjs",
     "test:update": "npm run build:electron && node --test scripts/test-update-utils.mjs",
     "test:capabilities": "npm run build:electron && node --test scripts/test-repository-capabilities.mjs",
-    "test": "npm run build:electron && node --test scripts/test-config-store.mjs scripts/test-update-utils.mjs scripts/test-repository-capabilities.mjs && node scripts/test-merge-service.mjs && node --test scripts/test-release-console.mjs",
+    "test:ui": "playwright test",
+    "test": "npm run build:electron && node --test scripts/test-config-store.mjs scripts/test-terminal-history.mjs scripts/test-update-utils.mjs scripts/test-repository-capabilities.mjs scripts/test-hosting-service.mjs && node scripts/test-merge-service.mjs && node --test scripts/test-release-console.mjs",
     "icons": "node scripts/generate-icons.mjs",
     "release:win": "node scripts/release-console.mjs",
     "dist": "npm run icons && npm run build && electron-builder",
@@ -61,6 +63,7 @@
     "sonner": "^2.0.7"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@types/node": "^20.17.10",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",

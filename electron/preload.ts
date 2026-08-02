@@ -1,7 +1,8 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
-import type { GitPullStrategy, RepositoryTarget } from "./gitService";
+import type { GitLongOperationProgress, GitPullStrategy, RepositoryTarget } from "./gitService";
 import type { ReleaseHistoryItem } from "./releaseHistory";
 import type { UpdateState } from "./updateService";
+import type { TerminalHistoryEntry } from "./configStore";
 
 type WindowState = {
   isMaximized: boolean;
@@ -11,6 +12,8 @@ type WindowState = {
 contextBridge.exposeInMainWorld("gitUI", {
   runAppCommand: (command: string) => ipcRenderer.invoke("app:command", command),
   openExternal: (url: string) => ipcRenderer.invoke("app:openExternal", url),
+  openPath: (filePath: string) => ipcRenderer.invoke("app:openPath", filePath),
+  revealPath: (filePath: string) => ipcRenderer.invoke("app:revealPath", filePath),
   setNativeTheme: (themeSource: "system" | "light" | "dark") => ipcRenderer.invoke("theme:setNative", themeSource),
   getWindowState: () => ipcRenderer.invoke("window:getState"),
   onWindowStateChange: (callback: (state: WindowState) => void) => {
@@ -35,6 +38,9 @@ contextBridge.exposeInMainWorld("gitUI", {
   writeTerminal: (sessionId: string, data: string) => ipcRenderer.invoke("terminal:write", sessionId, data),
   resizeTerminal: (sessionId: string, cols: number, rows: number) => ipcRenderer.invoke("terminal:resize", sessionId, cols, rows),
   disposeTerminal: (sessionId: string) => ipcRenderer.invoke("terminal:dispose", sessionId),
+  getTerminalHistory: (projectId: string): Promise<TerminalHistoryEntry[]> => ipcRenderer.invoke("terminal:getHistory", projectId),
+  appendTerminalHistory: (projectId: string, command: string): Promise<TerminalHistoryEntry[]> => ipcRenderer.invoke("terminal:appendHistory", projectId, command),
+  clearTerminalHistory: (projectId: string): Promise<boolean> => ipcRenderer.invoke("terminal:clearHistory", projectId),
   onTerminalData: (callback: (event: { sessionId: string; stream: "stdout" | "stderr"; data: string }) => void) => {
     const listener = (_event: IpcRendererEvent, payload: { sessionId: string; stream: "stdout" | "stderr"; data: string }) => callback(payload);
     ipcRenderer.on("terminal:data", listener);
@@ -45,8 +51,16 @@ contextBridge.exposeInMainWorld("gitUI", {
     ipcRenderer.on("terminal:exit", listener);
     return () => ipcRenderer.removeListener("terminal:exit", listener);
   },
+  cancelGitOperation: (operationId: string) => ipcRenderer.invoke("git:cancelOperation", operationId),
+  onGitOperationProgress: (callback: (event: GitLongOperationProgress) => void) => {
+    const listener = (_event: IpcRendererEvent, payload: GitLongOperationProgress) => callback(payload);
+    ipcRenderer.on("git:operationProgress", listener);
+    return () => ipcRenderer.removeListener("git:operationProgress", listener);
+  },
   chooseDirectory: () => ipcRenderer.invoke("dialog:chooseDirectory"),
   chooseIdentityFile: () => ipcRenderer.invoke("dialog:chooseIdentityFile"),
+  inspectSshHost: (host: string, port?: number) => ipcRenderer.invoke("ssh:inspectHost", host, port),
+  trustSshHost: (token: string, replaceExisting: boolean) => ipcRenderer.invoke("ssh:trustHost", token, replaceExisting),
   getProjects: () => ipcRenderer.invoke("projects:list"),
   getProjectLibrary: () => ipcRenderer.invoke("projects:getLibrary"),
   createProjectGroup: (name: string) => ipcRenderer.invoke("projects:createGroup", name),
@@ -60,8 +74,8 @@ contextBridge.exposeInMainWorld("gitUI", {
   addProject: (directoryPath: string) => ipcRenderer.invoke("projects:add", directoryPath),
   initializeRepository: (directoryPath: string, initialBranch: string, createGitignore: boolean) =>
     ipcRenderer.invoke("projects:initializeRepository", directoryPath, initialBranch, createGitignore),
-  cloneRepository: (sourceUrl: string, destinationPath: string, options: { branch?: string; depth?: number; recurseSubmodules?: boolean }) =>
-    ipcRenderer.invoke("projects:cloneRepository", sourceUrl, destinationPath, options),
+  cloneRepository: (sourceUrl: string, destinationPath: string, options: { branch?: string; depth?: number; recurseSubmodules?: boolean }, operation?: { operationId: string }) =>
+    ipcRenderer.invoke("projects:cloneRepository", sourceUrl, destinationPath, options, operation),
   testRemoteProject: (input: { host: string; username?: string; port?: number; repositoryPath: string; identityFile?: string }) =>
     ipcRenderer.invoke("projects:testRemote", input),
   addRemoteProject: (input: { host: string; username?: string; port?: number; repositoryPath: string; identityFile?: string }) =>
@@ -98,6 +112,7 @@ contextBridge.exposeInMainWorld("gitUI", {
   discardFile: (repositoryPath: RepositoryTarget, file: { path: string; oldPath?: string; status: string; staged: boolean }) =>
     ipcRenderer.invoke("git:discardFile", repositoryPath, file),
   getStashes: (repositoryPath: RepositoryTarget) => ipcRenderer.invoke("git:getStashes", repositoryPath),
+  getStashDetails: (repositoryPath: RepositoryTarget, selector: string) => ipcRenderer.invoke("git:getStashDetails", repositoryPath, selector),
   createStash: (repositoryPath: RepositoryTarget, options: { message?: string; includeUntracked?: boolean; keepIndex?: boolean }) =>
     ipcRenderer.invoke("git:createStash", repositoryPath, options),
   applyStash: (repositoryPath: RepositoryTarget, selector: string, restoreIndex = false) =>
@@ -107,11 +122,11 @@ contextBridge.exposeInMainWorld("gitUI", {
   dropStash: (repositoryPath: RepositoryTarget, selector: string) => ipcRenderer.invoke("git:dropStash", repositoryPath, selector),
   commit: (repositoryPath: RepositoryTarget, input: { subject: string; body?: string; amend?: boolean; pushAfterCommit?: boolean }) =>
     ipcRenderer.invoke("git:commit", repositoryPath, input),
-  fetch: (repositoryPath: RepositoryTarget) => ipcRenderer.invoke("git:fetch", repositoryPath),
-  fetchRemote: (repositoryPath: RepositoryTarget, remoteName: string, prune = false) => ipcRenderer.invoke("git:fetchRemote", repositoryPath, remoteName, prune),
-  pull: (repositoryPath: RepositoryTarget, strategy: GitPullStrategy) => ipcRenderer.invoke("git:pull", repositoryPath, strategy),
+  fetch: (repositoryPath: RepositoryTarget, operation?: { operationId: string }) => ipcRenderer.invoke("git:fetch", repositoryPath, operation),
+  fetchRemote: (repositoryPath: RepositoryTarget, remoteName: string, prune = false, operation?: { operationId: string }) => ipcRenderer.invoke("git:fetchRemote", repositoryPath, remoteName, prune, operation),
+  pull: (repositoryPath: RepositoryTarget, strategy: GitPullStrategy, operation?: { operationId: string }) => ipcRenderer.invoke("git:pull", repositoryPath, strategy, operation),
   mergeRemote: (repositoryPath: RepositoryTarget) => ipcRenderer.invoke("git:mergeRemote", repositoryPath),
-  push: (repositoryPath: RepositoryTarget) => ipcRenderer.invoke("git:push", repositoryPath),
+  push: (repositoryPath: RepositoryTarget, options?: { forceWithLease?: boolean; operationId?: string }) => ipcRenderer.invoke("git:push", repositoryPath, options),
   getRemotes: (repositoryPath: RepositoryTarget) => ipcRenderer.invoke("git:getRemotes", repositoryPath),
   addRemote: (repositoryPath: RepositoryTarget, name: string, fetchUrl: string, pushUrl?: string) =>
     ipcRenderer.invoke("git:addRemote", repositoryPath, name, fetchUrl, pushUrl),
@@ -173,24 +188,49 @@ contextBridge.exposeInMainWorld("gitUI", {
   removeLinkedWorktree: (repositoryPath: RepositoryTarget, worktreePath: string, force = false) =>
     ipcRenderer.invoke("git:removeLinkedWorktree", repositoryPath, worktreePath, force),
   pruneLinkedWorktrees: (repositoryPath: RepositoryTarget) => ipcRenderer.invoke("git:pruneLinkedWorktrees", repositoryPath),
+  lockLinkedWorktree: (repositoryPath: RepositoryTarget, worktreePath: string, reason?: string) => ipcRenderer.invoke("git:lockLinkedWorktree", repositoryPath, worktreePath, reason),
+  unlockLinkedWorktree: (repositoryPath: RepositoryTarget, worktreePath: string) => ipcRenderer.invoke("git:unlockLinkedWorktree", repositoryPath, worktreePath),
+  moveLinkedWorktree: (repositoryPath: RepositoryTarget, options: { worktreePath: string; destinationPath: string }) => ipcRenderer.invoke("git:moveLinkedWorktree", repositoryPath, options),
+  repairLinkedWorktrees: (repositoryPath: RepositoryTarget, worktreePaths: string[] = []) => ipcRenderer.invoke("git:repairLinkedWorktrees", repositoryPath, worktreePaths),
   getSubmodules: (repositoryPath: RepositoryTarget) => ipcRenderer.invoke("git:getSubmodules", repositoryPath),
   initializeSubmodules: (repositoryPath: RepositoryTarget) => ipcRenderer.invoke("git:initializeSubmodules", repositoryPath),
   updateSubmodules: (repositoryPath: RepositoryTarget, options: Record<string, unknown>) => ipcRenderer.invoke("git:updateSubmodules", repositoryPath, options),
   syncSubmodules: (repositoryPath: RepositoryTarget, recursive = true) => ipcRenderer.invoke("git:syncSubmodules", repositoryPath, recursive),
+  addSubmodule: (repositoryPath: RepositoryTarget, options: { url: string; path: string; branch?: string; name?: string; force?: boolean }) => ipcRenderer.invoke("git:addSubmodule", repositoryPath, options),
+  setSubmoduleBranch: (repositoryPath: RepositoryTarget, modulePath: string, branch?: string) => ipcRenderer.invoke("git:setSubmoduleBranch", repositoryPath, modulePath, branch),
+  deinitializeSubmodule: (repositoryPath: RepositoryTarget, modulePath: string, force = false) => ipcRenderer.invoke("git:deinitializeSubmodule", repositoryPath, modulePath, force),
+  removeSubmodule: (repositoryPath: RepositoryTarget, modulePath: string, force = false) => ipcRenderer.invoke("git:removeSubmodule", repositoryPath, modulePath, force),
   getLfsStatus: (repositoryPath: RepositoryTarget) => ipcRenderer.invoke("git:getLfsStatus", repositoryPath),
   installLfs: (repositoryPath: RepositoryTarget, scope: "local" | "global" = "local") => ipcRenderer.invoke("git:installLfs", repositoryPath, scope),
-  pullLfs: (repositoryPath: RepositoryTarget, remoteName?: string, refs?: string[]) => ipcRenderer.invoke("git:pullLfs", repositoryPath, remoteName, refs),
+  pullLfs: (repositoryPath: RepositoryTarget, remoteName?: string, refs?: string[], operation?: { operationId: string }) => ipcRenderer.invoke("git:pullLfs", repositoryPath, remoteName, refs, operation),
   pruneLfs: (repositoryPath: RepositoryTarget) => ipcRenderer.invoke("git:pruneLfs", repositoryPath),
+  trackLfsPatterns: (repositoryPath: RepositoryTarget, patterns: string[]) => ipcRenderer.invoke("git:trackLfsPatterns", repositoryPath, patterns),
+  untrackLfsPatterns: (repositoryPath: RepositoryTarget, patterns: string[]) => ipcRenderer.invoke("git:untrackLfsPatterns", repositoryPath, patterns),
+  getLfsLocks: (repositoryPath: RepositoryTarget) => ipcRenderer.invoke("git:getLfsLocks", repositoryPath),
+  lockLfsFile: (repositoryPath: RepositoryTarget, filePath: string) => ipcRenderer.invoke("git:lockLfsFile", repositoryPath, filePath),
+  unlockLfsFile: (repositoryPath: RepositoryTarget, lockId: string, force = false) => ipcRenderer.invoke("git:unlockLfsFile", repositoryPath, lockId, force),
+  migrateLfs: (repositoryPath: RepositoryTarget, options: { include: string[]; exclude?: string[]; everything?: boolean; rewriteHistory: true }, operation?: { operationId: string }) => ipcRenderer.invoke("git:migrateLfs", repositoryPath, options, operation),
   readGitIgnore: (repositoryPath: RepositoryTarget) => ipcRenderer.invoke("git:readGitIgnore", repositoryPath),
   writeGitIgnore: (repositoryPath: RepositoryTarget, content: string, expectedRevision: string) =>
     ipcRenderer.invoke("git:writeGitIgnore", repositoryPath, content, expectedRevision),
   getSigningConfig: (repositoryPath: RepositoryTarget) => ipcRenderer.invoke("git:getSigningConfig", repositoryPath),
   setSigningConfig: (repositoryPath: RepositoryTarget, input: Record<string, unknown>) => ipcRenderer.invoke("git:setSigningConfig", repositoryPath, input),
+  getGitIdentity: (repositoryPath: RepositoryTarget) => ipcRenderer.invoke("git:getIdentity", repositoryPath),
+  setGitIdentity: (repositoryPath: RepositoryTarget, input: { name: string; email: string }) => ipcRenderer.invoke("git:setIdentity", repositoryPath, input),
   getHostingLinks: (repositoryPath: RepositoryTarget, remoteName: string, commitHash?: string, branchName?: string) =>
     ipcRenderer.invoke("git:getHostingLinks", repositoryPath, remoteName, commitHash, branchName),
+  listHostingAccounts: () => ipcRenderer.invoke("hosting:listAccounts"),
+  saveHostingAccount: (provider: "github" | "gitlab" | "gitee", remoteUrl: string, token: string) => ipcRenderer.invoke("hosting:saveAccount", provider, remoteUrl, token),
+  removeHostingAccount: (provider: "github" | "gitlab" | "gitee", host: string) => ipcRenderer.invoke("hosting:removeAccount", provider, host),
+  listHostingChangeRequests: (provider: "github" | "gitlab" | "gitee", remoteUrl: string) => ipcRenderer.invoke("hosting:listChangeRequests", provider, remoteUrl),
+  getHostingChangeRequest: (provider: "github" | "gitlab" | "gitee", remoteUrl: string, number: number) => ipcRenderer.invoke("hosting:getChangeRequest", provider, remoteUrl, number),
+  createHostingChangeRequest: (provider: "github" | "gitlab" | "gitee", remoteUrl: string, input: Record<string, unknown>) => ipcRenderer.invoke("hosting:createChangeRequest", provider, remoteUrl, input),
+  commentHostingChangeRequest: (provider: "github" | "gitlab" | "gitee", remoteUrl: string, number: number, body: string) => ipcRenderer.invoke("hosting:comment", provider, remoteUrl, number, body),
+  reviewHostingChangeRequest: (provider: "github" | "gitlab" | "gitee", remoteUrl: string, input: Record<string, unknown>) => ipcRenderer.invoke("hosting:review", provider, remoteUrl, input),
+  mergeHostingChangeRequest: (provider: "github" | "gitlab" | "gitee", remoteUrl: string, input: Record<string, unknown>) => ipcRenderer.invoke("hosting:merge", provider, remoteUrl, input),
   amendLastCommitMessage: (repositoryPath: RepositoryTarget, input: { subject: string; body?: string }) =>
     ipcRenderer.invoke("git:amendLastCommitMessage", repositoryPath, input),
-  resetLastCommit: (repositoryPath: RepositoryTarget, mode: "soft" | "mixed") => ipcRenderer.invoke("git:resetLastCommit", repositoryPath, mode),
+  resetLastCommit: (repositoryPath: RepositoryTarget, mode: "soft" | "mixed" | "hard") => ipcRenderer.invoke("git:resetLastCommit", repositoryPath, mode),
   resetToCommit: (repositoryPath: RepositoryTarget, hash: string, mode: "soft" | "mixed" | "hard") =>
     ipcRenderer.invoke("git:resetToCommit", repositoryPath, hash, mode),
   revertCommit: (repositoryPath: RepositoryTarget, hash: string) => ipcRenderer.invoke("git:revertCommit", repositoryPath, hash),

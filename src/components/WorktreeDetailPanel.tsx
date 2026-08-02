@@ -10,7 +10,7 @@ import {
   type UIEvent as ReactUIEvent,
   type WheelEvent as ReactWheelEvent
 } from "react";
-import { AlertTriangle, Check, Copy, FileText, GitMerge, Maximize2, RefreshCw, RotateCcw, Save, X, ZoomIn, ZoomOut } from "lucide-react";
+import { AlertTriangle, Check, Copy, ExternalLink, FileText, FolderOpen, GitMerge, Maximize2, RefreshCw, RotateCcw, Save, X, ZoomIn, ZoomOut } from "lucide-react";
 import { PathTooltip } from "./PathTooltip";
 import type { ChangedFile, ConflictFileDetails, ConflictResolutionInput, DiffLine, FilePreview } from "../types/domain";
 import { absoluteFilePath } from "../utils/filePath";
@@ -39,6 +39,9 @@ interface WorktreeDetailPanelProps {
   onPinTab: (tabId: string) => void;
   onResolveConflict: (tab: WorktreeEditorTab, input: ConflictResolutionInput) => Promise<boolean>;
   onRetryLoad: (tab: WorktreeEditorTab) => Promise<void>;
+  onOpenFile?: (tab: WorktreeEditorTab) => void;
+  onRevealFile?: (tab: WorktreeEditorTab) => void;
+  desktopFileActionsEnabled?: boolean;
   diffViewMode?: "split" | "inline";
   diffWrap?: boolean;
 }
@@ -68,10 +71,14 @@ export function WorktreeDetailPanel({
   onPinTab,
   onResolveConflict,
   onRetryLoad,
+  onOpenFile,
+  onRevealFile,
+  desktopFileActionsEnabled = false,
   diffViewMode,
   diffWrap = false
 }: WorktreeDetailPanelProps) {
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0];
+  const editorTabRefs = useRef(new Map<string, HTMLButtonElement>());
   const diffPanelRef = useRef<HTMLElement>(null);
   const splitDiffRef = useRef<HTMLDivElement>(null);
   const splitScrollRef = useRef<HTMLDivElement>(null);
@@ -196,6 +203,39 @@ export function WorktreeDetailPanel({
     });
   }
 
+  function setEditorTabRef(tabId: string, node: HTMLButtonElement | null) {
+    if (node) {
+      editorTabRefs.current.set(tabId, node);
+      return;
+    }
+    editorTabRefs.current.delete(tabId);
+  }
+
+  function handleEditorTabKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>, tabId: string) {
+    const currentIndex = tabs.findIndex((tab) => tab.id === tabId);
+    if (currentIndex < 0) {
+      return;
+    }
+
+    let nextIndex = currentIndex;
+    if (event.key === "ArrowRight") {
+      nextIndex = (currentIndex + 1) % tabs.length;
+    } else if (event.key === "ArrowLeft") {
+      nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = tabs.length - 1;
+    } else {
+      return;
+    }
+
+    event.preventDefault();
+    const nextTab = tabs[nextIndex];
+    onSelectTab(nextTab.id);
+    window.requestAnimationFrame(() => editorTabRefs.current.get(nextTab.id)?.focus());
+  }
+
   if (!activeTab) {
     return (
       <aside className="detail-panel worktree-detail-panel editor-detail-panel empty">
@@ -216,50 +256,69 @@ export function WorktreeDetailPanel({
         <div className="editor-tabs" role="tablist" aria-label="工作树文件">
           {tabs.map((tab) => (
             <div
-              role="tab"
-              tabIndex={0}
-              aria-selected={tab.id === activeTab.id}
               className={`editor-tab ${tab.id === activeTab.id ? "active" : ""} ${tab.pinned ? "pinned" : "preview"}`}
               key={tab.id}
-              onClick={() => onSelectTab(tab.id)}
-              onDoubleClick={() => onPinTab(tab.id)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  onSelectTab(tab.id);
-                }
-              }}
             >
-              <FileText size={14} />
-              <PathTooltip path={absoluteFilePath(repositoryPath, tab.file.path)} className="editor-tab-name">
-                {tab.file.path.split(/[\\/]/).filter(Boolean).at(-1) ?? tab.file.path}
-              </PathTooltip>
-              <small>{statusLabel(tab.file.status)}</small>
               <button
+                ref={(node) => setEditorTabRef(tab.id, node)}
                 type="button"
-                className="editor-tab-close"
-                title="关闭文件"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onCloseTab(tab.id);
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
+                className="editor-tab-main"
+                id={editorTabId(tab.id)}
+                role="tab"
+                tabIndex={tab.id === activeTab.id ? 0 : -1}
+                aria-selected={tab.id === activeTab.id}
+                aria-controls={editorTabPanelId(tab.id)}
+                onClick={() => onSelectTab(tab.id)}
+                onDoubleClick={() => onPinTab(tab.id)}
+                onKeyDown={(event) => handleEditorTabKeyDown(event, tab.id)}
+              >
+                <FileText size={14} />
+                <PathTooltip path={absoluteFilePath(repositoryPath, tab.file.path)} className="editor-tab-name">
+                  {tab.file.path.split(/[\\/]/).filter(Boolean).at(-1) ?? tab.file.path}
+                </PathTooltip>
+                <small>{statusLabel(tab.file.status)}</small>
+              </button>
+              <PathTooltip content={`关闭 ${tab.file.path.split(/[\\/]/).filter(Boolean).at(-1) ?? tab.file.path}`} className="editor-tab-close-tooltip">
+                <button
+                  type="button"
+                  className="editor-tab-close"
+                  aria-label={`关闭 ${tab.file.path}`}
+                  onClick={(event) => {
                     event.stopPropagation();
                     onCloseTab(tab.id);
-                  }
-                }}
-              >
-                <X size={13} />
-              </button>
+                  }}
+                >
+                  <X size={13} />
+                </button>
+              </PathTooltip>
             </div>
           ))}
         </div>
-        <PathTooltip content="复制绝对路径" className="editor-action-tooltip">
-          <button type="button" className="icon-button compact-icon" aria-label="复制绝对路径" onClick={() => void navigator.clipboard.writeText(activeAbsolutePath)}>
-            <Copy size={15} />
-          </button>
-        </PathTooltip>
+        <div className={`editor-file-actions ${desktopFileActionsEnabled ? "desktop-actions-enabled" : ""}`} role="group" aria-label="文件操作">
+          <PathTooltip content="复制绝对路径" className="editor-action-tooltip">
+            <button type="button" className="icon-button compact-icon" aria-label="复制绝对路径" onClick={() => void navigator.clipboard.writeText(activeAbsolutePath)}>
+              <Copy size={15} />
+            </button>
+          </PathTooltip>
+          {desktopFileActionsEnabled && onOpenFile ? (
+            <PathTooltip content="用系统默认应用打开" className="editor-action-tooltip">
+              <button type="button" className="icon-button compact-icon" aria-label="用系统默认应用打开" onClick={() => onOpenFile(activeTab)}>
+                <ExternalLink size={15} />
+              </button>
+            </PathTooltip>
+          ) : null}
+          {desktopFileActionsEnabled && onRevealFile ? (
+            <PathTooltip content="在文件资源管理器中显示" className="editor-action-tooltip">
+              <button type="button" className="icon-button compact-icon" aria-label="在文件资源管理器中显示" onClick={() => onRevealFile(activeTab)}>
+                <FolderOpen size={15} />
+              </button>
+            </PathTooltip>
+          ) : null}
+        </div>
       </div>
+      {tabs.filter((tab) => tab.id !== activeTab.id).map((tab) => (
+        <div key={`panel-${tab.id}`} id={editorTabPanelId(tab.id)} role="tabpanel" aria-labelledby={editorTabId(tab.id)} hidden />
+      ))}
 
       <div className="editor-breadcrumb">
         <span>{activeTab.sourceLabel ?? (file.staged ? "已暂存的更改" : "更改")}</span>
@@ -267,7 +326,13 @@ export function WorktreeDetailPanel({
         {activeTab.subtitle ? <span>{activeTab.subtitle}</span> : null}
       </div>
 
-      <div className={`editor-diff-shell ${activeTab.conflict ? "conflict-mode" : ""} ${activeTab.loadError ? "load-error-mode" : ""}`} style={splitDiffStyle}>
+      <div
+        className={`editor-diff-shell ${activeTab.conflict ? "conflict-mode" : ""} ${activeTab.loadError ? "load-error-mode" : ""}`}
+        id={editorTabPanelId(activeTab.id)}
+        role="tabpanel"
+        aria-labelledby={editorTabId(activeTab.id)}
+        style={splitDiffStyle}
+      >
         {activeTab.loading ? (
           <div className="editor-empty-state conflict-loading-state">
             <GitMerge size={20} />
@@ -343,6 +408,7 @@ export function WorktreeDetailPanel({
 }
 
 type ConflictViewMode = "blocks" | "three-way" | "result";
+const conflictViewModes: ConflictViewMode[] = ["blocks", "three-way", "result"];
 
 interface ParsedConflictBlock {
   id: string;
@@ -366,6 +432,7 @@ function ConflictResolver({ tab, onResolve }: { tab: WorktreeEditorTab; onResolv
   const blocks = useMemo(() => parseConflictBlocks(draft), [draft]);
   const initialBlockCount = useMemo(() => parseConflictBlocks(initialDraft).length, [initialDraft]);
   const resolvedBlockCount = Math.max(0, initialBlockCount - blocks.length);
+  const conflictPanelId = conflictViewPanelId(tab.id);
 
   useEffect(() => {
     const nextDraft = conflictInitialDraft(details);
@@ -411,6 +478,27 @@ function ConflictResolver({ tab, onResolve }: { tab: WorktreeEditorTab; onResolv
     setDraft((current) => `${current.slice(0, block.start)}${replacement}${current.slice(block.end)}`);
   }
 
+  function handleConflictTabKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>, mode: ConflictViewMode) {
+    const currentIndex = conflictViewModes.indexOf(mode);
+    let nextIndex = currentIndex;
+    if (event.key === "ArrowRight") {
+      nextIndex = (currentIndex + 1) % conflictViewModes.length;
+    } else if (event.key === "ArrowLeft") {
+      nextIndex = (currentIndex - 1 + conflictViewModes.length) % conflictViewModes.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = conflictViewModes.length - 1;
+    } else {
+      return;
+    }
+
+    event.preventDefault();
+    const nextMode = conflictViewModes[nextIndex];
+    setViewMode(nextMode);
+    window.requestAnimationFrame(() => document.getElementById(conflictViewTabId(tab.id, nextMode))?.focus());
+  }
+
   async function resolve(input: Omit<ConflictResolutionInput, "expectedToken">) {
     if (busy) {
       return;
@@ -446,18 +534,23 @@ function ConflictResolver({ tab, onResolve }: { tab: WorktreeEditorTab; onResolv
       {details.editable ? (
         <>
           <div className="conflict-view-tabs" role="tablist" aria-label="冲突查看模式">
-            <button type="button" role="tab" aria-selected={viewMode === "blocks"} className={viewMode === "blocks" ? "active" : ""} onClick={() => setViewMode("blocks")}>
+            <button type="button" id={conflictViewTabId(tab.id, "blocks")} role="tab" tabIndex={viewMode === "blocks" ? 0 : -1} aria-selected={viewMode === "blocks"} aria-controls={conflictPanelId} className={viewMode === "blocks" ? "active" : ""} onClick={() => setViewMode("blocks")} onKeyDown={(event) => handleConflictTabKeyDown(event, "blocks")}>
               冲突块 {blocks.length}
             </button>
-            <button type="button" role="tab" aria-selected={viewMode === "three-way"} className={viewMode === "three-way" ? "active" : ""} onClick={() => setViewMode("three-way")}>
+            <button type="button" id={conflictViewTabId(tab.id, "three-way")} role="tab" tabIndex={viewMode === "three-way" ? 0 : -1} aria-selected={viewMode === "three-way"} aria-controls={conflictPanelId} className={viewMode === "three-way" ? "active" : ""} onClick={() => setViewMode("three-way")} onKeyDown={(event) => handleConflictTabKeyDown(event, "three-way")}>
               三方原文
             </button>
-            <button type="button" role="tab" aria-selected={viewMode === "result"} className={viewMode === "result" ? "active" : ""} onClick={() => setViewMode("result")}>
+            <button type="button" id={conflictViewTabId(tab.id, "result")} role="tab" tabIndex={viewMode === "result" ? 0 : -1} aria-selected={viewMode === "result"} aria-controls={conflictPanelId} className={viewMode === "result" ? "active" : ""} onClick={() => setViewMode("result")} onKeyDown={(event) => handleConflictTabKeyDown(event, "result")}>
               最终结果
             </button>
           </div>
 
-          <div className={`conflict-resolver-body-shell ${horizontalMaxScroll > 0 ? "has-horizontal-scroll" : ""}`}>
+          <div
+            className={`conflict-resolver-body-shell ${horizontalMaxScroll > 0 ? "has-horizontal-scroll" : ""}`}
+            id={conflictPanelId}
+            role="tabpanel"
+            aria-labelledby={conflictViewTabId(tab.id, viewMode)}
+          >
             <div className="conflict-resolver-body" ref={bodyScrollRef} onScroll={syncConflictBodyScroll}>
               {viewMode === "blocks" ? (
                 blocks.length > 0 ? (
@@ -912,6 +1005,26 @@ function buildSplitDiffRows(lines: DiffLine[]): SplitDiffRow[] {
 
 function clampNumber(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+function editorTabId(tabId: string): string {
+  return `editor-tab-${stableDomToken(tabId)}`;
+}
+
+function editorTabPanelId(tabId: string): string {
+  return `editor-tab-panel-${stableDomToken(tabId)}`;
+}
+
+function conflictViewTabId(tabId: string, mode: ConflictViewMode): string {
+  return `conflict-tab-${stableDomToken(tabId)}-${mode}`;
+}
+
+function conflictViewPanelId(tabId: string): string {
+  return `conflict-tab-panel-${stableDomToken(tabId)}`;
+}
+
+function stableDomToken(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]/g, "-");
 }
 
 function formatBytes(value: number): string {

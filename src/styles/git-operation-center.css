@@ -1,0 +1,131 @@
+.git-operation-center {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 130;
+  width: min(360px, calc(100vw - 36px));
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border-strong) 72%, transparent);
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--glass-fill-strong) 90%, transparent);
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: blur(28px) saturate(150%);
+}
+
+.git-operation-center > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 44px;
+  padding: 12px 14px 9px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+}
+
+.git-operation-center > header span {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.git-operation-center > header small,
+.git-operation-copy small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.git-operation-list {
+  display: grid;
+  max-height: min(360px, 48vh);
+  overflow: auto;
+}
+
+.git-operation-item {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) 36px;
+  align-items: center;
+  gap: 8px;
+  min-height: 64px;
+  padding: 8px 10px 8px 12px;
+}
+
+.git-operation-item + .git-operation-item {
+  border-top: 1px solid color-mix(in srgb, var(--border) 66%, transparent);
+}
+
+.git-operation-icon {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 10px;
+  color: var(--blue);
+  background: color-mix(in srgb, var(--blue) 10%, transparent);
+}
+
+.git-operation-item[data-phase="completed"] .git-operation-icon {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+}
+
+.git-operation-item[data-phase="failed"] .git-operation-icon,
+.git-operation-item[data-phase="cancelled"] .git-operation-icon {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
+.git-operation-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.git-operation-copy strong,
+.git-operation-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-operation-copy strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.git-operation-progress {
+  display: block;
+  width: 100%;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--muted) 14%, transparent);
+}
+
+.git-operation-progress i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--blue);
+  transition: width 180ms ease;
+}
+
+.git-operation-action {
+  width: 36px;
+  height: 36px;
+}
+
+@media (max-width: 620px) {
+  .git-operation-center {
+    right: 10px;
+    bottom: 10px;
+    width: calc(100vw - 20px);
+    border-radius: 18px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .git-operation-progress i {
+    transition: none;
+  }
+}

@@ -1,10 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import { apiClient } from "../api/client";
 import type {
   BranchInfo,
+  GitHostingAccountSummary,
+  GitHostingChangeRequest,
   GitHostingLinks,
+  GitHostingProvider,
   GitOperationResult,
   GitProject,
+  GitRemoteInfo,
   GitStatusSummary,
   ProjectLibraryState,
   UiPreferences
@@ -16,6 +21,7 @@ import {
   type RepositoryCenterData,
   type RepositoryCenterSection,
   type RepositoryCenterTab,
+  type RepositoryHostingChange,
   type RepositoryHostingLink,
   type RepositoryPreferences,
   type RepositoryProjectSummary,
@@ -87,7 +93,7 @@ export function RepositoryCenterContainer({
     const branchesPromise = selectedProject ? asResource(() => apiClient.getBranches(selectedProject)) : Promise.resolve(readyResource<BranchInfo[]>([]));
     const remotesPromise = selectedProject ? asResource(() => apiClient.getRemotes(selectedProject)) : Promise.resolve(readyResource([]));
 
-    const [library, preferences, status, branches, remotes, stashes, tags, reflog, worktrees, submodules, lfs, gitignore, signing] = await Promise.all([
+    const [library, preferences, status, branches, remotes, stashes, tags, reflog, worktrees, submodules, lfs, gitignore, signing, identity, hostingAccounts] = await Promise.all([
       libraryPromise,
       preferencesPromise,
       statusPromise,
@@ -100,8 +106,14 @@ export function RepositoryCenterContainer({
       selectedProject ? asResource(() => apiClient.getSubmodules(selectedProject)) : Promise.resolve(readyResource([])),
       selectedProject ? asResource(() => apiClient.getLfsStatus(selectedProject)) : Promise.resolve(readyResource(undefined)),
       selectedProject ? asResource(() => apiClient.readGitIgnore(selectedProject)) : Promise.resolve(readyResource(undefined)),
-      selectedProject ? asResource(() => apiClient.getSigningConfig(selectedProject)) : Promise.resolve(readyResource(undefined))
+      selectedProject ? asResource(() => apiClient.getSigningConfig(selectedProject)) : Promise.resolve(readyResource(undefined)),
+      selectedProject ? asResource(() => apiClient.getGitIdentity(selectedProject)) : Promise.resolve(readyResource(undefined)),
+      asResource(() => apiClient.listHostingAccounts())
     ]);
+
+    const lfsLocks = !selectedProject || lfs.status !== "ready" || !lfs.data?.installed
+      ? readyResource([])
+      : await asResource(() => apiClient.getLfsLocks(selectedProject));
 
     const resolvedStatus = status.status === "ready" ? status.data : undefined;
     const hosting = !selectedProject
@@ -109,6 +121,13 @@ export function RepositoryCenterContainer({
       : remotes.status === "error"
         ? errorResource<RepositoryHostingLink[]>(remotes.error, [])
         : await loadHostingResources(selectedProject, remotes.data, resolvedStatus?.currentBranch ?? undefined);
+    const hostingChanges = !selectedProject
+      ? readyResource<RepositoryHostingChange[]>([])
+      : remotes.status === "error"
+        ? errorResource<RepositoryHostingChange[]>(remotes.error, [])
+        : hostingAccounts.status === "error"
+          ? errorResource<RepositoryHostingChange[]>(hostingAccounts.error, [])
+          : await loadConfiguredHostingChanges(remotes.data, hostingAccounts.data);
 
     if (loadToken !== loadTokenRef.current) {
       return;
@@ -153,6 +172,8 @@ export function RepositoryCenterContainer({
         fetchUrl: remote.fetchUrls[0] ?? "",
         pushUrl: remote.pushUrls[0] ?? "",
         explicitPushUrl: remote.explicitPushUrls[0],
+        defaultBranch: remote.defaultBranch,
+        hostingProvider: hostingProviderFromRemote(remote.fetchUrls[0] ?? ""),
         isDefaultFetch: remote.defaultFetch,
         isDefaultPush: remote.defaultPush
       })), []),
@@ -190,7 +211,9 @@ export function RepositoryCenterContainer({
         branch: entry.branch,
         headHash: entry.head.slice(0, 10),
         locked: Boolean(entry.lockedReason),
+        lockReason: entry.lockedReason,
         prunable: Boolean(entry.prunableReason),
+        prunableReason: entry.prunableReason,
         isMain: Boolean(selectedProject && normalizePath(entry.path) === normalizePath(selectedProject.path))
       })), []),
       submodules: mapResource(submodules, (entries) => entries.map((entry) => ({
@@ -207,8 +230,10 @@ export function RepositoryCenterContainer({
         initialized: value?.initialized ?? false,
         version: value?.version ?? "",
         changedFileCount: value?.files.length ?? 0,
-        stagedFileCount: value?.files.filter((file) => file.staged).length ?? 0
-      }), { installed: false, initialized: false, version: "", changedFileCount: 0, stagedFileCount: 0 }),
+        stagedFileCount: value?.files.filter((file) => file.staged).length ?? 0,
+        files: value?.files ?? []
+      }), { installed: false, initialized: false, version: "", changedFileCount: 0, stagedFileCount: 0, files: [] }),
+      lfsLocks,
       gitignore: mapResource(gitignore, (value) => ({ path: ".gitignore", content: value?.content ?? "", revision: value?.revision ?? "missing", modified: false }), { path: ".gitignore", content: "", revision: "missing", modified: false }),
       signing: mapResource(signing, (value): RepositorySigningSettings => ({
         enabled: Boolean(value?.commitGpgSign),
@@ -216,7 +241,10 @@ export function RepositoryCenterContainer({
         key: value?.signingKey ?? "",
         signTags: Boolean(value?.tagGpgSign)
       }), { enabled: false, format: "openpgp", key: "", signTags: false }),
+      identity: mapResource(identity, (value) => value ?? { valid: false, issues: [] }, { valid: false, issues: [] }),
       hosting,
+      hostingAccounts,
+      hostingChanges,
       projects: readyResource(projectSummaries),
       groups: library.status === "error" ? errorResource(library.error, []) : readyResource(libraryData.groups.map((group) => ({
         id: group.id,
@@ -245,11 +273,20 @@ export function RepositoryCenterContainer({
   async function completeGit(resultPromise: Promise<GitOperationResult>, includeFeedback = false): Promise<void | string> {
     const result = await resultPromise;
     ensureGitSuccess(result);
-    await onRepositoryChange();
-    await loadAll();
-    if (includeFeedback) {
-      return operationFeedback(result);
+    const feedback = operationFeedback(result);
+    try {
+      await onRepositoryChange();
+      await loadAll();
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const notice = `${includeFeedback ? feedback : "Git 操作已完成"}；界面刷新失败：${detail}`;
+      if (includeFeedback) {
+        return notice;
+      }
+      toast.warning("Git 操作已完成，但界面刷新失败", { description: detail });
+      return;
     }
+    return includeFeedback ? feedback : undefined;
   }
 
   async function reloadProjects() {
@@ -275,12 +312,60 @@ export function RepositoryCenterContainer({
     return branch;
   }
 
+  function requireRemote(remoteId: string) {
+    const remote = data.remotes.data.find((item) => item.id === remoteId);
+    if (!remote) {
+      throw new Error("远程仓库记录已变化，请刷新后重试。");
+    }
+    return remote;
+  }
+
+  async function reloadHostingChanges(provider: GitHostingProvider, remoteId: string) {
+    const remote = requireRemote(remoteId);
+    const changes = await apiClient.listHostingChangeRequests(provider, hostingRemoteUrl(remote));
+    const scopedChanges = changes.map((change): RepositoryHostingChange => ({ ...change, provider, remoteId }));
+    setData((current) => ({
+      ...current,
+      hostingChanges: readyResource([
+        ...current.hostingChanges.data.filter((change) => change.provider !== provider || change.remoteId !== remoteId),
+        ...scopedChanges
+      ])
+    }));
+  }
+
+  function upsertHostingChange(provider: GitHostingProvider, remoteId: string, change: GitHostingChangeRequest) {
+    setData((current) => ({
+      ...current,
+      hostingChanges: readyResource([
+        { ...change, provider, remoteId },
+        ...current.hostingChanges.data.filter((item) => item.provider !== provider || item.remoteId !== remoteId || item.number !== change.number)
+      ])
+    }));
+  }
+
+  function patchHostingChange(
+    provider: GitHostingProvider,
+    remoteId: string,
+    number: number,
+    patch: Partial<GitHostingChangeRequest>
+  ) {
+    setData((current) => ({
+      ...current,
+      hostingChanges: readyResource(current.hostingChanges.data.map((item) =>
+        item.provider === provider && item.remoteId === remoteId && item.number === number
+          ? { ...item, ...patch }
+          : item
+      ))
+    }));
+  }
+
   const actions = useMemo<RepositoryCenterActions>(() => ({
     onClose,
     onReload: (_section: RepositoryCenterSection) => loadAll(),
     onCreateStash: (input) => completeGit(apiClient.createStash(requireProject(), input)),
-    onApplyStash: (stashId) => completeGit(apiClient.applyStash(requireProject(), stashId)),
-    onPopStash: (stashId) => completeGit(apiClient.popStash(requireProject(), stashId)),
+    onLoadStashDetails: (stashId) => apiClient.getStashDetails(requireProject(), stashId),
+    onApplyStash: (stashId, restoreIndex) => completeGit(apiClient.applyStash(requireProject(), stashId, restoreIndex)),
+    onPopStash: (stashId, restoreIndex) => completeGit(apiClient.popStash(requireProject(), stashId, restoreIndex)),
     onDeleteStash: (stashId) => completeGit(apiClient.dropStash(requireProject(), stashId)),
     onContinueOperation: (kind) => {
       const selected = requireProject();
@@ -312,6 +397,7 @@ export function RepositoryCenterContainer({
     onStartRebase: ({ target, interactive, onto, plan }) => interactive
       ? completeGit(apiClient.startInteractiveRebase(requireProject(), target, plan ?? [], onto))
       : completeGit(apiClient.startRebase(requireProject(), target, onto)),
+    onForcePushWithLease: () => completeGit(apiClient.push(requireProject(), { forceWithLease: true })),
     onSaveRemote: async (input) => {
       const selected = requireProject();
       if (input.id) {
@@ -357,12 +443,25 @@ export function RepositoryCenterContainer({
     onAddWorktree: ({ path, branch, createBranch }) => completeGit(apiClient.addLinkedWorktree(requireProject(), createBranch ? { path, newBranch: branch } : { path, ref: branch || undefined })),
     onRemoveWorktree: (worktreeId, force) => completeGit(apiClient.removeLinkedWorktree(requireProject(), worktreeId, force)),
     onPruneWorktrees: () => completeGit(apiClient.pruneLinkedWorktrees(requireProject())),
+    onLockWorktree: ({ worktreeId, reason }) => completeGit(apiClient.lockLinkedWorktree(requireProject(), worktreeId, reason)),
+    onUnlockWorktree: (worktreeId) => completeGit(apiClient.unlockLinkedWorktree(requireProject(), worktreeId)),
+    onMoveWorktree: ({ worktreeId, destinationPath }) => completeGit(apiClient.moveLinkedWorktree(requireProject(), { worktreePath: worktreeId, destinationPath })),
+    onRepairWorktrees: (worktreeIds = []) => completeGit(apiClient.repairLinkedWorktrees(requireProject(), worktreeIds)),
     onInitSubmodules: () => completeGit(apiClient.initializeSubmodules(requireProject())),
     onUpdateSubmodules: (recursive) => completeGit(apiClient.updateSubmodules(requireProject(), { initialize: true, recursive })),
     onSyncSubmodules: () => completeGit(apiClient.syncSubmodules(requireProject(), true)),
+    onAddSubmodule: (input) => completeGit(apiClient.addSubmodule(requireProject(), input)),
+    onSetSubmoduleBranch: ({ moduleId, branch }) => completeGit(apiClient.setSubmoduleBranch(requireProject(), moduleId, branch)),
+    onDeinitSubmodule: (moduleId, force) => completeGit(apiClient.deinitializeSubmodule(requireProject(), moduleId, force)),
+    onRemoveSubmodule: (moduleId, force) => completeGit(apiClient.removeSubmodule(requireProject(), moduleId, force)),
     onInstallLfs: () => completeGit(apiClient.installLfs(requireProject(), "local")),
     onPullLfs: () => completeGit(apiClient.pullLfs(requireProject())),
     onPruneLfs: () => completeGit(apiClient.pruneLfs(requireProject())),
+    onTrackLfsPatterns: (patterns) => completeGit(apiClient.trackLfsPatterns(requireProject(), patterns)),
+    onUntrackLfsPatterns: (patterns) => completeGit(apiClient.untrackLfsPatterns(requireProject(), patterns)),
+    onLockLfsFile: (filePath) => completeGit(apiClient.lockLfsFile(requireProject(), filePath)),
+    onUnlockLfsFile: (lockId, force) => completeGit(apiClient.unlockLfsFile(requireProject(), lockId, force)),
+    onMigrateLfs: (input) => completeGit(apiClient.migrateLfs(requireProject(), input)),
     onSaveGitignore: async (content, expectedRevision) => {
       await apiClient.writeGitIgnore(requireProject(), content, expectedRevision);
       await onRepositoryChange();
@@ -375,6 +474,7 @@ export function RepositoryCenterContainer({
       signingKey: settings.key || null
     })),
     onTestSigning: () => completeGit(apiClient.verifyCommitSignature(requireProject(), "HEAD"), true),
+    onSaveIdentity: (input) => completeGit(apiClient.setGitIdentity(requireProject(), input)),
     onOpenHostingLink: async (linkId) => {
       const link = data.hosting.data.find((item) => item.id === linkId);
       if (!link) throw new Error("托管平台链接已变化，请刷新后重试。");
@@ -384,6 +484,83 @@ export function RepositoryCenterContainer({
       const link = data.hosting.data.find((item) => item.id === linkId);
       if (!link) throw new Error("托管平台链接已变化，请刷新后重试。");
       await navigator.clipboard.writeText(link.url);
+    },
+    onSaveHostingAccount: async ({ provider, remoteId, token }) => {
+      const remote = requireRemote(remoteId);
+      const account = await apiClient.saveHostingAccount(provider, hostingRemoteUrl(remote), token);
+      setData((current) => ({
+        ...current,
+        hostingAccounts: readyResource([
+          account,
+          ...current.hostingAccounts.data.filter((item) => item.provider !== account.provider || item.host !== account.host)
+        ])
+      }));
+    },
+    onDeleteHostingAccount: async ({ provider, host }) => {
+      const removed = await apiClient.removeHostingAccount(provider, host);
+      if (!removed) {
+        throw new Error("平台账号已经不存在，请刷新后重试。");
+      }
+      setData((current) => ({
+        ...current,
+        hostingAccounts: readyResource(current.hostingAccounts.data.filter((item) => item.provider !== provider || item.host !== host))
+      }));
+    },
+    onReloadHostingChanges: ({ provider, remoteId }) => reloadHostingChanges(provider, remoteId),
+    onRefreshHostingChange: async ({ provider, remoteId, number }) => {
+      const remote = requireRemote(remoteId);
+      const change = await apiClient.getHostingChangeRequest(provider, hostingRemoteUrl(remote), number);
+      upsertHostingChange(provider, remoteId, change);
+      return "已读取平台最新状态";
+    },
+    onCreateHostingChange: async ({ provider, remoteId, change }) => {
+      const remote = requireRemote(remoteId);
+      const targetRemoteUrl = hostingRemoteUrl(remote);
+      const sourceRemoteUrl = remote.pushUrl.trim();
+      const created = await apiClient.createHostingChangeRequest(provider, targetRemoteUrl, {
+        ...change,
+        sourceRemoteUrl: sourceRemoteUrl && sourceRemoteUrl !== targetRemoteUrl ? sourceRemoteUrl : undefined
+      });
+      upsertHostingChange(provider, remoteId, created);
+    },
+    onCommentHostingChange: async ({ provider, remoteId, number, body }) => {
+      const remote = requireRemote(remoteId);
+      await apiClient.commentHostingChangeRequest(provider, hostingRemoteUrl(remote), number, body);
+      patchHostingChange(provider, remoteId, number, { updatedAt: new Date().toISOString() });
+      return "评论已提交";
+    },
+    onReviewHostingChange: async ({ provider, remoteId, number, headSha, event, body }) => {
+      const remote = requireRemote(remoteId);
+      await apiClient.reviewHostingChangeRequest(provider, hostingRemoteUrl(remote), { number, headSha, event, body });
+      patchHostingChange(provider, remoteId, number, {
+        reviewStatus: event === "approve" ? "当前提交已批准" : "已请求修改",
+        updatedAt: new Date().toISOString()
+      });
+      return event === "approve" ? "审核已批准" : "修改请求已提交";
+    },
+    onMergeHostingChange: async ({ provider, remoteId, number, headSha, method }) => {
+      const remote = requireRemote(remoteId);
+      await apiClient.mergeHostingChangeRequest(provider, hostingRemoteUrl(remote), { number, headSha, method });
+      patchHostingChange(provider, remoteId, number, {
+        state: "merged",
+        mergeReadiness: "blocked",
+        mergeStatus: "merged",
+        updatedAt: new Date().toISOString()
+      });
+      try {
+        await onRepositoryChange();
+        return "平台合并已完成";
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        return `平台合并已完成；本地仓库刷新失败：${detail}`;
+      }
+    },
+    onOpenHostingChange: async ({ provider, remoteId, number }) => {
+      const change = data.hostingChanges.data.find((item) => item.provider === provider && item.remoteId === remoteId && item.number === number);
+      if (!change) {
+        throw new Error("合并请求记录已变化，请刷新后重试。");
+      }
+      await apiClient.openExternal(change.webUrl);
     },
     onCloneRepository: async (input) => {
       const created = await apiClient.cloneRepository(input.url, input.destination, {
@@ -490,10 +667,13 @@ function emptyCenterData(): RepositoryCenterData {
   return {
     stashes: readyResource([]), operation: readyResource(null), rebaseTargets: readyResource([]), remotes: readyResource([]), branches: readyResource([]),
     tags: readyResource([]), reflog: readyResource([]), worktrees: readyResource([]), submodules: readyResource([]),
-    lfs: readyResource({ installed: false, initialized: false, version: "", changedFileCount: 0, stagedFileCount: 0 }),
+    lfs: readyResource({ installed: false, initialized: false, version: "", changedFileCount: 0, stagedFileCount: 0, files: [] }),
+    lfsLocks: readyResource([]),
     gitignore: readyResource({ path: ".gitignore", content: "", revision: "missing", modified: false }),
     signing: readyResource({ enabled: false, format: "openpgp", key: "", signTags: false }),
-    hosting: readyResource([]), projects: readyResource([]), groups: readyResource([]), recent: readyResource([]),
+    identity: readyResource({ valid: false, issues: [] }),
+    hosting: readyResource([]), hostingAccounts: readyResource([]), hostingChanges: readyResource([]),
+    projects: readyResource([]), groups: readyResource([]), recent: readyResource([]),
     preferences: readyResource(toRepositoryPreferences(defaultPreferences()))
   };
 }
@@ -576,6 +756,75 @@ async function loadHostingResources(
     return errorResource(failed.map((item) => `${item.remote.name}：${item.resource.error}`).join("\n"), []);
   }
   return readyResource(resources.flatMap(({ remote, resource }) => hostingLinks(resource.data, remote.name)));
+}
+
+async function loadConfiguredHostingChanges(
+  remotes: GitRemoteInfo[],
+  accounts: GitHostingAccountSummary[]
+): Promise<RepositoryResource<RepositoryHostingChange[]>> {
+  const targets = remotes.flatMap((remote) => {
+    const remoteUrl = remote.fetchUrls[0] ?? "";
+    const host = hostingRemoteHost(remoteUrl);
+    if (!host) {
+      return [];
+    }
+    const inferredProvider = hostingProviderFromRemote(remoteUrl);
+    return accounts
+      .filter((account) => account.host.toLocaleLowerCase() === host && (!inferredProvider || account.provider === inferredProvider))
+      .map((account) => ({ provider: account.provider, remoteId: remote.name, remoteUrl }));
+  });
+  if (targets.length === 0) {
+    return readyResource([]);
+  }
+
+  const resources = await Promise.all(targets.map(async (target) => ({
+    target,
+    resource: await asResource(() => apiClient.listHostingChangeRequests(target.provider, target.remoteUrl))
+  })));
+  const failed = resources.filter((item) => item.resource.status === "error");
+  const loadedChanges = resources.flatMap(({ target, resource }) => resource.status === "ready"
+    ? resource.data.map((change): RepositoryHostingChange => ({
+        ...change,
+        provider: target.provider,
+        remoteId: target.remoteId
+      }))
+    : []);
+  if (failed.length > 0) {
+    return errorResource(
+      failed.map((item) => `${item.target.remoteId}：${item.resource.error}`).join("\n"),
+      loadedChanges
+    );
+  }
+  return readyResource(loadedChanges);
+}
+
+function hostingRemoteUrl(remote: { fetchUrl: string; pushUrl: string }): string {
+  const remoteUrl = remote.fetchUrl.trim();
+  if (!remoteUrl) {
+    throw new Error("远程仓库没有可用的 Fetch 地址，无法确定托管目标仓库。");
+  }
+  return remoteUrl;
+}
+
+function hostingRemoteHost(remoteUrl: string): string {
+  const source = remoteUrl.trim();
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(source)) {
+    try {
+      const url = new URL(source);
+      return (url.protocol === "ssh:" ? url.hostname : url.host).toLocaleLowerCase();
+    } catch {
+      return "";
+    }
+  }
+  return source.match(/^(?:[^@/:]+@)?([^/:]+):/)?.[1]?.toLocaleLowerCase() ?? "";
+}
+
+function hostingProviderFromRemote(remoteUrl: string): GitHostingProvider | undefined {
+  const host = hostingRemoteHost(remoteUrl).replace(/^\[|\]$/g, "").split(":")[0];
+  if (host === "github.com") return "github";
+  if (host === "gitlab.com") return "gitlab";
+  if (host === "gitee.com") return "gitee";
+  return undefined;
 }
 
 function hostingLinks(links: GitHostingLinks, remoteName: string): RepositoryHostingLink[] {

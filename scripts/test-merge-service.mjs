@@ -234,7 +234,7 @@ async function testRemoteChangesMergeIntoDivergedBranch() {
 
   const result = await service.mergeRemote(repositoryPath);
   assert.equal(result.ok, true, result.messageZh ?? result.stderr);
-  assert.match(result.command, /git fetch --prune/);
+  assert.match(result.command, /git fetch --progress --prune/);
   assert.match(result.command, /git merge --no-edit origin\/main/);
   assert.equal(git(repositoryPath, "rev-list", "--parents", "-n", "1", "HEAD").split(/\s+/).length, 3);
   const status = await service.getStatus(repositoryPath);

@@ -36,6 +36,30 @@ function assertSuccess(result) {
   assert.equal(result.ok, true, result.messageZh ?? result.stderr);
 }
 
+test("long Git operations expose an explicit cancelling state and reject unknown task ids", () => {
+  const service = new GitService();
+  const progress = [];
+  let killed = false;
+  service.activeLongOperations.set("operation-123456", {
+    child: { kill: () => { killed = true; } },
+    context: {
+      id: "operation-123456",
+      kind: "fetch",
+      label: "获取远程更新",
+      repositoryPath: "repo",
+      onProgress: (value) => progress.push(value)
+    },
+    cancelled: false
+  });
+
+  assert.equal(service.cancelLongOperation("operation-123456"), true);
+  assert.equal(killed, true);
+  assert.equal(service.activeLongOperations.get("operation-123456").cancelled, true);
+  assert.equal(progress.at(-1).phase, "cancelling");
+  assert.equal(progress.at(-1).message, "正在取消");
+  assert.equal(service.cancelLongOperation("missing-operation"), false);
+});
+
 test("stash operations preserve explicit apply, pop, and drop behavior", async () => {
   const repositoryPath = await createRepository("stash");
   const service = new GitService();
@@ -60,6 +84,200 @@ test("stash operations preserve explicit apply, pop, and drop behavior", async (
   assert.equal((await service.getStashes(repositoryPath)).length, 0);
 });
 
+test("every push command path uses force-with-lease only when explicitly requested and never uses bare force", async () => {
+  const service = new GitService();
+  const calls = [];
+  service.getStatus = async () => ({
+    currentBranch: "main",
+    upstream: "origin/main",
+    ahead: 1,
+    behind: 0,
+    stagedCount: 0,
+    unstagedCount: 0,
+    untrackedCount: 0,
+    hasConflicts: false,
+    conflictedCount: 0
+  });
+  service.run = async (_cwd, args) => {
+    calls.push(args);
+    return { ok: true, command: `git ${args.join(" ")}`, stdout: "", stderr: "", exitCode: 0 };
+  };
+
+  assertSuccess(await service.push("repo"));
+  assertSuccess(await service.push("repo", { forceWithLease: true }));
+  service.getStatus = async () => ({
+    currentBranch: "feature/rewrite",
+    ahead: 0,
+    behind: 0,
+    stagedCount: 0,
+    unstagedCount: 0,
+    untrackedCount: 0,
+    hasConflicts: false,
+    conflictedCount: 0
+  });
+  service.getPushRemote = async () => "origin";
+  assertSuccess(await service.push("repo"));
+  assertSuccess(await service.push("repo", { forceWithLease: true }));
+
+  service.getStatus = async () => ({
+    currentBranch: null,
+    ahead: 0,
+    behind: 0,
+    stagedCount: 0,
+    unstagedCount: 0,
+    untrackedCount: 0,
+    hasConflicts: false,
+    conflictedCount: 0
+  });
+  assertSuccess(await service.push("repo"));
+  assertSuccess(await service.push("repo", { forceWithLease: true }));
+
+  assert.deepEqual(calls, [
+    ["push", "--progress"],
+    ["push", "--progress", "--force-with-lease"],
+    ["push", "--progress", "--set-upstream", "origin", "feature/rewrite"],
+    ["push", "--progress", "--force-with-lease", "--set-upstream", "origin", "feature/rewrite"],
+    ["push", "--progress"],
+    ["push", "--progress", "--force-with-lease"]
+  ]);
+  for (const args of calls) {
+    assert.equal(args.includes("--force"), false);
+    assert.equal(args.filter((arg) => arg.startsWith("--force")).every((arg) => arg === "--force-with-lease"), true);
+  }
+  await assert.rejects(service.push("repo", { forceWithLease: "yes" }), /必须是布尔值/);
+  await assert.rejects(service.push("repo", null), /选项格式不正确/);
+});
+
+test("force-with-lease refuses to overwrite a remote branch changed by another clone", async () => {
+  const repositoryPath = await createRepository("push-lease");
+  const barePath = path.join(testRoot, "push-lease-remote.git");
+  await mkdir(barePath);
+  git(barePath, "init", "--bare", "--initial-branch=main");
+  const service = new GitService();
+  assertSuccess(await service.addRemote(repositoryPath, "origin", barePath));
+  const firstPush = await service.push(repositoryPath);
+  assertSuccess(firstPush);
+  assert.doesNotMatch(firstPush.command, /(?:^|\s)--force(?:\s|$)/);
+
+  const rootHash = git(repositoryPath, "rev-parse", "HEAD");
+  await writeFile(path.join(repositoryPath, "second.txt"), "second\n", "utf8");
+  git(repositoryPath, "add", "second.txt");
+  git(repositoryPath, "commit", "-m", "second");
+  assertSuccess(await service.push(repositoryPath));
+
+  git(repositoryPath, "reset", "--hard", rootHash);
+  const rewrittenPush = await service.push(repositoryPath, { forceWithLease: true });
+  assertSuccess(rewrittenPush);
+  assert.match(rewrittenPush.command, /--force-with-lease/);
+  assert.doesNotMatch(rewrittenPush.command, /(?:^|\s)--force(?:\s|$)/);
+  assert.equal(git(barePath, "rev-parse", "refs/heads/main"), rootHash);
+
+  const peerPath = path.join(testRoot, "push-lease-peer");
+  git(testRoot, "clone", barePath, peerPath);
+  git(peerPath, "config", "user.name", "Peer Author");
+  git(peerPath, "config", "user.email", "peer@example.com");
+  await writeFile(path.join(peerPath, "peer.txt"), "peer\n", "utf8");
+  git(peerPath, "add", "peer.txt");
+  git(peerPath, "commit", "-m", "peer update");
+  git(peerPath, "push", "origin", "main");
+  const peerHash = git(peerPath, "rev-parse", "HEAD");
+
+  await writeFile(path.join(repositoryPath, "local.txt"), "local\n", "utf8");
+  git(repositoryPath, "add", "local.txt");
+  git(repositoryPath, "commit", "-m", "local rewrite");
+  const staleLeaseResult = await service.push(repositoryPath, { forceWithLease: true });
+  assert.equal(staleLeaseResult.ok, false);
+  assert.match(staleLeaseResult.command, /--force-with-lease/);
+  assert.doesNotMatch(staleLeaseResult.command, /(?:^|\s)--force(?:\s|$)/);
+  assert.equal(git(barePath, "rev-parse", "refs/heads/main"), peerHash);
+});
+
+test("repository Git identity reads effective values, saves local values, validates input, and rolls back partial updates", async () => {
+  const repositoryPath = await createRepository("identity");
+  const service = new GitService();
+  const initial = await service.getGitIdentity(repositoryPath);
+  assert.equal(initial.valid, true);
+  assert.equal(initial.localName, "Capability Test");
+  assert.equal(initial.localEmail, "capability-test@example.com");
+
+  assertSuccess(await service.setGitIdentity(repositoryPath, { name: "Repository Author", email: "author@example.com" }));
+  assert.equal(git(repositoryPath, "config", "--local", "user.name"), "Repository Author");
+  assert.equal(git(repositoryPath, "config", "--local", "user.email"), "author@example.com");
+  await assert.rejects(
+    service.setGitIdentity(repositoryPath, { name: "Invalid\nName", email: "not-an-email" }),
+    /不能包含控制字符.*邮箱格式不正确/
+  );
+
+  const originalRun = service.run.bind(service);
+  let injectedFailure = false;
+  service.run = async (cwd, args, options) => {
+    if (!injectedFailure && args[0] === "config" && args[1] === "--local" && args[2] === "--replace-all" && args[3] === "user.email") {
+      injectedFailure = true;
+      return {
+        ok: false,
+        command: "git config --local --replace-all user.email",
+        stdout: "",
+        stderr: "injected identity failure",
+        exitCode: 73,
+        messageZh: "注入的身份配置失败"
+      };
+    }
+    return originalRun(cwd, args, options);
+  };
+  const failedUpdate = await service.setGitIdentity(repositoryPath, { name: "Partial Author", email: "partial@example.com" });
+  assert.equal(failedUpdate.ok, false);
+  assert.match(failedUpdate.messageZh ?? "", /已恢复原配置/);
+  assert.equal(git(repositoryPath, "config", "--local", "user.name"), "Repository Author");
+  assert.equal(git(repositoryPath, "config", "--local", "user.email"), "author@example.com");
+});
+
+test("resetLastCommit safely undoes a root commit in soft, mixed, and hard modes", async () => {
+  const softRepositoryPath = await createRepository("root-reset-soft");
+  const softService = new GitService();
+  const softHead = git(softRepositoryPath, "rev-parse", "HEAD");
+  const softResult = await softService.resetLastCommit(softRepositoryPath, "soft");
+  assertSuccess(softResult);
+  assert.match(softResult.messageZh ?? "", /ORIG_HEAD.*保持暂存/);
+  assert.equal(git(softRepositoryPath, "rev-parse", "ORIG_HEAD"), softHead);
+  assert.throws(() => git(softRepositoryPath, "rev-parse", "--verify", "HEAD"));
+  assert.equal(git(softRepositoryPath, "status", "--porcelain"), "A  tracked.txt");
+
+  const mixedRepositoryPath = await createRepository("root-reset-mixed");
+  const mixedService = new GitService();
+  const mixedHead = git(mixedRepositoryPath, "rev-parse", "HEAD");
+  const mixedResult = await mixedService.resetLastCommit(mixedRepositoryPath, "mixed");
+  assertSuccess(mixedResult);
+  assert.match(mixedResult.messageZh ?? "", /ORIG_HEAD.*取消暂存/);
+  assert.equal(git(mixedRepositoryPath, "rev-parse", "ORIG_HEAD"), mixedHead);
+  assert.throws(() => git(mixedRepositoryPath, "rev-parse", "--verify", "HEAD"));
+  assert.equal(git(mixedRepositoryPath, "status", "--porcelain"), "?? tracked.txt");
+
+  const hardRepositoryPath = await createRepository("root-reset-hard");
+  const hardService = new GitService();
+  const hardHead = git(hardRepositoryPath, "rev-parse", "HEAD");
+  await writeFile(path.join(hardRepositoryPath, "untracked.txt"), "untracked\n", "utf8");
+  const hardResult = await hardService.resetLastCommit(hardRepositoryPath, "hard");
+  assertSuccess(hardResult);
+  assert.match(hardResult.messageZh ?? "", /ORIG_HEAD.*工作区移除/);
+  assert.equal(git(hardRepositoryPath, "rev-parse", "ORIG_HEAD"), hardHead);
+  assert.throws(() => git(hardRepositoryPath, "rev-parse", "--verify", "HEAD"));
+  await assert.rejects(readFile(path.join(hardRepositoryPath, "tracked.txt"), "utf8"), { code: "ENOENT" });
+  assert.equal(await readFile(path.join(hardRepositoryPath, "untracked.txt"), "utf8"), "untracked\n");
+  assert.equal(git(hardRepositoryPath, "status", "--porcelain"), "?? untracked.txt");
+
+  const detachedRepositoryPath = await createRepository("root-reset-detached");
+  const detachedService = new GitService();
+  const detachedHead = git(detachedRepositoryPath, "rev-parse", "HEAD");
+  git(detachedRepositoryPath, "checkout", "--detach", "HEAD");
+  for (const mode of ["soft", "mixed", "hard"]) {
+    const detachedResult = await detachedService.resetLastCommit(detachedRepositoryPath, mode);
+    assert.equal(detachedResult.ok, false);
+    assert.match(detachedResult.messageZh ?? "", /detached HEAD/);
+    assert.equal(git(detachedRepositoryPath, "rev-parse", "HEAD"), detachedHead);
+    assert.equal(git(detachedRepositoryPath, "status", "--porcelain"), "");
+  }
+});
+
 test("repository, remote, branch, tag, reflog, and hosting capabilities use real Git state", async () => {
   const repositoryPath = await createRepository("repository");
   const service = new GitService();
@@ -69,9 +287,11 @@ test("repository, remote, branch, tag, reflog, and hosting capabilities use real
 
   assertSuccess(await service.addRemote(repositoryPath, "origin", barePath));
   git(repositoryPath, "push", "--set-upstream", "origin", "main");
+  git(repositoryPath, "remote", "set-head", "origin", "--auto");
   const remotes = await service.getRemotes(repositoryPath);
   assert.deepEqual(remotes.map((remote) => remote.name), ["origin"]);
   assert.equal(remotes[0].fetchUrls[0].replace(/\\/g, "/"), barePath.replace(/\\/g, "/"));
+  assert.equal(remotes[0].defaultBranch, "main");
 
   const mirrorPath = path.join(testRoot, "mirror.git");
   await mkdir(mirrorPath);
@@ -878,9 +1098,9 @@ test("operation methods issue one exact Git command and never substitute another
     ["restore", "--staged", "--", "tracked.txt"],
     ["rev-parse", "--verify", "--quiet", "HEAD"],
     ["restore", "--staged", "--", "."],
-    ["pull", "--ff-only"],
-    ["pull", "--rebase"],
-    ["pull", "--rebase", "--autostash"],
+    ["pull", "--progress", "--ff-only"],
+    ["pull", "--progress", "--rebase"],
+    ["pull", "--progress", "--rebase", "--autostash"],
     ["check-ref-format", "--branch", "feature/exact"],
     ["switch", "-c", "feature/exact", "main"],
     ["switch", "main"],

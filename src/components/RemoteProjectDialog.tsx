@@ -12,11 +12,15 @@ import {
   X
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
-import type { GitProject, RemoteProjectInput, RemoteProjectTestResult } from "../types/domain";
+import type { GitProject, RemoteProjectInput, RemoteProjectTestResult, SshHostInspection } from "../types/domain";
+import { PathTooltip } from "./PathTooltip";
+import "../styles/remote-project-dialog.css";
 
 interface RemoteProjectDialogProps {
   onClose: () => void;
   onChooseIdentityFile: () => Promise<string | null>;
+  onInspectHost: (host: string, port?: number) => Promise<SshHostInspection>;
+  onTrustHost: (token: string, replaceExisting: boolean) => Promise<boolean>;
   onTest: (input: RemoteProjectInput) => Promise<RemoteProjectTestResult>;
   onAdd: (input: RemoteProjectInput) => Promise<GitProject>;
 }
@@ -33,14 +37,17 @@ const initialForm: FormState = {
   identityFile: ""
 };
 
-export function RemoteProjectDialog({ onClose, onChooseIdentityFile, onTest, onAdd }: RemoteProjectDialogProps) {
+export function RemoteProjectDialog({ onClose, onChooseIdentityFile, onInspectHost, onTrustHost, onTest, onAdd }: RemoteProjectDialogProps) {
   const [form, setForm] = useState<FormState>(initialForm);
   const [address, setAddress] = useState("");
   const [addressError, setAddressError] = useState("");
   const [touched, setTouched] = useState<Partial<Record<FieldName, boolean>>>({});
   const [feedback, setFeedback] = useState<ConnectionFeedback | null>(null);
   const [testedFingerprint, setTestedFingerprint] = useState<string | null>(null);
-  const [busyAction, setBusyAction] = useState<"test" | "add" | null>(null);
+  const [hostInspection, setHostInspection] = useState<SshHostInspection | null>(null);
+  const [trustAcknowledged, setTrustAcknowledged] = useState(false);
+  const [pendingIntent, setPendingIntent] = useState<"test" | "add" | null>(null);
+  const [busyAction, setBusyAction] = useState<"inspect" | "trust" | "test" | "add" | null>(null);
   const dialogRef = useRef<HTMLElement>(null);
   const hostInputRef = useRef<HTMLInputElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
@@ -79,6 +86,11 @@ export function RemoteProjectDialog({ onClose, onChooseIdentityFile, onTest, onA
     setForm((current) => ({ ...current, [field]: value }));
     setFeedback(null);
     setTestedFingerprint(null);
+    if (field === "host" || field === "port") {
+      setHostInspection(null);
+      setTrustAcknowledged(false);
+      setPendingIntent(null);
+    }
   }
 
   function markTouched(field: FieldName) {
@@ -101,22 +113,41 @@ export function RemoteProjectDialog({ onClose, onChooseIdentityFile, onTest, onA
     setTouched((current) => ({ ...current, host: true, repositoryPath: true }));
     setFeedback(null);
     setTestedFingerprint(null);
+    setHostInspection(null);
+    setTrustAcknowledged(false);
+    setPendingIntent(null);
     window.requestAnimationFrame(() => hostInputRef.current?.focus());
   }
 
-  async function testConnection() {
+  async function runConnectionFlow(intent: "test" | "add") {
     markAllTouched();
     if (Object.keys(errors).length > 0) {
       setFeedback({ tone: "error", message: "请先修正连接信息。" });
       return;
     }
 
-    setBusyAction("test");
+    setBusyAction("inspect");
     setFeedback(null);
     try {
+      const inspection = await onInspectHost(input.host, input.port);
+      if (inspection.status !== "trusted") {
+        setHostInspection(inspection);
+        setTrustAcknowledged(false);
+        setPendingIntent(intent);
+        setFeedback(null);
+        return;
+      }
+
+      setHostInspection(null);
+      setPendingIntent(null);
+      setBusyAction(intent);
       const result = await onTest(input);
       if (result.ok) {
         setTestedFingerprint(currentFingerprint);
+        if (intent === "add") {
+          await onAdd(input);
+          return;
+        }
         setFeedback({ tone: "success", message: "连接已验证", detail: result.repositoryRoot });
       } else {
         setTestedFingerprint(null);
@@ -130,22 +161,29 @@ export function RemoteProjectDialog({ onClose, onChooseIdentityFile, onTest, onA
     }
   }
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    markAllTouched();
-    if (Object.keys(errors).length > 0) {
-      setFeedback({ tone: "error", message: "请先修正连接信息。" });
+  async function trustInspectedHost() {
+    if (!hostInspection || !trustAcknowledged || !pendingIntent) {
       return;
     }
-
-    setBusyAction("add");
+    setBusyAction("trust");
     setFeedback(null);
     try {
-      await onAdd(input);
+      await onTrustHost(hostInspection.token, hostInspection.status === "changed");
+      const intent = pendingIntent;
+      setHostInspection(null);
+      setTrustAcknowledged(false);
+      setPendingIntent(null);
+      await runConnectionFlow(intent);
     } catch (error) {
       setFeedback(errorFeedback(error));
+    } finally {
       setBusyAction(null);
     }
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await runConnectionFlow("add");
   }
 
   async function chooseIdentityFile() {
@@ -222,9 +260,11 @@ export function RemoteProjectDialog({ onClose, onChooseIdentityFile, onTest, onA
                   autoComplete="off"
                   disabled={busy}
                 />
-                <button type="button" className="remote-address-apply" title="解析并填写连接信息" aria-label="解析并填写连接信息" onClick={applyRemoteAddress} disabled={busy || !address.trim()}>
-                  <Check size={14} />
-                </button>
+                <PathTooltip content="解析并填写连接信息" className="remote-inline-tooltip">
+                  <button type="button" className="remote-address-apply" aria-label="解析并填写连接信息" onClick={applyRemoteAddress} disabled={busy || !address.trim()}>
+                    <Check size={14} />
+                  </button>
+                </PathTooltip>
               </div>
               {addressError ? <small className="remote-field-error">{addressError}</small> : null}
             </label>
@@ -289,13 +329,17 @@ export function RemoteProjectDialog({ onClose, onChooseIdentityFile, onTest, onA
                     disabled={busy}
                   />
                   {form.identityFile ? (
-                    <button type="button" className="icon-button compact-icon remote-key-clear" title="清除私钥文件" aria-label="清除私钥文件" onClick={() => updateField("identityFile", "")} disabled={busy}>
-                      <X size={13} />
-                    </button>
+                    <PathTooltip content="清除私钥文件" className="remote-inline-tooltip">
+                      <button type="button" className="icon-button compact-icon remote-key-clear" aria-label="清除私钥文件" onClick={() => updateField("identityFile", "")} disabled={busy}>
+                        <X size={13} />
+                      </button>
+                    </PathTooltip>
                   ) : null}
-                  <button type="button" className="icon-button compact-icon" title="选择私钥文件" aria-label="选择私钥文件" onClick={() => void chooseIdentityFile()} disabled={busy}>
-                    <FolderOpen size={15} />
-                  </button>
+                  <PathTooltip content="选择私钥文件" className="remote-inline-tooltip">
+                    <button type="button" className="icon-button compact-icon" aria-label="选择私钥文件" onClick={() => void chooseIdentityFile()} disabled={busy}>
+                      <FolderOpen size={15} />
+                    </button>
+                  </PathTooltip>
                 </div>
               </Field>
             </div>
@@ -309,14 +353,24 @@ export function RemoteProjectDialog({ onClose, onChooseIdentityFile, onTest, onA
               <small>不保存密码</small>
             </div>
 
+            {hostInspection ? (
+              <HostTrustPanel
+                inspection={hostInspection}
+                acknowledged={trustAcknowledged}
+                busy={busyAction === "trust"}
+                onAcknowledgedChange={setTrustAcknowledged}
+                onTrust={() => void trustInspectedHost()}
+              />
+            ) : null}
+
             {feedback ? (
               <ConnectionFeedbackView feedback={feedback} />
-            ) : (
+            ) : !hostInspection ? (
               <div className="remote-connection-idle" aria-live="polite">
                 <ShieldCheck size={15} />
                 <span>连接测试只读取仓库信息，不会修改服务器文件。</span>
               </div>
-            )}
+            ) : null}
           </div>
 
           <div className="branch-dialog-actions remote-project-actions">
@@ -327,17 +381,64 @@ export function RemoteProjectDialog({ onClose, onChooseIdentityFile, onTest, onA
             <button type="button" className="text-button" onClick={onClose} disabled={busy}>
               取消
             </button>
-            <button type="button" className="text-button remote-test-button" onClick={() => void testConnection()} disabled={busy || Object.keys(errors).length > 0}>
-              {busyAction === "test" ? <LoaderCircle className="spin" size={15} /> : <Server size={15} />}
-              {busyAction === "test" ? "正在测试" : connectionVerified ? "重新测试" : "测试连接"}
+            <button type="button" className="text-button remote-test-button" onClick={() => void runConnectionFlow("test")} disabled={busy || Object.keys(errors).length > 0}>
+              {busyAction === "test" || busyAction === "inspect" ? <LoaderCircle className="spin" size={15} /> : <Server size={15} />}
+              {busyAction === "inspect" ? "正在核对主机" : busyAction === "test" ? "正在测试" : connectionVerified ? "重新测试" : "测试连接"}
             </button>
             <button type="submit" className="primary-action remote-connect-button" disabled={busy || Object.keys(errors).length > 0}>
               {busyAction === "add" ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}
-              {busyAction === "add" ? "正在添加" : connectionVerified ? "添加项目" : "连接并添加"}
+              {busyAction === "add" ? "正在验证并添加" : connectionVerified ? "添加项目" : "连接并添加"}
             </button>
           </div>
         </form>
       </section>
+    </div>
+  );
+}
+
+function HostTrustPanel({ inspection, acknowledged, busy, onAcknowledgedChange, onTrust }: {
+  inspection: SshHostInspection;
+  acknowledged: boolean;
+  busy: boolean;
+  onAcknowledgedChange: (checked: boolean) => void;
+  onTrust: () => void;
+}) {
+  const changed = inspection.status === "changed";
+  return (
+    <section className={`remote-host-trust ${changed ? "changed" : "unknown"}`} aria-labelledby="remote-host-trust-title">
+      <header>
+        <span className="remote-host-trust-icon"><ShieldCheck size={17} /></span>
+        <span>
+          <strong id="remote-host-trust-title">{changed ? "主机指纹已发生变化" : "确认新的 SSH 主机"}</strong>
+          <small>{inspection.host}:{inspection.port}</small>
+        </span>
+      </header>
+      {changed ? (
+        <FingerprintGroup label="known_hosts 中的旧指纹" fingerprints={inspection.currentFingerprints} />
+      ) : null}
+      <FingerprintGroup label={changed ? "服务器当前返回的指纹" : "待信任指纹"} fingerprints={inspection.scannedFingerprints} />
+      <label className="remote-host-trust-check">
+        <input type="checkbox" checked={acknowledged} onChange={(event) => onAcknowledgedChange(event.target.checked)} disabled={busy} />
+        <span>我已通过可信渠道核对以上指纹</span>
+      </label>
+      <button type="button" className={`remote-host-trust-action ${changed ? "replace" : ""}`} disabled={!acknowledged || busy} onClick={onTrust}>
+        {busy ? <LoaderCircle className="spin" size={15} /> : <ShieldCheck size={15} />}
+        {busy ? "正在写入 known_hosts" : changed ? "替换旧指纹并继续" : "信任主机并继续"}
+      </button>
+    </section>
+  );
+}
+
+function FingerprintGroup({ label, fingerprints }: { label: string; fingerprints: SshHostInspection["scannedFingerprints"] }) {
+  return (
+    <div className="remote-host-fingerprint-group">
+      <small>{label}</small>
+      {fingerprints.length === 0 ? <p>没有可显示的指纹</p> : fingerprints.map((fingerprint) => (
+        <div className="remote-host-fingerprint" key={`${fingerprint.algorithm}:${fingerprint.fingerprint}`}>
+          <span>{fingerprint.algorithm} · {fingerprint.bits} bit</span>
+          <code>{fingerprint.fingerprint}</code>
+        </div>
+      ))}
     </div>
   );
 }
@@ -370,9 +471,11 @@ function ConnectionFeedbackView({ feedback }: { feedback: ConnectionFeedback }) 
             <summary>查看原始信息</summary>
             <div>
               <pre>{feedback.detail}</pre>
-              <button type="button" className="icon-button compact-icon" title="复制原始信息" aria-label="复制原始信息" onClick={() => void copyDetail()}>
-                <Copy size={13} />
-              </button>
+              <PathTooltip content="复制原始信息" className="remote-inline-tooltip">
+                <button type="button" className="icon-button compact-icon" aria-label="复制原始信息" onClick={() => void copyDetail()}>
+                  <Copy size={13} />
+                </button>
+              </PathTooltip>
             </div>
           </details>
         ) : null}

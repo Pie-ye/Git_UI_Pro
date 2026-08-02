@@ -14,13 +14,24 @@ import type {
   GitHistoryRef,
   GitBlameLine,
   GitHostingLinks,
+  GitHostingAccountSummary,
+  GitHostingChangeRequest,
+  GitHostingCreateChangeInput,
+  GitHostingMergeInput,
+  GitHostingProvider,
+  GitHostingReviewInput,
+  GitIdentityConfig,
+  GitIdentityUpdate,
   GitIgnoreDocument,
   GitLfsStatus,
+  GitLfsLock,
+  GitLfsMigrateOptions,
   GitLinkedWorktree,
   GitMergePreview,
   GitMergeStrategy,
   GitOperationResult,
   GitPullStrategy,
+  GitPushOptions,
   GitReflogEntry,
   GitRebasePlanItem,
   GitRemoteInfo,
@@ -29,26 +40,32 @@ import type {
   GitSigningConfigUpdate,
   GitStashCreateOptions,
   GitStashEntry,
+  GitStashDetails,
+  GitSubmoduleAddOptions,
   GitSubmoduleInfo,
   GitSubmoduleUpdateOptions,
   GitTagInfo,
   GitWorktreeAddOptions,
+  GitWorktreeMoveOptions,
   GitCloneOptions,
   GitProject,
   GitResetMode,
   GitStatusSummary,
   RemoteProjectInput,
   RemoteProjectTestResult,
+  SshHostInspection,
   ProjectGroup,
   ProjectLibraryState,
   RepositoryCreationResult,
   RepositoryTarget,
   TerminalDataEvent,
   TerminalExitEvent,
+  TerminalHistoryEntry,
   TerminalSessionInfo,
   UiPreferences,
   WorktreeState
 } from "./domain";
+import type { GitLongOperationOptions, GitLongOperationProgress } from "./operations";
 
 export interface WindowState {
   isMaximized: boolean;
@@ -102,6 +119,8 @@ export interface ReleaseHistoryItem {
 export interface GitUIBridge {
   runAppCommand: (command: string) => Promise<boolean>;
   openExternal: (url: string) => Promise<boolean>;
+  openPath: (filePath: string) => Promise<boolean>;
+  revealPath: (filePath: string) => Promise<boolean>;
   setNativeTheme: (themeSource: "system" | "light" | "dark") => Promise<boolean>;
   getWindowState: () => Promise<WindowState>;
   onWindowStateChange: (callback: (state: WindowState) => void) => () => void;
@@ -118,10 +137,17 @@ export interface GitUIBridge {
   writeTerminal: (sessionId: string, data: string) => Promise<boolean>;
   resizeTerminal: (sessionId: string, cols: number, rows: number) => Promise<boolean>;
   disposeTerminal: (sessionId: string) => Promise<boolean>;
+  getTerminalHistory: (projectId: string) => Promise<TerminalHistoryEntry[]>;
+  appendTerminalHistory: (projectId: string, command: string) => Promise<TerminalHistoryEntry[]>;
+  clearTerminalHistory: (projectId: string) => Promise<boolean>;
   onTerminalData: (callback: (event: TerminalDataEvent) => void) => () => void;
   onTerminalExit: (callback: (event: TerminalExitEvent) => void) => () => void;
+  cancelGitOperation: (operationId: string) => Promise<boolean>;
+  onGitOperationProgress: (callback: (event: GitLongOperationProgress) => void) => () => void;
   chooseDirectory: () => Promise<string | null>;
   chooseIdentityFile: () => Promise<string | null>;
+  inspectSshHost: (host: string, port?: number) => Promise<SshHostInspection>;
+  trustSshHost: (token: string, replaceExisting: boolean) => Promise<boolean>;
   getProjects: () => Promise<GitProject[]>;
   getProjectLibrary: () => Promise<ProjectLibraryState>;
   createProjectGroup: (name: string) => Promise<ProjectGroup>;
@@ -134,7 +160,7 @@ export interface GitUIBridge {
   updateUiPreferences: (input: Partial<UiPreferences>) => Promise<UiPreferences>;
   addProject: (directoryPath: string) => Promise<GitProject>;
   initializeRepository: (directoryPath: string, initialBranch: string, createGitignore: boolean) => Promise<RepositoryCreationResult>;
-  cloneRepository: (sourceUrl: string, destinationPath: string, options: GitCloneOptions) => Promise<RepositoryCreationResult>;
+  cloneRepository: (sourceUrl: string, destinationPath: string, options: GitCloneOptions, operation?: GitLongOperationOptions) => Promise<RepositoryCreationResult>;
   testRemoteProject: (input: RemoteProjectInput) => Promise<RemoteProjectTestResult>;
   addRemoteProject: (input: RemoteProjectInput) => Promise<GitProject>;
   scanProjects: (rootPath: string) => Promise<GitProject[]>;
@@ -160,16 +186,17 @@ export interface GitUIBridge {
   unstageAll: (repository: RepositoryTarget) => Promise<GitOperationResult>;
   discardFile: (repository: RepositoryTarget, file: ChangedFile) => Promise<GitOperationResult>;
   getStashes: (repository: RepositoryTarget) => Promise<GitStashEntry[]>;
+  getStashDetails: (repository: RepositoryTarget, selector: string) => Promise<GitStashDetails>;
   createStash: (repository: RepositoryTarget, options: GitStashCreateOptions) => Promise<GitOperationResult>;
   applyStash: (repository: RepositoryTarget, selector: string, restoreIndex?: boolean) => Promise<GitOperationResult>;
   popStash: (repository: RepositoryTarget, selector: string, restoreIndex?: boolean) => Promise<GitOperationResult>;
   dropStash: (repository: RepositoryTarget, selector: string) => Promise<GitOperationResult>;
   commit: (repository: RepositoryTarget, input: CommitInput) => Promise<GitOperationResult>;
-  fetch: (repository: RepositoryTarget) => Promise<GitOperationResult>;
-  fetchRemote: (repository: RepositoryTarget, remoteName: string, prune?: boolean) => Promise<GitOperationResult>;
-  pull: (repository: RepositoryTarget, strategy: GitPullStrategy) => Promise<GitOperationResult>;
+  fetch: (repository: RepositoryTarget, operation?: GitLongOperationOptions) => Promise<GitOperationResult>;
+  fetchRemote: (repository: RepositoryTarget, remoteName: string, prune?: boolean, operation?: GitLongOperationOptions) => Promise<GitOperationResult>;
+  pull: (repository: RepositoryTarget, strategy: GitPullStrategy, operation?: GitLongOperationOptions) => Promise<GitOperationResult>;
   mergeRemote: (repository: RepositoryTarget) => Promise<GitOperationResult>;
-  push: (repository: RepositoryTarget) => Promise<GitOperationResult>;
+  push: (repository: RepositoryTarget, options?: GitPushOptions & Partial<GitLongOperationOptions>) => Promise<GitOperationResult>;
   getRemotes: (repository: RepositoryTarget) => Promise<GitRemoteInfo[]>;
   addRemote: (repository: RepositoryTarget, name: string, fetchUrl: string, pushUrl?: string) => Promise<GitOperationResult>;
   updateRemote: (repository: RepositoryTarget, currentName: string, input: GitRemoteUpdateInput) => Promise<GitOperationResult>;
@@ -217,21 +244,46 @@ export interface GitUIBridge {
   addLinkedWorktree: (repository: RepositoryTarget, options: GitWorktreeAddOptions) => Promise<GitOperationResult>;
   removeLinkedWorktree: (repository: RepositoryTarget, worktreePath: string, force?: boolean) => Promise<GitOperationResult>;
   pruneLinkedWorktrees: (repository: RepositoryTarget) => Promise<GitOperationResult>;
+  lockLinkedWorktree: (repository: RepositoryTarget, worktreePath: string, reason?: string) => Promise<GitOperationResult>;
+  unlockLinkedWorktree: (repository: RepositoryTarget, worktreePath: string) => Promise<GitOperationResult>;
+  moveLinkedWorktree: (repository: RepositoryTarget, options: GitWorktreeMoveOptions) => Promise<GitOperationResult>;
+  repairLinkedWorktrees: (repository: RepositoryTarget, worktreePaths?: string[]) => Promise<GitOperationResult>;
   getSubmodules: (repository: RepositoryTarget) => Promise<GitSubmoduleInfo[]>;
   initializeSubmodules: (repository: RepositoryTarget) => Promise<GitOperationResult>;
   updateSubmodules: (repository: RepositoryTarget, options: GitSubmoduleUpdateOptions) => Promise<GitOperationResult>;
   syncSubmodules: (repository: RepositoryTarget, recursive?: boolean) => Promise<GitOperationResult>;
+  addSubmodule: (repository: RepositoryTarget, options: GitSubmoduleAddOptions) => Promise<GitOperationResult>;
+  setSubmoduleBranch: (repository: RepositoryTarget, modulePath: string, branch?: string) => Promise<GitOperationResult>;
+  deinitializeSubmodule: (repository: RepositoryTarget, modulePath: string, force?: boolean) => Promise<GitOperationResult>;
+  removeSubmodule: (repository: RepositoryTarget, modulePath: string, force?: boolean) => Promise<GitOperationResult>;
   getLfsStatus: (repository: RepositoryTarget) => Promise<GitLfsStatus>;
   installLfs: (repository: RepositoryTarget, scope?: "local" | "global") => Promise<GitOperationResult>;
-  pullLfs: (repository: RepositoryTarget, remoteName?: string, refs?: string[]) => Promise<GitOperationResult>;
+  pullLfs: (repository: RepositoryTarget, remoteName?: string, refs?: string[], operation?: GitLongOperationOptions) => Promise<GitOperationResult>;
   pruneLfs: (repository: RepositoryTarget) => Promise<GitOperationResult>;
+  trackLfsPatterns: (repository: RepositoryTarget, patterns: string[]) => Promise<GitOperationResult>;
+  untrackLfsPatterns: (repository: RepositoryTarget, patterns: string[]) => Promise<GitOperationResult>;
+  getLfsLocks: (repository: RepositoryTarget) => Promise<GitLfsLock[]>;
+  lockLfsFile: (repository: RepositoryTarget, filePath: string) => Promise<GitOperationResult>;
+  unlockLfsFile: (repository: RepositoryTarget, lockId: string, force?: boolean) => Promise<GitOperationResult>;
+  migrateLfs: (repository: RepositoryTarget, options: GitLfsMigrateOptions, operation?: GitLongOperationOptions) => Promise<GitOperationResult>;
   readGitIgnore: (repository: RepositoryTarget) => Promise<GitIgnoreDocument>;
   writeGitIgnore: (repository: RepositoryTarget, content: string, expectedRevision: string) => Promise<boolean>;
   getSigningConfig: (repository: RepositoryTarget) => Promise<GitSigningConfig>;
   setSigningConfig: (repository: RepositoryTarget, input: GitSigningConfigUpdate) => Promise<GitOperationResult>;
+  getGitIdentity: (repository: RepositoryTarget) => Promise<GitIdentityConfig>;
+  setGitIdentity: (repository: RepositoryTarget, input: GitIdentityUpdate) => Promise<GitOperationResult>;
   getHostingLinks: (repository: RepositoryTarget, remoteName: string, commitHash?: string, branchName?: string) => Promise<GitHostingLinks>;
+  listHostingAccounts: () => Promise<GitHostingAccountSummary[]>;
+  saveHostingAccount: (provider: GitHostingProvider, remoteUrl: string, token: string) => Promise<GitHostingAccountSummary>;
+  removeHostingAccount: (provider: GitHostingProvider, host: string) => Promise<boolean>;
+  listHostingChangeRequests: (provider: GitHostingProvider, remoteUrl: string) => Promise<GitHostingChangeRequest[]>;
+  getHostingChangeRequest: (provider: GitHostingProvider, remoteUrl: string, number: number) => Promise<GitHostingChangeRequest>;
+  createHostingChangeRequest: (provider: GitHostingProvider, remoteUrl: string, input: GitHostingCreateChangeInput) => Promise<GitHostingChangeRequest>;
+  commentHostingChangeRequest: (provider: GitHostingProvider, remoteUrl: string, number: number, body: string) => Promise<boolean>;
+  reviewHostingChangeRequest: (provider: GitHostingProvider, remoteUrl: string, input: GitHostingReviewInput) => Promise<boolean>;
+  mergeHostingChangeRequest: (provider: GitHostingProvider, remoteUrl: string, input: GitHostingMergeInput) => Promise<boolean>;
   amendLastCommitMessage: (repository: RepositoryTarget, input: CommitMessageInput) => Promise<GitOperationResult>;
-  resetLastCommit: (repository: RepositoryTarget, mode: Exclude<GitResetMode, "hard">) => Promise<GitOperationResult>;
+  resetLastCommit: (repository: RepositoryTarget, mode: GitResetMode) => Promise<GitOperationResult>;
   resetToCommit: (repository: RepositoryTarget, hash: string, mode: GitResetMode) => Promise<GitOperationResult>;
   revertCommit: (repository: RepositoryTarget, hash: string) => Promise<GitOperationResult>;
   cherryPickCommit: (repository: RepositoryTarget, hash: string) => Promise<GitOperationResult>;

@@ -123,11 +123,41 @@ export interface BranchInfo {
   merged?: boolean;
 }
 
+export type GitLongOperationKind = "clone" | "fetch" | "pull" | "push" | "lfs-pull" | "lfs-migrate";
+export type GitLongOperationPhase = "running" | "cancelling" | "completed" | "failed" | "cancelled";
+
+export interface GitLongOperationProgress {
+  id: string;
+  kind: GitLongOperationKind;
+  phase: GitLongOperationPhase;
+  label: string;
+  repositoryPath?: string;
+  message?: string;
+  percent?: number;
+  receivedObjects?: number;
+  totalObjects?: number;
+  updatedAt: string;
+}
+
+export interface GitLongOperationContext {
+  id: string;
+  kind: GitLongOperationKind;
+  label: string;
+  repositoryPath?: string;
+  onProgress: (progress: GitLongOperationProgress) => void;
+}
+
 export interface GitStashEntry {
   selector: string;
   hash: string;
   subject: string;
   createdAt: string;
+}
+
+export interface GitStashDetails {
+  selector: string;
+  files: ChangedFile[];
+  diff: DiffLine[];
 }
 
 export interface GitStashCreateOptions {
@@ -150,6 +180,7 @@ export interface GitRemoteInfo {
   fetchUrls: string[];
   pushUrls: string[];
   explicitPushUrls: string[];
+  defaultBranch?: string;
   defaultFetch?: boolean;
   defaultPush?: boolean;
 }
@@ -196,6 +227,11 @@ export interface GitWorktreeAddOptions {
   force?: boolean;
 }
 
+export interface GitWorktreeMoveOptions {
+  worktreePath: string;
+  destinationPath: string;
+}
+
 export type GitSubmoduleState = "initialized" | "uninitialized" | "modified" | "conflicted";
 
 export interface GitSubmoduleInfo {
@@ -214,6 +250,14 @@ export interface GitSubmoduleUpdateOptions {
   remote?: boolean;
 }
 
+export interface GitSubmoduleAddOptions {
+  url: string;
+  path: string;
+  branch?: string;
+  name?: string;
+  force?: boolean;
+}
+
 export interface GitLfsFileStatus {
   path: string;
   status?: string;
@@ -225,6 +269,20 @@ export interface GitLfsStatus {
   initialized: boolean;
   version: string;
   files: GitLfsFileStatus[];
+}
+
+export interface GitLfsLock {
+  id: string;
+  path: string;
+  owner: string;
+  lockedAt?: string;
+}
+
+export interface GitLfsMigrateOptions {
+  include: string[];
+  exclude?: string[];
+  everything?: boolean;
+  rewriteHistory: true;
 }
 
 export interface GitIgnoreDocument {
@@ -247,6 +305,30 @@ export interface GitSigningConfigUpdate {
   tagGpgSign?: boolean | null;
   signingKey?: string | null;
   format?: GitSigningFormat | null;
+}
+
+export interface GitIdentityValidationIssue {
+  field: "name" | "email";
+  messageZh: string;
+}
+
+export interface GitIdentityConfig {
+  name?: string;
+  email?: string;
+  localName?: string;
+  localEmail?: string;
+  valid: boolean;
+  issues: GitIdentityValidationIssue[];
+}
+
+export interface GitIdentityUpdate {
+  name: string;
+  email: string;
+}
+
+export interface GitPushOptions {
+  forceWithLease?: boolean;
+  operation?: GitLongOperationContext;
 }
 
 export type GitHostingProvider = "github" | "gitlab" | "gitee";
@@ -297,6 +379,7 @@ export interface GitHistoryPage {
 interface GitRunOptions {
   timeoutMs?: number;
   stdin?: Buffer;
+  operation?: GitLongOperationContext;
 }
 
 export interface GitBlameLine {
@@ -463,6 +546,22 @@ export class GitService {
   private readonly activeMergeRepositories = new Set<string>();
   private readonly pendingStatusRequests = new Map<string, Promise<GitStatusSummary>>();
   private readonly cleanManagedMergeRepositories = new Set<string>();
+  private readonly activeLongOperations = new Map<string, {
+    child: ReturnType<typeof spawn>;
+    context: GitLongOperationContext;
+    cancelled: boolean;
+  }>();
+
+  cancelLongOperation(operationId: string): boolean {
+    const active = this.activeLongOperations.get(operationId);
+    if (!active) {
+      return false;
+    }
+    active.cancelled = true;
+    active.context.onProgress(operationProgress(active.context, "cancelling", "正在取消"));
+    active.child.kill();
+    return true;
+  }
 
   async run(cwd: RepositoryLocation, args: string[], options: GitRunOptions = {}): Promise<GitOperationResult> {
     const result = await this.runProcess(cwd, args, options);
@@ -485,6 +584,9 @@ export class GitService {
     args: string[],
     options: GitRunOptions = {}
   ): Promise<Omit<GitOperationResult, "stdout"> & { stdout: Buffer }> {
+    if (options.operation && this.activeLongOperations.has(options.operation.id)) {
+      throw new Error(`Git 后台任务编号重复：${options.operation.id}`);
+    }
     return new Promise((resolve) => {
       const target = normalizeRepositoryTarget(cwd);
       const timeoutMs = options.timeoutMs ?? (target.remote && isReadOnlyGitCommand(args) ? remoteReadCommandTimeoutMs : undefined);
@@ -511,6 +613,17 @@ export class GitService {
         if (timeoutId) {
           clearTimeout(timeoutId);
         }
+        if (options.operation) {
+          const active = this.activeLongOperations.get(options.operation.id);
+          const cancelled = active?.cancelled === true;
+          this.activeLongOperations.delete(options.operation.id);
+          options.operation.onProgress(operationProgress(
+            options.operation,
+            cancelled ? "cancelled" : result.ok ? "completed" : "failed",
+            cancelled ? "已取消" : result.ok ? "已完成" : result.messageZh ?? "执行失败",
+            result.ok ? 100 : undefined
+          ));
+        }
         resolve(result);
       };
       const timeoutId = timeoutMs
@@ -532,10 +645,16 @@ export class GitService {
 
       child.stdout.on("data", (chunk: Buffer) => {
         stdoutChunks.push(chunk);
+        if (options.operation) {
+          emitOperationChunk(options.operation, chunk);
+        }
       });
 
       child.stderr.on("data", (chunk: Buffer) => {
         stderrChunks.push(chunk);
+        if (options.operation) {
+          emitOperationChunk(options.operation, chunk);
+        }
       });
       child.stdin.on("error", () => undefined);
 
@@ -569,6 +688,11 @@ export class GitService {
           messageZh: exitCode === 0 ? undefined : target.remote ? toChineseSshError(stderr) : toChineseGitError(decodeGitOutput(stdout), stderr)
         });
       });
+
+      if (options.operation) {
+        this.activeLongOperations.set(options.operation.id, { child, context: options.operation, cancelled: false });
+        options.operation.onProgress(operationProgress(options.operation, "running", "正在启动", 0));
+      }
     });
   }
 
@@ -599,14 +723,19 @@ export class GitService {
     return this.run(targetPath, ["init", `--initial-branch=${branch}`]);
   }
 
-  async cloneRepository(sourceUrl: string, destinationPath: string, options: GitCloneOptions = {}): Promise<GitOperationResult> {
+  async cloneRepository(
+    sourceUrl: string,
+    destinationPath: string,
+    options: GitCloneOptions = {},
+    operation?: GitLongOperationContext
+  ): Promise<GitOperationResult> {
     const source = requireNonOptionValue(sourceUrl, "仓库地址");
     const destination = requireAbsoluteLocalPath(destinationPath, "克隆目录");
     if (options.depth !== undefined && (!Number.isInteger(options.depth) || options.depth < 1)) {
       throw new Error("克隆深度必须是大于 0 的整数。");
     }
 
-    const args = ["clone"];
+    const args = ["clone", "--progress"];
     if (options.branch) {
       args.push("--branch", requireNonOptionValue(options.branch, "克隆分支"));
     }
@@ -620,7 +749,7 @@ export class GitService {
 
     const parentDirectory = path.dirname(destination);
     await mkdir(parentDirectory, { recursive: true });
-    return this.run(parentDirectory, args, { timeoutMs: 10 * 60_000 });
+    return this.run(parentDirectory, args, { timeoutMs: 10 * 60_000, operation });
   }
 
   async testRemoteRepository(input: RemoteProjectInput): Promise<GitOperationResult & { repositoryRoot?: string; projectName?: string }> {
@@ -1161,6 +1290,25 @@ export class GitService {
       });
   }
 
+  async getStashDetails(repositoryPath: RepositoryLocation, selectorOrHash: string): Promise<GitStashDetails> {
+    const selector = await this.resolveStashSelector(repositoryPath, selectorOrHash);
+    const [filesResult, diffResult] = await Promise.all([
+      this.run(repositoryPath, ["stash", "show", "--name-status", "--include-untracked", selector]),
+      this.run(repositoryPath, ["stash", "show", "--patch", "--include-untracked", "--no-ext-diff", selector])
+    ]);
+    if (!filesResult.ok) {
+      throw new Error(filesResult.messageZh ?? "无法读取 stash 文件列表。");
+    }
+    if (!diffResult.ok) {
+      throw new Error(diffResult.messageZh ?? "无法读取 stash 差异。");
+    }
+    return {
+      selector,
+      files: parseNameStatus(filesResult.stdout),
+      diff: parseUnifiedDiff(diffResult.stdout)
+    };
+  }
+
   async createStash(repositoryPath: RepositoryLocation, options: GitStashCreateOptions = {}): Promise<GitOperationResult> {
     const args = ["stash", "push"];
     if (options.includeUntracked) {
@@ -1223,24 +1371,33 @@ export class GitService {
     };
   }
 
-  async fetch(repositoryPath: RepositoryLocation): Promise<GitOperationResult> {
-    return this.run(repositoryPath, ["fetch", "--prune"]);
+  async fetch(repositoryPath: RepositoryLocation, operation?: GitLongOperationContext): Promise<GitOperationResult> {
+    return this.run(repositoryPath, ["fetch", "--progress", "--prune"], { operation });
   }
 
-  async fetchRemote(repositoryPath: RepositoryLocation, remoteName: string, prune = false): Promise<GitOperationResult> {
+  async fetchRemote(
+    repositoryPath: RepositoryLocation,
+    remoteName: string,
+    prune = false,
+    operation?: GitLongOperationContext
+  ): Promise<GitOperationResult> {
     const remote = requireRemoteName(remoteName);
-    return this.run(repositoryPath, ["fetch", ...(prune ? ["--prune"] : []), remote]);
+    return this.run(repositoryPath, ["fetch", "--progress", ...(prune ? ["--prune"] : []), remote], { operation });
   }
 
-  async pull(repositoryPath: RepositoryLocation, strategy: GitPullStrategy): Promise<GitOperationResult> {
+  async pull(
+    repositoryPath: RepositoryLocation,
+    strategy: GitPullStrategy,
+    operation?: GitLongOperationContext
+  ): Promise<GitOperationResult> {
     if (strategy === "ff-only") {
-      return this.run(repositoryPath, ["pull", "--ff-only"]);
+      return this.run(repositoryPath, ["pull", "--progress", "--ff-only"], { operation });
     }
     if (strategy === "rebase") {
-      return this.run(repositoryPath, ["pull", "--rebase"]);
+      return this.run(repositoryPath, ["pull", "--progress", "--rebase"], { operation });
     }
     if (strategy === "rebase-autostash") {
-      return this.run(repositoryPath, ["pull", "--rebase", "--autostash"]);
+      return this.run(repositoryPath, ["pull", "--progress", "--rebase", "--autostash"], { operation });
     }
     throw new Error(`不支持的拉取策略：${String(strategy)}`);
   }
@@ -1314,10 +1471,18 @@ export class GitService {
     }
   }
 
-  async push(repositoryPath: RepositoryLocation): Promise<GitOperationResult> {
+  async push(repositoryPath: RepositoryLocation, options: GitPushOptions = {}): Promise<GitOperationResult> {
+    if (!options || typeof options !== "object" || Array.isArray(options)) {
+      throw new Error("推送选项格式不正确。");
+    }
+    if (options.forceWithLease !== undefined && typeof options.forceWithLease !== "boolean") {
+      throw new Error("安全强制推送选项必须是布尔值。");
+    }
+
     const status = await this.getStatus(repositoryPath);
+    const pushOptions = options.forceWithLease ? ["--force-with-lease"] : [];
     if (status.upstream || !status.currentBranch) {
-      return this.run(repositoryPath, ["push"]);
+      return this.run(repositoryPath, ["push", "--progress", ...pushOptions], { operation: options.operation });
     }
 
     const remote = await this.getPushRemote(repositoryPath, status.currentBranch);
@@ -1332,7 +1497,7 @@ export class GitService {
       };
     }
 
-    return this.run(repositoryPath, ["push", "--set-upstream", remote, status.currentBranch]);
+    return this.run(repositoryPath, ["push", "--progress", ...pushOptions, "--set-upstream", remote, status.currentBranch], { operation: options.operation });
   }
 
   async getRemotes(repositoryPath: RepositoryLocation): Promise<GitRemoteInfo[]> {
@@ -1354,10 +1519,11 @@ export class GitService {
     const names = listResult.stdout.split(/\r?\n/).map((name) => name.trim()).filter(Boolean);
     return Promise.all(
       names.map(async (name): Promise<GitRemoteInfo> => {
-        const [fetchResult, pushResult, explicitPushUrls] = await Promise.all([
+        const [fetchResult, pushResult, explicitPushUrls, defaultBranchResult] = await Promise.all([
           this.run(repositoryPath, ["remote", "get-url", "--all", name]),
           this.run(repositoryPath, ["remote", "get-url", "--all", "--push", name]),
-          this.getLocalGitConfigValues(repositoryPath, `remote.${name}.pushurl`)
+          this.getLocalGitConfigValues(repositoryPath, `remote.${name}.pushurl`),
+          this.run(repositoryPath, ["symbolic-ref", "--quiet", "--short", `refs/remotes/${name}/HEAD`])
         ]);
         if (!fetchResult.ok) {
           throw new Error(fetchResult.messageZh ?? `无法读取远程仓库 ${name} 的拉取地址。`);
@@ -1366,11 +1532,14 @@ export class GitService {
           throw new Error(pushResult.messageZh ?? `无法读取远程仓库 ${name} 的推送地址。`);
         }
 
+        const remoteHead = defaultBranchResult.ok ? defaultBranchResult.stdout.trim() : "";
+        const defaultBranch = remoteHead.startsWith(`${name}/`) ? remoteHead.slice(name.length + 1) : undefined;
         return {
           name,
           fetchUrls: splitNonEmptyLines(fetchResult.stdout),
           pushUrls: splitNonEmptyLines(pushResult.stdout),
           explicitPushUrls,
+          defaultBranch,
           defaultFetch: name === fetchDefault,
           defaultPush: name === pushDefault
         };
@@ -1627,8 +1796,25 @@ export class GitService {
     return this.run(repositoryPath, args);
   }
 
-  async resetLastCommit(repositoryPath: RepositoryLocation, mode: Exclude<GitResetMode, "hard">): Promise<GitOperationResult> {
-    return this.resetToCommit(repositoryPath, "HEAD~1", mode);
+  async resetLastCommit(repositoryPath: RepositoryLocation, mode: GitResetMode): Promise<GitOperationResult> {
+    if (mode !== "soft" && mode !== "mixed" && mode !== "hard") {
+      throw new Error("撤销上次提交只支持 soft、mixed 或 hard 模式。");
+    }
+    const headWithParentsResult = await this.run(repositoryPath, ["rev-list", "--parents", "-n", "1", "HEAD"]);
+    if (!headWithParentsResult.ok) {
+      return headWithParentsResult;
+    }
+
+    const [headHash, firstParent] = headWithParentsResult.stdout.trim().split(/\s+/);
+    if (!headHash) {
+      return gitFailure(headWithParentsResult.command, "无法读取当前提交，撤销操作已停止。", headWithParentsResult.stdout);
+    }
+    if (firstParent) {
+      const resetResult = await this.resetToCommit(repositoryPath, firstParent, mode);
+      return combineGitResults([headWithParentsResult, resetResult], resetResult.ok);
+    }
+
+    return this.resetRootCommit(repositoryPath, headHash, mode, headWithParentsResult);
   }
 
   async resetToCommit(repositoryPath: RepositoryLocation, hash: string, mode: GitResetMode): Promise<GitOperationResult> {
@@ -2153,6 +2339,30 @@ export class GitService {
     return this.run(repositoryPath, ["worktree", "prune", ...(dryRun ? ["--dry-run", "--verbose"] : [])]);
   }
 
+  async lockLinkedWorktree(repositoryPath: RepositoryLocation, worktreePath: string, reason?: string): Promise<GitOperationResult> {
+    const targetPath = requireNonOptionValue(worktreePath, "worktree 路径");
+    const lockReason = reason?.trim();
+    return this.run(repositoryPath, ["worktree", "lock", ...(lockReason ? ["--reason", lockReason] : []), targetPath]);
+  }
+
+  async unlockLinkedWorktree(repositoryPath: RepositoryLocation, worktreePath: string): Promise<GitOperationResult> {
+    return this.run(repositoryPath, ["worktree", "unlock", requireNonOptionValue(worktreePath, "worktree 路径")]);
+  }
+
+  async moveLinkedWorktree(repositoryPath: RepositoryLocation, options: GitWorktreeMoveOptions): Promise<GitOperationResult> {
+    const sourcePath = requireNonOptionValue(options.worktreePath, "worktree 原路径");
+    const destinationPath = requireNonOptionValue(options.destinationPath, "worktree 新路径");
+    if (sourcePath === destinationPath) {
+      throw new Error("worktree 新路径不能与原路径相同。");
+    }
+    return this.run(repositoryPath, ["worktree", "move", sourcePath, destinationPath]);
+  }
+
+  async repairLinkedWorktrees(repositoryPath: RepositoryLocation, worktreePaths: string[] = []): Promise<GitOperationResult> {
+    const paths = worktreePaths.map((item) => requireNonOptionValue(item, "worktree 路径"));
+    return this.run(repositoryPath, ["worktree", "repair", ...(paths.length > 0 ? ["--", ...paths] : [])]);
+  }
+
   async getSubmodules(repositoryPath: RepositoryLocation): Promise<GitSubmoduleInfo[]> {
     const result = await this.run(repositoryPath, ["submodule", "status", "--recursive"]);
     if (!result.ok) {
@@ -2230,6 +2440,54 @@ export class GitService {
     return this.run(repositoryPath, ["submodule", "sync", ...(recursive ? ["--recursive"] : [])]);
   }
 
+  async addSubmodule(repositoryPath: RepositoryLocation, options: GitSubmoduleAddOptions): Promise<GitOperationResult> {
+    const url = requireNonOptionValue(options.url, "子模块地址");
+    const modulePath = requireNonOptionValue(options.path, "子模块路径");
+    const args = ["submodule", "add"];
+    if (options.force) {
+      args.push("--force");
+    }
+    if (options.name) {
+      args.push("--name", requireNonOptionValue(options.name, "子模块名称"));
+    }
+    if (options.branch) {
+      args.push("--branch", requireNonOptionValue(options.branch, "子模块分支"));
+    }
+    args.push("--", url, modulePath);
+    return this.run(repositoryPath, args, { timeoutMs: 10 * 60_000 });
+  }
+
+  async setSubmoduleBranch(repositoryPath: RepositoryLocation, modulePath: string, branch?: string): Promise<GitOperationResult> {
+    const targetPath = requireNonOptionValue(modulePath, "子模块路径");
+    return this.run(repositoryPath, [
+      "submodule",
+      "set-branch",
+      ...(branch?.trim() ? ["--branch", requireNonOptionValue(branch, "子模块分支")] : ["--default"]),
+      "--",
+      targetPath
+    ]);
+  }
+
+  async deinitializeSubmodule(repositoryPath: RepositoryLocation, modulePath: string, force = false): Promise<GitOperationResult> {
+    return this.run(repositoryPath, [
+      "submodule",
+      "deinit",
+      ...(force ? ["--force"] : []),
+      "--",
+      requireNonOptionValue(modulePath, "子模块路径")
+    ]);
+  }
+
+  async removeSubmodule(repositoryPath: RepositoryLocation, modulePath: string, force = false): Promise<GitOperationResult> {
+    const targetPath = requireNonOptionValue(modulePath, "子模块路径");
+    const deinitResult = await this.deinitializeSubmodule(repositoryPath, targetPath, force);
+    if (!deinitResult.ok) {
+      return deinitResult;
+    }
+    const removeResult = await this.run(repositoryPath, ["rm", ...(force ? ["--force"] : []), "--", targetPath]);
+    return combineGitResults([deinitResult, removeResult], removeResult.ok);
+  }
+
   async getLfsStatus(repositoryPath: RepositoryLocation): Promise<GitLfsStatus> {
     const versionResult = await this.run(repositoryPath, ["lfs", "version"]);
     if (!versionResult.ok) {
@@ -2285,7 +2543,8 @@ export class GitService {
   async pullLfs(
     repositoryPath: RepositoryLocation,
     remoteName?: string,
-    refs: string[] = []
+    refs: string[] = [],
+    operation?: GitLongOperationContext
   ): Promise<GitOperationResult> {
     const args = ["lfs", "pull"];
     if (remoteName !== undefined) {
@@ -2294,11 +2553,80 @@ export class GitService {
     } else if (refs.length > 0) {
       throw new Error("指定 LFS 引用时必须同时指定远程仓库名。");
     }
-    return this.run(repositoryPath, args, { timeoutMs: 10 * 60_000 });
+    return this.run(repositoryPath, args, { timeoutMs: 10 * 60_000, operation });
   }
 
   async pruneLfs(repositoryPath: RepositoryLocation, dryRun = false): Promise<GitOperationResult> {
     return this.run(repositoryPath, ["lfs", "prune", ...(dryRun ? ["--dry-run"] : [])], { timeoutMs: 10 * 60_000 });
+  }
+
+  async trackLfsPatterns(repositoryPath: RepositoryLocation, patterns: string[]): Promise<GitOperationResult> {
+    const values = requireLfsPatterns(patterns);
+    return this.run(repositoryPath, ["lfs", "track", "--", ...values]);
+  }
+
+  async untrackLfsPatterns(repositoryPath: RepositoryLocation, patterns: string[]): Promise<GitOperationResult> {
+    const values = requireLfsPatterns(patterns);
+    return this.run(repositoryPath, ["lfs", "untrack", "--", ...values]);
+  }
+
+  async getLfsLocks(repositoryPath: RepositoryLocation): Promise<GitLfsLock[]> {
+    const result = await this.run(repositoryPath, ["lfs", "locks", "--json"]);
+    if (!result.ok) {
+      throw new Error(result.messageZh ?? "无法读取 Git LFS 锁定记录。");
+    }
+    let payload: unknown;
+    try {
+      payload = JSON.parse(result.stdout);
+    } catch {
+      throw new Error("Git LFS 返回了无法解析的锁定记录。");
+    }
+    const locks = Array.isArray(payload) ? payload : (payload as { locks?: unknown[] } | null)?.locks;
+    if (!Array.isArray(locks)) {
+      return [];
+    }
+    return locks.map((entry): GitLfsLock => {
+      const item = entry as { id?: unknown; path?: unknown; locked_at?: unknown; owner?: { name?: unknown } };
+      return {
+        id: String(item.id ?? ""),
+        path: String(item.path ?? ""),
+        owner: String(item.owner?.name ?? ""),
+        ...(typeof item.locked_at === "string" ? { lockedAt: item.locked_at } : {})
+      };
+    }).filter((item) => item.id !== "" && item.path !== "");
+  }
+
+  async lockLfsFile(repositoryPath: RepositoryLocation, filePath: string): Promise<GitOperationResult> {
+    return this.run(repositoryPath, ["lfs", "lock", "--", requireNonOptionValue(filePath, "LFS 文件路径")]);
+  }
+
+  async unlockLfsFile(repositoryPath: RepositoryLocation, lockId: string, force = false): Promise<GitOperationResult> {
+    const id = requireNonOptionValue(lockId, "LFS 锁编号");
+    return this.run(repositoryPath, ["lfs", "unlock", "--id", ...(force ? ["--force"] : []), id]);
+  }
+
+  async migrateLfs(
+    repositoryPath: RepositoryLocation,
+    options: GitLfsMigrateOptions,
+    operation?: GitLongOperationContext
+  ): Promise<GitOperationResult> {
+    if (options.rewriteHistory !== true) {
+      throw new Error("LFS 迁移会改写提交历史，必须明确确认后才能执行。");
+    }
+    const include = requireLfsPatterns(options.include);
+    const exclude = options.exclude?.length ? requireLfsPatterns(options.exclude) : [];
+    const status = await this.getStatus(repositoryPath);
+    if (status.stagedCount + status.unstagedCount + status.untrackedCount > 0 || status.hasConflicts) {
+      throw new Error("LFS 历史迁移前必须提交或暂存当前工作区修改。");
+    }
+    const args = ["lfs", "migrate", "import", "--yes", `--include=${include.join(",")}`];
+    if (exclude.length > 0) {
+      args.push(`--exclude=${exclude.join(",")}`);
+    }
+    if (options.everything) {
+      args.push("--everything");
+    }
+    return this.run(repositoryPath, args, { timeoutMs: 30 * 60_000, operation });
   }
 
   async readGitIgnore(repositoryPath: RepositoryLocation): Promise<GitIgnoreDocument> {
@@ -2496,6 +2824,67 @@ export class GitService {
     return combineGitResults(results, true);
   }
 
+  async getGitIdentity(repositoryPath: RepositoryLocation): Promise<GitIdentityConfig> {
+    const [localName, localEmail, effectiveName, effectiveEmail] = await Promise.all([
+      this.getLocalGitConfigValue(repositoryPath, "user.name"),
+      this.getLocalGitConfigValue(repositoryPath, "user.email"),
+      this.getGitConfigValue(repositoryPath, "user.name"),
+      this.getGitConfigValue(repositoryPath, "user.email")
+    ]);
+    const name = localName ?? effectiveName;
+    const email = localEmail ?? effectiveEmail;
+    const issues = validateGitIdentity(name, email);
+    return {
+      ...(name === undefined ? {} : { name }),
+      ...(email === undefined ? {} : { email }),
+      ...(localName === undefined ? {} : { localName }),
+      ...(localEmail === undefined ? {} : { localEmail }),
+      valid: issues.length === 0,
+      issues
+    };
+  }
+
+  async setGitIdentity(repositoryPath: RepositoryLocation, input: GitIdentityUpdate): Promise<GitOperationResult> {
+    if (!input || typeof input.name !== "string" || typeof input.email !== "string") {
+      throw new Error("Git 提交身份必须包含姓名和邮箱。");
+    }
+    const name = input.name.trim();
+    const email = input.email.trim();
+    const issues = validateGitIdentity(name, email);
+    if (issues.length > 0) {
+      throw new Error(issues.map((issue) => issue.messageZh).join(" "));
+    }
+
+    const updates: Array<["user.name" | "user.email", string]> = [
+      ["user.name", name],
+      ["user.email", email]
+    ];
+    const snapshots = new Map<string, string[]>();
+    for (const [key] of updates) {
+      snapshots.set(key, await this.getLocalGitConfigValues(repositoryPath, key));
+    }
+
+    const results: GitOperationResult[] = [];
+    const mutatedKeys: string[] = [];
+    for (const [key, value] of updates) {
+      const result = await this.run(repositoryPath, ["config", "--local", "--replace-all", key, value]);
+      results.push(result);
+      if (!result.ok) {
+        const rollbackResults: GitOperationResult[] = [];
+        for (const mutatedKey of [...mutatedKeys].reverse()) {
+          rollbackResults.push(...await this.restoreLocalGitConfigValues(
+            repositoryPath,
+            mutatedKey,
+            snapshots.get(mutatedKey) ?? []
+          ));
+        }
+        return gitTransactionFailure("Git 提交身份更新", results, rollbackResults);
+      }
+      mutatedKeys.push(key);
+    }
+    return combineGitResults(results, true);
+  }
+
   async getHostingLinks(
     repositoryPath: RepositoryLocation,
     commitHash?: string,
@@ -2530,6 +2919,81 @@ export class GitService {
       return false;
     }
     throw new Error(result.messageZh ?? "无法确认仓库是否已有提交。");
+  }
+
+  private async resetRootCommit(
+    repositoryPath: RepositoryLocation,
+    headHash: string,
+    mode: GitResetMode,
+    headResult: GitOperationResult
+  ): Promise<GitOperationResult> {
+    const branchResult = await this.run(repositoryPath, ["symbolic-ref", "--quiet", "HEAD"]);
+    const branchRef = branchResult.stdout.trim();
+    if (!branchResult.ok || !branchRef.startsWith("refs/heads/")) {
+      return {
+        ...combineGitResults([
+          headResult,
+          branchResult,
+          gitFailure(
+            branchResult.command,
+            "当前根提交处于 detached HEAD，无法安全撤销；请先切换到本地分支。",
+            branchResult.stderr
+          )
+        ], false),
+        messageZh: "当前根提交处于 detached HEAD，无法安全撤销；请先切换到本地分支。"
+      };
+    }
+
+    const results: GitOperationResult[] = [headResult, branchResult];
+    const origHeadResult = await this.run(repositoryPath, ["update-ref", "ORIG_HEAD", headHash]);
+    results.push(origHeadResult);
+    if (!origHeadResult.ok) {
+      return combineGitResults(results, false);
+    }
+
+    if (mode === "mixed") {
+      const clearIndexResult = await this.run(repositoryPath, ["read-tree", "--empty"]);
+      results.push(clearIndexResult);
+      if (!clearIndexResult.ok) {
+        return combineGitResults(results, false);
+      }
+    } else if (mode === "hard") {
+      const removeTrackedResult = await this.run(repositoryPath, ["rm", "--force", "-r", "--", "."]);
+      results.push(removeTrackedResult);
+      if (!removeTrackedResult.ok) {
+        return combineGitResults(results, false);
+      }
+    }
+
+    const deleteRefResult = await this.run(repositoryPath, ["update-ref", "-d", branchRef, headHash]);
+    results.push(deleteRefResult);
+    if (deleteRefResult.ok) {
+      return {
+        ...combineGitResults(results, true),
+        messageZh: mode === "soft"
+          ? "已撤销根提交，原提交保存在 ORIG_HEAD，更改仍保持暂存。"
+          : mode === "mixed"
+            ? "已撤销根提交，原提交保存在 ORIG_HEAD，更改已取消暂存。"
+            : "已撤销根提交，原提交保存在 ORIG_HEAD，根提交中的文件已从工作区移除。"
+      };
+    }
+
+    if (mode === "mixed" || mode === "hard") {
+      const restoreResult = mode === "hard"
+        ? await this.run(repositoryPath, ["reset", "--hard", headHash])
+        : await this.run(repositoryPath, ["read-tree", headHash]);
+      results.push(restoreResult);
+      if (!restoreResult.ok) {
+        return {
+          ...combineGitResults(results, false),
+          messageZh: "撤销根提交失败，且恢复仓库状态失败；请勿继续提交，先在终端检查 Git 状态。"
+        };
+      }
+    }
+    return {
+      ...combineGitResults(results, false),
+      messageZh: "撤销根提交失败，仓库分支未移动，工作区文件已保留。"
+    };
   }
 
   private async loadConflictSnapshot(repositoryPath: RepositoryLocation, filePath: string): Promise<ConflictSnapshot> {
@@ -3266,6 +3730,17 @@ function requireTagName(value: string): string {
   return normalized;
 }
 
+function requireLfsPatterns(values: string[]): string[] {
+  if (!Array.isArray(values) || values.length === 0 || values.length > 100) {
+    throw new Error("LFS 文件模式必须包含 1 到 100 项。");
+  }
+  const patterns = values.map((value) => requireNonOptionValue(value, "LFS 文件模式"));
+  if (patterns.some((value) => value.includes(",") || /[\r\n]/.test(value))) {
+    throw new Error("LFS 文件模式不能包含逗号或换行。");
+  }
+  return [...new Set(patterns)];
+}
+
 function requireStashIdentifier(value: string): string {
   const identifier = requireValue(value, "stash 标识");
   if (!/^stash@\{\d+\}$/.test(identifier) && !/^[0-9a-f]{40,64}$/i.test(identifier)) {
@@ -3776,6 +4251,23 @@ function gitTransactionFailure(
   };
 }
 
+export function validateGitIdentity(name?: string, email?: string): GitIdentityValidationIssue[] {
+  const issues: GitIdentityValidationIssue[] = [];
+  const normalizedName = name?.trim() ?? "";
+  const normalizedEmail = email?.trim() ?? "";
+  if (!normalizedName) {
+    issues.push({ field: "name", messageZh: "Git 提交姓名不能为空。" });
+  } else if (/[\u0000-\u001f\u007f]/.test(normalizedName)) {
+    issues.push({ field: "name", messageZh: "Git 提交姓名不能包含控制字符或换行。" });
+  }
+  if (!normalizedEmail) {
+    issues.push({ field: "email", messageZh: "Git 提交邮箱不能为空。" });
+  } else if (!/^[^\s<>@]+@[^\s<>@]+$/.test(normalizedEmail) || /[\u0000-\u001f\u007f]/.test(normalizedEmail)) {
+    issues.push({ field: "email", messageZh: "Git 提交邮箱格式不正确。" });
+  }
+  return issues;
+}
+
 function requireContentRevision(value: string): string {
   const revision = requireValue(value, "文件内容版本");
   if (revision !== "missing" && !/^git:[0-9a-f]{40,64}$/i.test(revision)) {
@@ -4255,6 +4747,58 @@ function parseUnifiedDiff(output: string): DiffLine[] {
   return lines;
 }
 
+function emitOperationChunk(context: GitLongOperationContext, chunk: Buffer): void {
+  const text = decodeGitOutput(chunk)
+    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "")
+    .split(/[\r\n]+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .at(-1);
+  if (!text) {
+    return;
+  }
+  const percentMatch = text.match(/(?:^|\s)(\d{1,3})%/);
+  const objectMatch = text.match(/\((\d+)\/(\d+)\)/);
+  context.onProgress(operationProgress(
+    context,
+    "running",
+    sanitizeOperationMessage(text),
+    percentMatch ? Math.max(0, Math.min(100, Number(percentMatch[1]))) : undefined,
+    objectMatch ? Number(objectMatch[1]) : undefined,
+    objectMatch ? Number(objectMatch[2]) : undefined
+  ));
+}
+
+function operationProgress(
+  context: GitLongOperationContext,
+  phase: GitLongOperationPhase,
+  message: string,
+  percent?: number,
+  receivedObjects?: number,
+  totalObjects?: number
+): GitLongOperationProgress {
+  return {
+    id: context.id,
+    kind: context.kind,
+    phase,
+    label: context.label,
+    ...(context.repositoryPath ? { repositoryPath: context.repositoryPath } : {}),
+    message,
+    ...(percent === undefined ? {} : { percent }),
+    ...(receivedObjects === undefined ? {} : { receivedObjects }),
+    ...(totalObjects === undefined ? {} : { totalObjects }),
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function sanitizeOperationMessage(value: string): string {
+  return value
+    .replace(/(https?:\/\/)[^@\s/]+@/gi, "$1")
+    .replace(/([?&](?:access_token|auth|password|private_token|token)=)[^&\s]+/gi, "$1***")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
+    .slice(0, 320);
+}
+
 function statusFromCode(code: string): ChangedFile["status"] {
   switch (code) {
     case "A":
@@ -4336,7 +4880,7 @@ function isEmptyRepositoryError(stderr: string): boolean {
 function toChineseSshError(stderr: string): string {
   const text = stderr.toLowerCase();
   if (text.includes("host key verification failed")) {
-    return "SSH 主机指纹尚未确认或已发生变化，请先在系统终端连接该主机并核对指纹。";
+    return "SSH 主机指纹尚未确认或已发生变化，请在“连接远程仓库”面板核对并确认指纹。";
   }
   if (text.includes("permission denied")) {
     return "SSH 认证失败，请检查用户名、SSH Agent、私钥和服务器授权。";
@@ -4371,7 +4915,7 @@ function toChineseGitError(stdout: string, stderr: string): string {
   }
 
   if (text.includes("non-fast-forward")) {
-    return "远程分支包含本地没有的提交，请先 pull 或 fetch 后处理差异。";
+    return "远程分支包含本地没有的提交。请先 fetch 后合并或 rebase；仅在确认本地已改写历史且远程分支未被他人更新时，使用安全强制推送（--force-with-lease）。";
   }
 
   if (text.includes("not possible because you have unmerged files") || text.includes("unmerged files")) {

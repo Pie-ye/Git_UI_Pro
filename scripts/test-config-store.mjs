@@ -110,3 +110,20 @@ test("读取配置时拒绝非字符串快捷键", async () => {
     await assert.rejects(store.read(), /必须是字符串/);
   });
 });
+
+test("终端命令历史按项目持久化、限制输入并支持清空", async () => {
+  await withTemporaryStore(async (store, directory) => {
+    const project = await store.addProject(path.join(directory, "repo-history"));
+    const first = await store.appendTerminalHistory(project.id, "git status");
+    assert.equal(first.length, 1);
+    assert.equal(first[0].command, "git status");
+
+    await store.appendTerminalHistory(project.id, "npm test");
+    const restored = await new ConfigStore(directory).getTerminalHistory(project.id);
+    assert.deepEqual(restored.map((entry) => entry.command), ["npm test", "git status"]);
+
+    await assert.rejects(store.appendTerminalHistory(project.id, "echo first\necho second"), /单行文本/);
+    assert.equal(await store.clearTerminalHistory(project.id), true);
+    assert.deepEqual(await new ConfigStore(directory).getTerminalHistory(project.id), []);
+  });
+});

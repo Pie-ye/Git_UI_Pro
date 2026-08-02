@@ -59,6 +59,10 @@ export type GitMergeStrategy = "ff" | "no-ff";
 export type GitMergeMode = "up-to-date" | "fast-forward" | "merge-commit";
 export type GitPullStrategy = "ff-only" | "rebase" | "rebase-autostash";
 
+export interface GitPushOptions {
+  forceWithLease?: boolean;
+}
+
 export interface GitMergePreview {
   sourceBranch: string;
   targetBranch: string;
@@ -194,6 +198,12 @@ export interface GitStashEntry {
   createdAt: string;
 }
 
+export interface GitStashDetails {
+  selector: string;
+  files: ChangedFile[];
+  diff: DiffLine[];
+}
+
 export interface GitStashCreateOptions {
   message?: string;
   includeUntracked?: boolean;
@@ -214,6 +224,7 @@ export interface GitRemoteInfo {
   fetchUrls: string[];
   pushUrls: string[];
   explicitPushUrls: string[];
+  defaultBranch?: string;
   defaultFetch?: boolean;
   defaultPush?: boolean;
 }
@@ -260,6 +271,11 @@ export interface GitWorktreeAddOptions {
   force?: boolean;
 }
 
+export interface GitWorktreeMoveOptions {
+  worktreePath: string;
+  destinationPath: string;
+}
+
 export type GitSubmoduleState = "initialized" | "uninitialized" | "modified" | "conflicted";
 
 export interface GitSubmoduleInfo {
@@ -278,6 +294,14 @@ export interface GitSubmoduleUpdateOptions {
   remote?: boolean;
 }
 
+export interface GitSubmoduleAddOptions {
+  url: string;
+  path: string;
+  branch?: string;
+  name?: string;
+  force?: boolean;
+}
+
 export interface GitLfsFileStatus {
   path: string;
   status?: string;
@@ -289,6 +313,20 @@ export interface GitLfsStatus {
   initialized: boolean;
   version: string;
   files: GitLfsFileStatus[];
+}
+
+export interface GitLfsLock {
+  id: string;
+  path: string;
+  owner: string;
+  lockedAt?: string;
+}
+
+export interface GitLfsMigrateOptions {
+  include: string[];
+  exclude?: string[];
+  everything?: boolean;
+  rewriteHistory: true;
 }
 
 export interface GitIgnoreDocument {
@@ -313,6 +351,25 @@ export interface GitSigningConfigUpdate {
   format?: GitSigningFormat | null;
 }
 
+export interface GitIdentityValidationIssue {
+  field: "name" | "email";
+  messageZh: string;
+}
+
+export interface GitIdentityConfig {
+  name?: string;
+  email?: string;
+  localName?: string;
+  localEmail?: string;
+  valid: boolean;
+  issues: GitIdentityValidationIssue[];
+}
+
+export interface GitIdentityUpdate {
+  name: string;
+  email: string;
+}
+
 export type GitHostingProvider = "github" | "gitlab" | "gitee";
 
 export interface GitHostingLinks {
@@ -326,6 +383,87 @@ export interface GitHostingLinks {
   issuesUrl: string;
   commitUrl?: string;
   branchUrl?: string;
+}
+
+export interface GitHostingAccountSummary {
+  provider: GitHostingProvider;
+  host: string;
+  login: string;
+  configured: true;
+  updatedAt: string;
+}
+
+export type GitHostingChangeState = "open" | "closed" | "merged";
+export type GitHostingReviewEvent = "approve" | "request-changes";
+export type GitHostingMergeMethod = "merge" | "squash" | "rebase";
+export type GitHostingMergeReadiness = "allowed" | "blocked" | "unknown";
+
+export interface GitHostingProviderCapabilities {
+  draft: boolean;
+  reviewEvents: readonly GitHostingReviewEvent[];
+  mergeMethods: readonly GitHostingMergeMethod[];
+}
+
+export const GIT_HOSTING_PROVIDER_CAPABILITIES: Readonly<Record<GitHostingProvider, GitHostingProviderCapabilities>> = {
+  github: { draft: true, reviewEvents: ["approve", "request-changes"], mergeMethods: ["squash", "merge", "rebase"] },
+  gitlab: { draft: true, reviewEvents: ["approve", "request-changes"], mergeMethods: ["squash", "merge"] },
+  gitee: { draft: true, reviewEvents: ["approve"], mergeMethods: ["squash", "merge", "rebase"] }
+};
+
+export interface GitHostingChangeRequest {
+  id: number;
+  number: number;
+  title: string;
+  state: GitHostingChangeState;
+  draft: boolean;
+  author: string;
+  sourceBranch: string;
+  targetBranch: string;
+  headSha: string;
+  webUrl: string;
+  createdAt: string;
+  updatedAt: string;
+  mergeReadiness: GitHostingMergeReadiness;
+  mergeStatus?: string;
+  reviewStatus?: string;
+}
+
+export interface GitHostingCreateChangeInput {
+  title: string;
+  body?: string;
+  sourceBranch: string;
+  targetBranch: string;
+  sourceRemoteUrl?: string;
+  draft?: boolean;
+}
+
+export interface GitHostingReviewInput {
+  number: number;
+  headSha: string;
+  event: GitHostingReviewEvent;
+  body?: string;
+}
+
+export interface GitHostingMergeInput {
+  number: number;
+  headSha: string;
+  method: GitHostingMergeMethod;
+}
+
+export interface SshHostKeyFingerprint {
+  algorithm: string;
+  bits: number;
+  fingerprint: string;
+}
+
+export interface SshHostInspection {
+  token: string;
+  host: string;
+  port: number;
+  status: "trusted" | "unknown" | "changed";
+  currentFingerprints: SshHostKeyFingerprint[];
+  scannedFingerprints: SshHostKeyFingerprint[];
+  expiresAt: string;
 }
 
 export interface GitCloneOptions {
@@ -416,6 +554,12 @@ export interface TerminalSessionInfo {
   shell: string;
   cwd: string;
   trustedPromptMarkers: boolean;
+}
+
+export interface TerminalHistoryEntry {
+  id: string;
+  command: string;
+  executedAt: string;
 }
 
 export interface TerminalDataEvent {

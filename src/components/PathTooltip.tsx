@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { cloneElement, isValidElement, useEffect, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 interface PathTooltipProps {
@@ -31,6 +31,8 @@ export function PathTooltip({ path, content, className, placement, children }: P
   const classes = ["path-tooltip-anchor", className].filter(Boolean).join(" ");
   const tooltipContent = content ?? path;
   const resolvedPlacement = placement ?? (content ? "control" : "path");
+  const tooltipId = tooltipIdRef.current;
+  const describedChildren = attachTooltipDescription(children, tooltipContent ? tooltipId : undefined);
 
   function clearCloseTimer() {
     window.clearTimeout(closeTimerRef.current);
@@ -147,11 +149,21 @@ export function PathTooltip({ path, content, className, placement, children }: P
   const portalRoot = typeof document === "undefined" ? null : document.querySelector(".app-shell") ?? document.body;
 
   return (
-    <span ref={anchorRef} className={classes} onMouseEnter={scheduleShowTooltip} onMouseLeave={scheduleHideTooltip} onFocus={scheduleShowTooltip} onBlur={scheduleHideTooltip}>
-      {children}
+    <span
+      ref={anchorRef}
+      className={classes}
+      aria-describedby={tooltipContent ? tooltipId : undefined}
+      onMouseEnter={scheduleShowTooltip}
+      onMouseLeave={scheduleHideTooltip}
+      onFocus={scheduleShowTooltip}
+      onBlur={scheduleHideTooltip}
+    >
+      {describedChildren}
+      {tooltipContent && !visible ? <span id={tooltipId} className="sr-only">{tooltipContent}</span> : null}
       {visible && position && portalRoot
         ? createPortal(
             <span
+              id={tooltipId}
               ref={popoverRef}
               className={`path-tooltip-popover ${resolvedPlacement === "control" ? "control-tooltip" : ""}`}
               role="tooltip"
@@ -168,6 +180,18 @@ export function PathTooltip({ path, content, className, placement, children }: P
         : null}
     </span>
   );
+}
+
+function attachTooltipDescription(children: ReactNode, tooltipId: string | undefined): ReactNode {
+  if (!tooltipId || !isValidElement(children) || typeof children.type === "symbol") {
+    return children;
+  }
+
+  const child = children as ReactElement<{ "aria-describedby"?: string }>;
+  const currentDescription = child.props["aria-describedby"];
+  return cloneElement(child, {
+    "aria-describedby": currentDescription ? `${currentDescription} ${tooltipId}` : tooltipId
+  });
 }
 
 function estimateTooltipWidth(content: string, maxWidth: number): number {

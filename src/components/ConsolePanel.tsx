@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
   ChevronsDown,
   ChevronsUp,
@@ -20,23 +20,31 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { apiClient } from "../api/client";
 import { PathTooltip } from "./PathTooltip";
-import type { GitProject, TerminalSessionInfo } from "../types/domain";
+import type { GitProject, TerminalHistoryEntry, TerminalSessionInfo } from "../types/domain";
+import {
+  canReplayTerminalHistory,
+  captureTerminalInput,
+  createTerminalCaptureState,
+  observeTerminalOutput,
+  type TerminalCaptureState
+} from "../../electron/terminalHistory";
 
 type ThemeName = "light" | "dark";
 type TerminalStatus = "starting" | "running" | "exited" | "error";
 
 const TERMINAL_RESIZE_DEBOUNCE_MS = 140;
-const TERMINAL_HISTORY_LIMIT = 200;
-const TRUSTED_PROMPT_MARKER = "\u001b]633;A\u0007";
 
 interface ConsolePanelProps {
   project?: GitProject;
   theme: ThemeName;
+  fontFamily: string;
+  fontSize: number;
   visible: boolean;
   maximized: boolean;
   onToggleMaximized: () => void;
   onHide: () => void;
   onConfirmCloseTabs: (count: number) => Promise<boolean>;
+  onConfirmClearHistory: (count: number) => Promise<boolean>;
 }
 
 interface TerminalTab {
@@ -67,20 +75,11 @@ interface TerminalRuntime {
   sessionId?: string;
   launchId: number;
   restarting: boolean;
-  commandBuffer: string;
-  commandBufferReliable: boolean;
   trustedPromptMarkers: boolean;
-  atTrustedPrompt: boolean;
-  promptMarkerTail: string;
+  captureState: TerminalCaptureState;
 }
 
-interface TerminalHistoryEntry {
-  id: string;
-  command: string;
-  executedAt: string;
-}
-
-export function ConsolePanel({ project, theme, visible, maximized, onToggleMaximized, onHide, onConfirmCloseTabs }: ConsolePanelProps) {
+export function ConsolePanel({ project, theme, fontFamily, fontSize, visible, maximized, onToggleMaximized, onHide, onConfirmCloseTabs, onConfirmClearHistory }: ConsolePanelProps) {
   const [tabs, setTabs] = useState<TerminalTab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [activeHasSelection, setActiveHasSelection] = useState(false);
@@ -88,7 +87,7 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
   const [renameDraft, setRenameDraft] = useState("");
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyQuery, setHistoryQuery] = useState("");
-  const [historyByTab, setHistoryByTab] = useState<Record<string, TerminalHistoryEntry[]>>({});
+  const [historyByProject, setHistoryByProject] = useState<Record<string, TerminalHistoryEntry[]>>({});
   const [terminalError, setTerminalError] = useState("");
   const panelRef = useRef<HTMLElement>(null);
   const tabsRef = useRef<TerminalTab[]>([]);
@@ -97,12 +96,14 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
   const runtimeByTabRef = useRef(new Map<string, TerminalRuntime>());
   const tabBySessionRef = useRef(new Map<string, string>());
   const terminalSeedRef = useRef(0);
-  const terminalHistorySeedRef = useRef(0);
   const themeRef = useRef<ThemeName>(theme);
+  const fontFamilyRef = useRef(fontFamily);
+  const fontSizeRef = useRef(fontSize);
+  const loadedHistoryProjectsRef = useRef(new Set<string>());
 
   const projectTabs = useMemo(() => (project ? tabs.filter((tab) => tab.projectId === project.id) : []), [project, tabs]);
   const activeTab = useMemo(() => projectTabs.find((tab) => tab.id === activeTabId) ?? projectTabs[0] ?? null, [activeTabId, projectTabs]);
-  const activeHistory = activeTab ? historyByTab[activeTab.id] ?? [] : [];
+  const activeHistory = activeTab ? historyByProject[activeTab.projectId] ?? [] : [];
   const filteredHistory = useMemo(() => {
     const normalizedQuery = historyQuery.trim().toLocaleLowerCase();
     return normalizedQuery
@@ -133,15 +134,7 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
       if (!runtime) {
         return;
       }
-      if (runtime.trustedPromptMarkers) {
-        const markerSource = runtime.promptMarkerTail + event.data;
-        if (markerSource.includes(TRUSTED_PROMPT_MARKER)) {
-          runtime.atTrustedPrompt = true;
-          runtime.commandBuffer = "";
-          runtime.commandBufferReliable = true;
-        }
-        runtime.promptMarkerTail = markerSource.slice(-(TRUSTED_PROMPT_MARKER.length - 1));
-      }
+      runtime.captureState = observeTerminalOutput(runtime.captureState, event.data, runtime.trustedPromptMarkers);
       runtime.terminal.write(event.data);
     });
     const unsubscribeExit = apiClient.onTerminalExit((event) => {
@@ -194,6 +187,32 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
   }, [theme]);
 
   useEffect(() => {
+    fontFamilyRef.current = fontFamily;
+    fontSizeRef.current = fontSize;
+    window.requestAnimationFrame(() => {
+      const host = panelRef.current ?? document.documentElement;
+      for (const runtime of runtimeByTabRef.current.values()) {
+        runtime.terminal.options.fontFamily = resolveTerminalFontFamily(host, fontFamilyRef.current);
+        runtime.terminal.options.fontSize = fontSizeRef.current;
+        if (runtime.host && isVisible(runtime.host)) runtime.fitAddon.fit();
+      }
+    });
+  }, [fontFamily, fontSize]);
+
+  useEffect(() => {
+    if (!project || loadedHistoryProjectsRef.current.has(project.id)) {
+      return;
+    }
+    loadedHistoryProjectsRef.current.add(project.id);
+    void apiClient.getTerminalHistory(project.id).then((entries) => {
+      setHistoryByProject((current) => ({ ...current, [project.id]: entries }));
+    }).catch((error) => {
+      loadedHistoryProjectsRef.current.delete(project.id);
+      setTerminalError(terminalErrorMessage("命令历史加载失败", error));
+    });
+  }, [project?.id]);
+
+  useEffect(() => {
     if (!visible || !project) {
       return;
     }
@@ -244,28 +263,23 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
     }
 
     const tabId = `terminal-tab-${Date.now()}-${++terminalSeedRef.current}`;
-    const terminal = createTerminal(panelRef.current ?? document.documentElement, themeRef.current);
+    const terminal = createTerminal(
+      panelRef.current ?? document.documentElement,
+      themeRef.current,
+      fontFamilyRef.current,
+      fontSizeRef.current
+    );
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
 
     const inputSubscription = terminal.onData((data) => {
       const runtime = runtimeByTabRef.current.get(tabId);
       if (runtime?.sessionId) {
-        const mayRecordCommand = runtime.trustedPromptMarkers && runtime.atTrustedPrompt;
-        const consumedInput = mayRecordCommand
-          ? consumeTerminalInput(runtime.commandBuffer, runtime.commandBufferReliable, data)
-          : { buffer: "", commands: [], reliable: false };
-        runtime.commandBuffer = consumedInput.buffer;
-        runtime.commandBufferReliable = consumedInput.reliable;
-        const submittedCommand = consumedInput.commands[0];
-        if (submittedCommand) {
-          runtime.atTrustedPrompt = false;
-          runtime.commandBuffer = "";
-          runtime.commandBufferReliable = false;
-        }
+        const capture = captureTerminalInput(runtime.captureState, data);
+        runtime.captureState = capture.state;
         void apiClient.writeTerminal(runtime.sessionId, data).then((written) => {
-          if (written && submittedCommand) {
-            recordTerminalCommand(tabId, submittedCommand);
+          if (written && capture.command) {
+            void recordTerminalCommand(tabId, capture.command);
           }
           if (!written) {
             setTerminalError("终端输入写入失败，当前会话可能已经结束。");
@@ -289,11 +303,8 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
       resizeTimer: 0,
       launchId: 0,
       restarting: false,
-      commandBuffer: "",
-      commandBufferReliable: true,
       trustedPromptMarkers: false,
-      atTrustedPrompt: false,
-      promptMarkerTail: ""
+      captureState: createTerminalCaptureState()
     });
     terminal.attachCustomKeyEventHandler((event) => handleTerminalKeyEvent(tabId, event));
 
@@ -349,8 +360,7 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
 
       runtime.sessionId = session.sessionId;
       runtime.trustedPromptMarkers = session.trustedPromptMarkers;
-      runtime.atTrustedPrompt = false;
-      runtime.promptMarkerTail = "";
+      runtime.captureState = createTerminalCaptureState();
       tabBySessionRef.current.set(session.sessionId, tabId);
       setTabs((current) =>
         renumberTerminalTabs(
@@ -530,10 +540,7 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
     runtime.restarting = true;
     const previousSessionId = runtime.sessionId;
     runtime.sessionId = undefined;
-    runtime.commandBuffer = "";
-    runtime.commandBufferReliable = true;
-    runtime.atTrustedPrompt = false;
-    runtime.promptMarkerTail = "";
+    runtime.captureState = createTerminalCaptureState();
     runtime.lastResizeCols = undefined;
     runtime.lastResizeRows = undefined;
     try {
@@ -555,20 +562,18 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
     }
   }
 
-  function recordTerminalCommand(tabId: string, command: string) {
+  async function recordTerminalCommand(tabId: string, command: string) {
     if (!command.trim()) {
       return;
     }
-
-    const entry: TerminalHistoryEntry = {
-      id: `terminal-history-${Date.now()}-${++terminalHistorySeedRef.current}`,
-      command,
-      executedAt: new Date().toISOString()
-    };
-    setHistoryByTab((current) => ({
-      ...current,
-      [tabId]: [entry, ...(current[tabId] ?? [])].slice(0, TERMINAL_HISTORY_LIMIT)
-    }));
+    const tab = tabsRef.current.find((candidate) => candidate.id === tabId);
+    if (!tab) return;
+    try {
+      const entries = await apiClient.appendTerminalHistory(tab.projectId, command);
+      setHistoryByProject((current) => ({ ...current, [tab.projectId]: entries }));
+    } catch (error) {
+      setTerminalError(terminalErrorMessage("命令历史保存失败", error));
+    }
   }
 
   async function runHistoryCommand(entry: TerminalHistoryEntry) {
@@ -577,13 +582,16 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
     }
 
     const runtime = runtimeByTabRef.current.get(activeTab.id);
-    if (!runtime?.sessionId || !runtime.trustedPromptMarkers || !runtime.atTrustedPrompt) {
+    if (!runtime?.sessionId) {
+      setTerminalError("历史命令无法执行：当前终端会话已经结束。");
+      return;
+    }
+    if (!canReplayTerminalHistory(runtime.captureState)) {
+      setTerminalError("历史命令无法执行：尚未识别到可信的 Shell 提示符，请等待当前命令结束后重试。");
       return;
     }
 
-    runtime.commandBuffer = "";
-    runtime.commandBufferReliable = true;
-    runtime.atTrustedPrompt = false;
+    runtime.captureState = { ...runtime.captureState, buffer: "", reliable: true, commandBoundaryConfirmed: false };
     try {
       const written = await apiClient.writeTerminal(runtime.sessionId, `${entry.command}\r`);
       if (!written) {
@@ -594,7 +602,7 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
       setTerminalError(terminalErrorMessage("历史命令写入失败", error));
       return;
     }
-    recordTerminalCommand(activeTab.id, entry.command);
+    await recordTerminalCommand(activeTab.id, entry.command);
     setHistoryOpen(false);
     runtime.terminal.focus();
   }
@@ -614,7 +622,6 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
 
     disposeTerminalRuntime(tabId);
     setTabs((current) => renumberTerminalTabs(current.filter((tab) => tab.id !== tabId)));
-    setHistoryByTab((current) => omitRecordKey(current, tabId));
     if (renamingTabId === tabId) {
       setRenamingTabId(null);
       setRenameDraft("");
@@ -639,6 +646,23 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
     const runtime = runtimeByTabRef.current.get(activeTab.id);
     runtime?.terminal.clear();
     runtime?.terminal.focus();
+  }
+
+  async function clearActiveHistory() {
+    if (!activeTab || activeHistory.length === 0) return;
+    const confirmed = await onConfirmClearHistory(activeHistory.length);
+    if (!confirmed) return;
+    try {
+      const cleared = await apiClient.clearTerminalHistory(activeTab.projectId);
+      if (!cleared) {
+        setTerminalError("命令历史清空失败：本机存储中未找到该项目的历史记录。");
+        return;
+      }
+      setHistoryByProject((current) => ({ ...current, [activeTab.projectId]: [] }));
+      setHistoryQuery("");
+    } catch (error) {
+      setTerminalError(terminalErrorMessage("命令历史清空失败", error));
+    }
   }
 
   function handleTerminalKeyEvent(tabId: string, event: KeyboardEvent): boolean {
@@ -741,7 +765,6 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
 
     activeByProjectRef.current.clear();
     setTabs([]);
-    setHistoryByTab({});
     setActiveTabId(null);
     setHistoryOpen(false);
     setRenamingTabId(null);
@@ -770,6 +793,31 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
 
     runtime.terminal.dispose();
     runtimeByTabRef.current.delete(tabId);
+  }
+
+  function handleConsoleTabKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>, tab: TerminalTab) {
+    const currentIndex = projectTabs.findIndex((item) => item.id === tab.id);
+    if (currentIndex < 0) {
+      return;
+    }
+
+    let nextIndex = currentIndex;
+    if (event.key === "ArrowRight") {
+      nextIndex = (currentIndex + 1) % projectTabs.length;
+    } else if (event.key === "ArrowLeft") {
+      nextIndex = (currentIndex - 1 + projectTabs.length) % projectTabs.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = projectTabs.length - 1;
+    } else {
+      return;
+    }
+
+    event.preventDefault();
+    const nextTab = projectTabs[nextIndex];
+    handleSelectTab(nextTab);
+    window.requestAnimationFrame(() => document.getElementById(consoleTabId(nextTab.id))?.focus());
   }
 
   return (
@@ -805,11 +853,15 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
                   <button
                     type="button"
                     className="console-tab-main"
+                    id={consoleTabId(tab.id)}
                     role="tab"
+                    tabIndex={tab.id === activeTab?.id ? 0 : -1}
                     aria-selected={tab.id === activeTab?.id}
+                    aria-controls={consoleTabPanelId(tab.id)}
                     aria-label={`${tab.title}：${tab.projectPath}`}
                     onClick={() => handleSelectTab(tab)}
                     onDoubleClick={() => beginRenameTerminal(tab)}
+                    onKeyDown={(event) => handleConsoleTabKeyDown(event, tab)}
                   >
                     <span>{tab.title}</span>
                   </button>
@@ -862,14 +914,14 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
               <RefreshCw size={14} />
             </button>
           </PathTooltip>
-          <PathTooltip content={activeTab?.session?.trustedPromptMarkers ? "命令历史" : "当前终端无法安全识别命令边界"} className="console-icon-tooltip">
+          <PathTooltip content="命令历史" className="console-icon-tooltip">
             <button
               type="button"
               className={`icon-button console-close ${historyOpen ? "active" : ""}`}
               aria-label="命令历史"
               aria-pressed={historyOpen}
               onClick={() => setHistoryOpen((current) => !current)}
-              disabled={!activeTab?.session?.trustedPromptMarkers}
+              disabled={!activeTab}
             >
               <History size={14} />
             </button>
@@ -925,6 +977,10 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
           <div
             className={`console-terminal ${visible && tab.id === activeTab?.id ? "active" : ""}`}
             key={tab.id}
+            id={consoleTabPanelId(tab.id)}
+            role="tabpanel"
+            aria-labelledby={consoleTabId(tab.id)}
+            hidden={!visible || tab.id !== activeTab?.id}
             ref={(node) => attachTerminalHost(tab.id, node)}
           />
         ))}
@@ -944,17 +1000,30 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
                 <strong>命令历史</strong>
                 <span>{activeHistory.length}</span>
               </div>
-              <button
-                type="button"
-                className="icon-button console-history-close"
-                aria-label="关闭命令历史"
-                onClick={() => {
-                  setHistoryOpen(false);
-                  runtimeByTabRef.current.get(activeTab.id)?.terminal.focus();
-                }}
-              >
-                <X size={15} />
-              </button>
+              <div>
+                <PathTooltip content="清空命令历史" className="console-icon-tooltip">
+                  <button
+                    type="button"
+                    className="icon-button console-history-close"
+                    aria-label="清空命令历史"
+                    disabled={activeHistory.length === 0}
+                    onClick={() => void clearActiveHistory()}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </PathTooltip>
+                <button
+                  type="button"
+                  className="icon-button console-history-close"
+                  aria-label="关闭命令历史"
+                  onClick={() => {
+                    setHistoryOpen(false);
+                    runtimeByTabRef.current.get(activeTab.id)?.terminal.focus();
+                  }}
+                >
+                  <X size={15} />
+                </button>
+              </div>
             </header>
             <label className="console-history-search">
               <Search size={14} />
@@ -987,13 +1056,13 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
   );
 }
 
-function createTerminal(host: HTMLElement, theme: ThemeName): Terminal {
+function createTerminal(host: HTMLElement, theme: ThemeName, fontFamily: string, fontSize: number): Terminal {
   return new Terminal({
     allowProposedApi: false,
     convertEol: true,
     cursorBlink: true,
-    fontFamily: '"Cascadia Code", Consolas, "Courier New", monospace',
-    fontSize: 12,
+    fontFamily: resolveTerminalFontFamily(host, fontFamily),
+    fontSize,
     lineHeight: 1.25,
     minimumContrastRatio: terminalContrastRatio(theme),
     scrollback: 5000,
@@ -1043,81 +1112,11 @@ function isVisible(element: HTMLElement): boolean {
   return element.getClientRects().length > 0 && element.clientWidth > 0 && element.clientHeight > 0;
 }
 
-function consumeTerminalInput(buffer: string, reliable: boolean, data: string): { buffer: string; commands: string[]; reliable: boolean } {
-  const commands: string[] = [];
-  let nextBuffer = buffer;
-  let nextReliable = reliable;
-  let index = 0;
-  const normalizedData = data.replace(/\u001b\[20[01]~/gu, "");
-
-  while (index < normalizedData.length) {
-    const character = normalizedData[index];
-    if (character === "\u001b") {
-      const sequence = normalizedData.slice(index).match(/^\u001b(?:\[[0-?]*[ -/]*[@-~]|.)/u)?.[0];
-      nextReliable = false;
-      index += sequence?.length ?? 1;
-      continue;
-    }
-
-    if (character === "\r" || character === "\n") {
-      if (nextReliable && nextBuffer.trim()) {
-        commands.push(nextBuffer);
-      }
-      nextBuffer = "";
-      nextReliable = true;
-      if (character === "\r" && normalizedData[index + 1] === "\n") {
-        index += 1;
-      }
-      index += 1;
-      continue;
-    }
-
-    if (character === "\u007f" || character === "\b") {
-      nextBuffer = removeLastCharacter(nextBuffer);
-      index += 1;
-      continue;
-    }
-
-    if (character === "\u0003" || character === "\u0015") {
-      nextBuffer = "";
-      nextReliable = true;
-      index += 1;
-      continue;
-    }
-
-    if (character === "\u0017") {
-      nextBuffer = nextBuffer.replace(/\s*\S+\s*$/u, "");
-      index += 1;
-      continue;
-    }
-
-    if (character === "\t" || character < " ") {
-      nextReliable = false;
-      index += 1;
-      continue;
-    }
-
-    const codePoint = normalizedData.codePointAt(index);
-    if (codePoint === undefined) {
-      break;
-    }
-    nextBuffer += String.fromCodePoint(codePoint);
-    index += codePoint > 0xffff ? 2 : 1;
+function resolveTerminalFontFamily(host: HTMLElement, preference: string): string {
+  if (preference === "monospace") {
+    return cssVar(getComputedStyle(host), "--mono-font", '"Cascadia Code", Consolas, "Courier New", monospace');
   }
-
-  return { buffer: nextBuffer, commands, reliable: nextReliable };
-}
-
-function removeLastCharacter(value: string): string {
-  const characters = Array.from(value);
-  characters.pop();
-  return characters.join("");
-}
-
-function omitRecordKey<T>(record: Record<string, T>, key: string): Record<string, T> {
-  const next = { ...record };
-  delete next[key];
-  return next;
+  return preference;
 }
 
 function formatTerminalHistoryTime(value: string): string {
@@ -1131,6 +1130,14 @@ function formatTerminalHistoryTime(value: string): string {
 
 function terminalErrorMessage(label: string, error: unknown): string {
   return `${label}：${error instanceof Error ? error.message : String(error)}`;
+}
+
+function consoleTabId(tabId: string): string {
+  return `console-tab-${tabId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+}
+
+function consoleTabPanelId(tabId: string): string {
+  return `console-tab-panel-${tabId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
 }
 
 function renumberTerminalTabs(tabs: TerminalTab[]): TerminalTab[] {

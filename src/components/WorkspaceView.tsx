@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronDown, ChevronRight, GitMerge, GitPullRequest, Plus, RefreshCw, Trash2, Undo2 } from "lucide-react";
 import { PathTooltip } from "./PathTooltip";
@@ -65,6 +65,7 @@ export function WorkspaceView({
   panelOpen,
   onTogglePanel
 }: WorkspaceViewProps) {
+  const panelBodyId = useId();
   const [message, setMessage] = useState("");
   const [commitBusy, setCommitBusy] = useState(false);
   const [commitMenuOpen, setCommitMenuOpen] = useState(false);
@@ -136,6 +137,10 @@ export function WorkspaceView({
       return;
     }
 
+    const focusFrame = window.requestAnimationFrame(() => {
+      commitMenuRef.current?.querySelector<HTMLButtonElement>("button[role='menuitem']:not(:disabled)")?.focus();
+    });
+
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target as Node;
       if (!commitActionsRef.current?.contains(target) && !commitMenuRef.current?.contains(target)) {
@@ -145,12 +150,14 @@ export function WorkspaceView({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setCommitMenuOpen(false);
+        window.requestAnimationFrame(() => commitMenuButtonRef.current?.focus());
       }
     };
 
     document.addEventListener("pointerdown", onPointerDown);
     document.addEventListener("keydown", onKeyDown);
     return () => {
+      window.cancelAnimationFrame(focusFrame);
       document.removeEventListener("pointerdown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown);
     };
@@ -165,6 +172,35 @@ export function WorkspaceView({
       });
     }
     setCommitMenuOpen((value) => !value);
+  }
+
+  function handleCommitMenuKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setCommitMenuOpen(false);
+      window.requestAnimationFrame(() => commitMenuButtonRef.current?.focus());
+      return;
+    }
+
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      return;
+    }
+
+    const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button[role='menuitem']:not(:disabled)"));
+    if (items.length === 0) {
+      return;
+    }
+
+    event.preventDefault();
+    const currentIndex = items.findIndex((item) => item === document.activeElement);
+    const nextIndex = event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? items.length - 1
+        : event.key === "ArrowDown"
+          ? (currentIndex + 1 + items.length) % items.length
+          : (currentIndex - 1 + items.length) % items.length;
+    items[nextIndex].focus();
   }
 
   async function submitCommit(options: Partial<CommitInput> & { syncAfterCommit?: boolean } = {}) {
@@ -217,14 +253,14 @@ export function WorkspaceView({
 
   return (
     <section className={`scm-view ${panelOpen ? "" : "panel-collapsed"}`}>
-      <button type="button" className="scm-panel-toggle" onClick={onTogglePanel}>
+      <button type="button" className="scm-panel-toggle" aria-expanded={panelOpen} aria-controls={panelBodyId} onClick={onTogglePanel}>
         {panelOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
         <span>更改</span>
         <span className="scm-count">{changeCount}</span>
       </button>
 
       {panelOpen ? (
-        <div className="scm-panel-body">
+        <div className="scm-panel-body" id={panelBodyId}>
           <form
             className="scm-commit-box"
             onSubmit={(event) => {
@@ -254,7 +290,7 @@ export function WorkspaceView({
                 </PathTooltip>
                 {!canSyncOutgoing && !canMergeRemote ? (
                   <PathTooltip content="提交选项" className="scm-commit-menu-tooltip">
-                    <button type="button" className="scm-commit-menu" aria-label="提交选项" onClick={toggleCommitMenu} ref={commitMenuButtonRef}>
+                    <button type="button" className="scm-commit-menu" aria-label="提交选项" aria-haspopup="menu" aria-expanded={commitMenuOpen} onClick={toggleCommitMenu} ref={commitMenuButtonRef}>
                       <ChevronDown size={17} />
                     </button>
                   </PathTooltip>
@@ -262,22 +298,23 @@ export function WorkspaceView({
               </div>
               {!canSyncOutgoing && !canMergeRemote && commitMenuOpen && commitMenuPosition && typeof document !== "undefined"
                 ? createPortal(
-                    <div className="floating-menu commit-menu commit-menu-portal" style={commitMenuPosition} ref={commitMenuRef}>
-                      <button type="button" disabled={commitDisabled || commitBusy} onClick={() => void submitCommit()}>
+                    <div className="floating-menu commit-menu commit-menu-portal" role="menu" style={commitMenuPosition} ref={commitMenuRef} onKeyDown={handleCommitMenuKeyDown}>
+                      <button type="button" role="menuitem" disabled={commitDisabled || commitBusy} onClick={() => void submitCommit()}>
                         提交
                       </button>
-                      <button type="button" disabled={commitBusy || !hasCommits} onClick={() => void submitCommit({ amend: true })}>
+                      <button type="button" role="menuitem" disabled={commitBusy || !hasCommits} onClick={() => void submitCommit({ amend: true })}>
                         提交(修改)
                       </button>
-                      <button type="button" disabled={commitDisabled || commitBusy} onClick={() => void submitCommit({ pushAfterCommit: true })}>
+                      <button type="button" role="menuitem" disabled={commitDisabled || commitBusy} onClick={() => void submitCommit({ pushAfterCommit: true })}>
                         提交和推送
                       </button>
-                      <button type="button" disabled={commitDisabled || commitBusy} onClick={() => void submitCommit({ syncAfterCommit: true })}>
+                      <button type="button" role="menuitem" disabled={commitDisabled || commitBusy} onClick={() => void submitCommit({ syncAfterCommit: true })}>
                         提交和同步
                       </button>
                       <div className="menu-separator" role="separator" />
                       <button
                         type="button"
+                        role="menuitem"
                         disabled={commitBusy || !hasCommits}
                         onClick={() => {
                           setCommitMenuOpen(false);
@@ -288,6 +325,7 @@ export function WorkspaceView({
                       </button>
                       <button
                         type="button"
+                        role="menuitem"
                         disabled={commitBusy || !hasCommits}
                         onClick={() => {
                           setCommitMenuOpen(false);
@@ -298,6 +336,7 @@ export function WorkspaceView({
                       </button>
                       <button
                         type="button"
+                        role="menuitem"
                         disabled={commitBusy || !hasCommits}
                         onClick={() => {
                           setCommitMenuOpen(false);
@@ -415,7 +454,7 @@ export function WorkspaceView({
             </ScmSection>
           ) : null}
         </div>
-      ) : null}
+      ) : <span id={panelBodyId} hidden />}
     </section>
   );
 }
@@ -449,14 +488,15 @@ function ScmSection({
   onToggle: () => void;
   children: React.ReactNode;
 }) {
+  const contentId = useId();
   return (
     <section className="scm-section">
-      <div className="scm-section-header" role="button" tabIndex={0} onClick={onToggle} onKeyDown={(event) => event.key === "Enter" && onToggle()}>
-        <div>
+      <div className="scm-section-header">
+        <button type="button" className="scm-section-toggle" aria-expanded={open} aria-controls={contentId} onClick={onToggle}>
           {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
           <span>{title}</span>
           <span className="scm-count">{count}</span>
-        </div>
+        </button>
         <div className="scm-section-actions">
           {actions.map((action) => (
             <PathTooltip content={action.title} className="scm-section-action-tooltip" key={action.title}>
@@ -476,7 +516,7 @@ function ScmSection({
           ))}
         </div>
       </div>
-      {open ? count === 0 ? <div className="empty-inline scm-empty">{emptyText}</div> : <div className="scm-file-list">{children}</div> : null}
+      {open ? count === 0 ? <div className="empty-inline scm-empty" id={contentId}>{emptyText}</div> : <div className="scm-file-list" id={contentId}>{children}</div> : <span id={contentId} hidden />}
     </section>
   );
 }

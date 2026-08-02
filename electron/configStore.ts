@@ -62,11 +62,18 @@ export interface ProjectLibraryState {
   recentProjectIds: string[];
 }
 
+export interface TerminalHistoryEntry {
+  id: string;
+  command: string;
+  executedAt: string;
+}
+
 export interface AppConfig {
   version: number;
   projects: GitProject[];
   groups: ProjectGroup[];
   recentProjectIds: string[];
+  terminalHistories: Record<string, TerminalHistoryEntry[]>;
   ui: UiPreferences;
 }
 
@@ -79,6 +86,7 @@ const defaultConfig: AppConfig = {
     { id: "client", name: "客户项目", sortOrder: 30 }
   ],
   recentProjectIds: [],
+  terminalHistories: {},
   ui: {
     theme: "system",
     language: "zh-CN",
@@ -150,6 +158,41 @@ export class ConfigStore {
       config.ui = normalizeUiPreferences({ ...config.ui, ...input });
       await this.writeUnlocked(config);
       return cloneUiPreferences(config.ui);
+    });
+  }
+
+  async getTerminalHistory(projectId: string): Promise<TerminalHistoryEntry[]> {
+    const key = requireTerminalHistoryKey(projectId);
+    const config = await this.read();
+    return cloneTerminalHistory(config.terminalHistories[key] ?? []);
+  }
+
+  async appendTerminalHistory(projectId: string, command: string): Promise<TerminalHistoryEntry[]> {
+    return this.enqueue(async () => {
+      const key = requireTerminalHistoryKey(projectId);
+      const normalizedCommand = requireTerminalHistoryCommand(command);
+      const config = await this.readUnlocked();
+      const entry: TerminalHistoryEntry = {
+        id: randomUUID(),
+        command: normalizedCommand,
+        executedAt: new Date().toISOString()
+      };
+      config.terminalHistories[key] = [entry, ...(config.terminalHistories[key] ?? [])].slice(0, 200);
+      await this.writeUnlocked(config);
+      return cloneTerminalHistory(config.terminalHistories[key]);
+    });
+  }
+
+  async clearTerminalHistory(projectId: string): Promise<boolean> {
+    return this.enqueue(async () => {
+      const key = requireTerminalHistoryKey(projectId);
+      const config = await this.readUnlocked();
+      if (!(key in config.terminalHistories)) {
+        return false;
+      }
+      delete config.terminalHistories[key];
+      await this.writeUnlocked(config);
+      return true;
     });
   }
 
@@ -462,6 +505,7 @@ function parseConfig(raw: string): AppConfig {
     projects,
     groups: Array.isArray(parsed.groups) ? parsed.groups : defaultConfig.groups.map((group) => ({ ...group })),
     recentProjectIds: Array.isArray(parsed.recentProjectIds) ? parsed.recentProjectIds : [],
+    terminalHistories: normalizeTerminalHistories(parsed.terminalHistories),
     ui: normalizeUiPreferences(parsed.ui ?? {})
   };
 }
@@ -472,8 +516,67 @@ function cloneDefaultConfig(): AppConfig {
     projects: [],
     groups: defaultConfig.groups.map((group) => ({ ...group })),
     recentProjectIds: [],
+    terminalHistories: {},
     ui: cloneUiPreferences(defaultConfig.ui)
   };
+}
+
+function cloneTerminalHistory(entries: TerminalHistoryEntry[]): TerminalHistoryEntry[] {
+  return entries.map((entry) => ({ ...entry }));
+}
+
+function normalizeTerminalHistories(value: unknown): Record<string, TerminalHistoryEntry[]> {
+  if (value === undefined) {
+    return {};
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("config.json 的 terminalHistories 必须是对象");
+  }
+
+  return Object.fromEntries(
+    Object.entries(value).map(([projectId, entries]) => {
+      const key = requireTerminalHistoryKey(projectId);
+      if (!Array.isArray(entries)) {
+        throw new Error(`终端历史 ${key} 必须是列表`);
+      }
+      const normalized = entries.slice(0, 200).map((entry, index) => {
+        if (!entry || typeof entry !== "object") {
+          throw new Error(`终端历史 ${key} 的第 ${index + 1} 项无效`);
+        }
+        const candidate = entry as Partial<TerminalHistoryEntry>;
+        if (typeof candidate.id !== "string" || !candidate.id.trim()) {
+          throw new Error(`终端历史 ${key} 的第 ${index + 1} 项缺少 id`);
+        }
+        if (typeof candidate.executedAt !== "string" || !Number.isFinite(Date.parse(candidate.executedAt))) {
+          throw new Error(`终端历史 ${key} 的第 ${index + 1} 项时间无效`);
+        }
+        return {
+          id: candidate.id,
+          command: requireTerminalHistoryCommand(candidate.command),
+          executedAt: candidate.executedAt
+        };
+      });
+      return [key, normalized];
+    })
+  );
+}
+
+function requireTerminalHistoryKey(value: string): string {
+  if (typeof value !== "string" || !value.trim() || value.length > 256 || /[\r\n\u0000]/u.test(value)) {
+    throw new Error("终端历史项目标识无效");
+  }
+  return value.trim();
+}
+
+function requireTerminalHistoryCommand(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new Error("终端历史命令必须是字符串");
+  }
+  const command = value.trim();
+  if (!command || command.length > 2000 || /[\r\n\u0000]/u.test(command)) {
+    throw new Error("终端历史命令必须是 1 至 2000 个字符的单行文本");
+  }
+  return command;
 }
 
 function cloneUiPreferences(preferences: UiPreferences): UiPreferences {
