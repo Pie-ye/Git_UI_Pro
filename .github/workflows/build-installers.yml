@@ -59,8 +59,9 @@ jobs:
         with:
           name: git-ui-pro-${{ matrix.artifact }}
           path: |
-            release/*.exe
-            release/*.exe.blockmap
+            release/Git-UI-Pro-Setup-*.exe
+            release/Git-UI-Pro-Setup-*.exe.blockmap
+            release/latest.yml
             release/*.AppImage
             release/*.deb
           if-no-files-found: error

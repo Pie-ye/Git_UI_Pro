@@ -3,6 +3,9 @@ dist/
 dist-electron/
 release/
 .vite/
+test-results/
+playwright-report/
+blob-report/
 *.log
 .logs/
 .idea/

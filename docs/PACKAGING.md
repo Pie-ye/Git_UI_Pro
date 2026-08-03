@@ -5,7 +5,7 @@
 - `npm run release:win`: 启动本地发布控制台，在浏览器中完成版本更新、Windows 打包、版本提交、tag 和 GitHub/Gitee 双远端推送。
 - `npm run icons`: 生成 `build/icon.ico`、`build/icon.png` 和 Linux PNG 图标集。
 - `npm run dist:dir`: 生成未安装目录包到 `release/win-unpacked`，用于快速验证打包内容。
-- `npm run dist:win`: 生成未签名 Windows NSIS 安装包和 portable 包到 `release/`。
+- `npm run dist:win`: 生成未签名 Windows NSIS 安装包到 `release/`。
 - `npm run dist:linux`: 生成 Linux AppImage 和 deb 包到 `release/`。
 - `npm run dist:mac`: 生成 macOS dmg 和 zip 包到 `release/`，建议在 macOS 环境执行。
 - `npm run dist:win:signed`: 生成签名 Windows 包，需先配置代码签名证书环境变量。
@@ -24,7 +24,7 @@ npm run release:win
 
 1. 检查当前分支、Git 身份、进行中的 Git 操作、目标 tag 和双远端分支状态。
 2. 使用 `npm version --no-git-tag-version` 同步更新 `package.json` 与 `package-lock.json`。
-3. 执行 `npm run dist:win -- --publish never`，确认 `release/` 中已生成对应版本的 Windows 安装包。
+3. 执行 `npm run dist:win -- --publish never`，确认 `release/` 中已生成对应版本的 NSIS 安装包、blockmap 和 `latest.yml`。
 4. 按项目提交规范提交当前全部改动，创建带说明的 `v*` tag。
 5. 分别向 Gitee 和 GitHub 原子推送当前分支与 tag。GitHub 收到 tag 后会触发 Actions 并创建 GitHub Release。
 
@@ -33,6 +33,22 @@ npm run release:win
 发布前必须显式勾选确认项。构建失败且尚未暂存时，脚本会恢复两个版本文件；本地提交或 tag 已生成后不会自动回滚，远端推送失败时可在当前页面重试。
 
 Windows 安装包使用辅助安装向导，默认按当前用户安装，并允许用户选择安装目录。
+
+Windows 正式版只发布 NSIS x64 安装包，不再生成 Portable 版本。发布控制台会校验下面三项产物全部存在，任一缺失都会停止提交和推送：
+
+- `Git-UI-Pro-Setup-<version>-x64.exe`: NSIS 正式版安装包。
+- `Git-UI-Pro-Setup-<version>-x64.exe.blockmap`: 增量下载索引。
+- `latest.yml`: GitHub 更新源元数据；文件名固定，不包含版本号。
+
+## Windows 应用内更新
+
+应用内更新仅在通过 NSIS 安装的 Windows x64 正式版中启用。Portable、开发环境、网页预览和其他操作系统不检查 GitHub 更新源。
+
+已安装应用启动后会静默检查 GitHub Release；发现比当前版本更高的稳定版时，左上角显示更新入口。用户打开更新面板后手动开始下载，下载完成后再确认安装；应用不会在后台自动下载，也不会未经确认退出并安装。
+
+首次启用时需要先发布并手动安装一个包含更新器的基线版本。更早、尚未集成更新器的旧版本不会出现更新入口；从基线版本开始，后续 GitHub Release 才能通过应用内更新完成升级。
+
+GitHub Release 必须同时上传同一版本的 NSIS `.exe`、对应 `.exe.blockmap` 和 `latest.yml`。只上传安装包时，用户能够在 Release 页面手动下载，但应用内更新无法解析或增量下载。发布后应至少在一台已安装旧正式版的 Windows x64 设备上验证检查、下载、退出安装和重启后的版本号。
 
 安装向导会在开始安装前显示桌面快捷方式选项，默认勾选“创建桌面快捷方式”，用户可以取消。
 
@@ -48,6 +64,8 @@ Windows 安装包使用辅助安装向导，默认按当前用户安装，并允
 - `CSC_KEY_PASSWORD` 或 `WIN_CSC_KEY_PASSWORD`: 证书密码。
 
 签名配置位于 `package.json` 的 `build.win.signtoolOptions`，当前使用 SHA-256 和 DigiCert RFC 3161 时间戳服务器。
+
+未签名构建不会写入伪造的 `publisherName`，避免应用内更新把未签名安装包误判为发行商不匹配；使用真实证书执行签名构建时，electron-builder 会从证书自动生成发行商信息并启用签名校验。
 
 ## 原生模块
 
@@ -86,7 +104,7 @@ Windows 安装包使用辅助安装向导，默认按当前用户安装，并允
 - `git-ui-pro-windows-x64`
 - `git-ui-pro-linux-x64`
 
-Actions 只上传安装包和必要的 blockmap 文件，不上传 `win-unpacked`、`linux-unpacked` 等解包目录，避免 Release 阶段上传过多文件触发 GitHub secondary rate limit。
+Actions 只上传安装包、必要的 blockmap 和 Windows `latest.yml`，不上传 `win-unpacked`、`linux-unpacked` 等解包目录，避免 Release 阶段上传过多文件触发 GitHub secondary rate limit。
 
 当工作流由 `v*` 格式 tag 触发时，会在 Windows 和 Linux 构建完成后自动创建 GitHub Release，并把安装包上传到该 Release。
 

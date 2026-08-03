@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { ProxyAgent, fetch as undiciFetch } from "undici";
 import {
   Check,
   CheckCircle2,
@@ -36,6 +37,12 @@ const packageLockPath = path.join(rootDir, "package-lock.json");
 const releaseDir = path.join(rootDir, "release");
 const gitCommand = "git";
 const maxLogEntries = 2_000;
+const remoteCheckRetryDelays = [800, 1_800];
+const remoteProbeTimeoutMs = 30_000;
+const remoteFetchTimeoutMs = 120_000;
+const githubReleaseReadyTimeoutMs = 15 * 60_000;
+const githubReleasePollIntervalMs = 20_000;
+const githubReleaseRequestTimeoutMs = 30_000;
 
 const iconComponents = {
   Check,
@@ -158,6 +165,39 @@ export function detectProvider(remoteUrl) {
   return "other";
 }
 
+export function parseGitHubRepository(remoteUrl) {
+  const value = stripGitPrefix(String(remoteUrl || "").trim());
+  const scpMatch = /^(?:[^@/:\s]+@)?github\.com:([^/\s]+)\/([^/\s]+?)\/?$/i.exec(value);
+  let owner;
+  let repository;
+
+  if (scpMatch) {
+    owner = scpMatch[1];
+    repository = scpMatch[2];
+  } else {
+    try {
+      const parsed = new URL(value);
+      if (parsed.hostname.toLowerCase() !== "github.com") {
+        return null;
+      }
+      const segments = parsed.pathname.split("/").filter(Boolean);
+      if (segments.length !== 2) {
+        return null;
+      }
+      [owner, repository] = segments;
+    } catch {
+      return null;
+    }
+  }
+
+  repository = repository.replace(/\.git$/i, "");
+  if (!/^[A-Za-z0-9_.-]+$/.test(owner) || !/^[A-Za-z0-9_.-]+$/.test(repository)) {
+    return null;
+  }
+
+  return { owner, repository };
+}
+
 export function resolveNpmInvocation(options = {}) {
   const platform = options.platform ?? process.platform;
   if (platform !== "win32") {
@@ -262,8 +302,48 @@ function commandLabel(command, args) {
   return [path.basename(command).replace(/\.cmd$/i, ""), ...args].map(quoteArgument).join(" ");
 }
 
-async function runProcess(command, args, options = {}) {
-  const { job, displayCommand = command, displayArgs = args, allowFailure = false, env = {} } = options;
+export function isTransientGitNetworkFailure(output) {
+  const detail = String(output);
+  if (/(?:authentication failed|repository not found|permission denied|could not read username|couldn't find remote ref|http (?:401|403)|ssl certificate problem|certificate (?:verify|validation) failed|certificate has expired|sec_e_untrusted_root)/i.test(detail)) {
+    return false;
+  }
+
+  return /(?:schannel:.*(?:failed to receive handshake|ssl\/tls connection failed|recv failure|send failure)|gnutls(?:_handshake| recv error).*?(?:pull function|non-properly terminated)|ssl_error_syscall|failed to connect|could not resolve host|connection (?:was )?(?:refused|reset|timed out)|no route to host|operation timed out|empty reply from server|recv failure|send failure|remote end hung up unexpectedly|unexpected disconnect|unexpected eof|early eof)/i.test(detail);
+}
+
+function waitForRetry(delayMs) {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+function terminateProcessTree(child) {
+  if (!child.pid) {
+    return;
+  }
+
+  if (process.platform === "win32") {
+    const killer = spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
+      stdio: "ignore",
+      windowsHide: true
+    });
+    killer.on("error", () => child.kill());
+    killer.on("close", (code) => {
+      if (code !== 0 && child.exitCode === null) {
+        child.kill();
+      }
+    });
+    killer.unref();
+    return;
+  }
+
+  try {
+    process.kill(-child.pid, "SIGTERM");
+  } catch {
+    child.kill();
+  }
+}
+
+export async function runProcess(command, args, options = {}) {
+  const { job, displayCommand = command, displayArgs = args, allowFailure = false, env = {}, timeoutMs = 0 } = options;
   if (job) {
     addLog(job, "command", `$ ${commandLabel(displayCommand, displayArgs)}`);
   }
@@ -278,10 +358,13 @@ async function runProcess(command, args, options = {}) {
         ...env
       },
       shell: false,
-      windowsHide: true
+      windowsHide: true,
+      detached: timeoutMs > 0 && process.platform !== "win32"
     });
     let stdout = "";
     let stderr = "";
+    let timedOut = false;
+    let timeoutHandle = null;
     const stdoutWriter = createLineWriter((line) => {
       if (job) {
         addLog(job, "output", line);
@@ -305,28 +388,83 @@ async function runProcess(command, args, options = {}) {
       }
       stderrWriter.push(chunk);
     });
-    child.on("error", reject);
+    child.on("error", (error) => {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+      reject(error);
+    });
     child.on("close", (code) => {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
       stdoutWriter.flush();
       stderrWriter.flush();
       const result = {
         code: code ?? 1,
         stdout: stdout.replace(/\r?\n$/, ""),
-        stderr: stderr.replace(/\r?\n$/, "")
+        stderr: stderr.replace(/\r?\n$/, ""),
+        timedOut
       };
-      if (result.code === 0 || allowFailure) {
+      if ((result.code === 0 && !result.timedOut) || allowFailure) {
         resolve(result);
         return;
       }
 
-      const detail = result.stderr.trim() || result.stdout.trim() || `退出码 ${result.code}`;
+      const detail = result.timedOut
+        ? `命令执行超过 ${Math.round(timeoutMs / 1_000)} 秒`
+        : result.stderr.trim() || result.stdout.trim() || `退出码 ${result.code}`;
       reject(new Error(`${commandLabel(displayCommand, displayArgs)} 执行失败：${detail}`));
     });
+
+    if (timeoutMs > 0) {
+      timeoutHandle = setTimeout(() => {
+        timedOut = true;
+        terminateProcessTree(child);
+      }, timeoutMs);
+    }
   });
 }
 
 async function runGit(args, options = {}) {
   return runProcess(gitCommand, args, options);
+}
+
+export async function runGitWithNetworkRetry(args, options = {}) {
+  const {
+    job,
+    retryLabel = "远端",
+    displayArgs = args,
+    timeoutMs = remoteProbeTimeoutMs,
+    retryDelays = remoteCheckRetryDelays,
+    runCommand = runGit,
+    wait = waitForRetry,
+    ...runOptions
+  } = options;
+  const attempts = retryDelays.length + 1;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const result = await runCommand(args, { ...runOptions, job, timeoutMs, allowFailure: true });
+    if (result.code === 0 && !result.timedOut) {
+      return result;
+    }
+
+    const detail = result.timedOut
+      ? `命令执行超过 ${Math.round(timeoutMs / 1_000)} 秒`
+      : result.stderr.trim() || result.stdout.trim() || `退出码 ${result.code}`;
+    const transient = result.timedOut || isTransientGitNetworkFailure(`${result.stderr}\n${result.stdout}`);
+    if (!transient || attempt === attempts - 1) {
+      const retrySummary = transient ? `（已自动尝试 ${attempts} 次，请检查网络或代理后重新发布）` : "";
+      throw new Error(`${commandLabel(gitCommand, displayArgs)} 执行失败：${detail}${retrySummary}`);
+    }
+
+    const delayMs = retryDelays[attempt];
+    if (job) {
+      addLog(job, "warning", `${retryLabel}连接暂时中断，${delayMs / 1_000} 秒后自动重试（${attempt + 2}/${attempts}）`);
+    }
+    await wait(delayMs);
+  }
+
+  throw new Error(`${commandLabel(gitCommand, displayArgs)} 执行失败`);
 }
 
 async function runNpm(args, options = {}) {
@@ -531,7 +669,7 @@ function createJob(payload) {
     ["build", "Windows 打包"],
     ["commit", "提交与标签"],
     ["gitee", "推送 Gitee"],
-    ["github", "推送 GitHub"]
+    ["github", "GitHub 正式版"]
   ];
   const job = {
     id,
@@ -546,6 +684,10 @@ function createJob(payload) {
     artifacts: [],
     error: null,
     canRetryPush: false,
+    pushedRemotes: {
+      gitee: false,
+      github: false
+    },
     payload,
     releaseContext: null
   };
@@ -573,8 +715,21 @@ function publicJob(job) {
     tag: job.tag,
     artifacts: job.artifacts,
     error: job.error,
-    canRetryPush: job.canRetryPush
+    canRetryPush: job.canRetryPush,
+    retryMode: getReleaseRetryMode(job)
   };
+}
+
+export function getReleaseRetryMode(job) {
+  return job.pushedRemotes.gitee && job.pushedRemotes.github ? "confirm" : "push";
+}
+
+function getLatestJob() {
+  if (activeJobId && jobs.has(activeJobId)) {
+    return jobs.get(activeJobId);
+  }
+  const jobList = Array.from(jobs.values());
+  return jobList[jobList.length - 1] || null;
 }
 
 function addLog(job, level, message) {
@@ -669,7 +824,11 @@ function parseLsRemote(output) {
 
 async function checkRemote(remote, branch, tag, localHead, job) {
   addLog(job, "info", `检查 ${remote.name} 的分支和标签`);
-  const result = await runGit(["ls-remote", "--heads", "--tags", remote.name], { job });
+  const result = await runGitWithNetworkRetry(["ls-remote", "--heads", "--tags", remote.name], {
+    job,
+    retryLabel: `${remote.name} `,
+    timeoutMs: remoteProbeTimeoutMs
+  });
   const refs = parseLsRemote(result.stdout);
   if (refs.has(`refs/tags/${tag}`) || refs.has(`refs/tags/${tag}^{}`)) {
     throw new Error(`${remote.name} 已存在标签 ${tag}，请改用更高版本号`);
@@ -696,7 +855,11 @@ async function checkRemote(remote, branch, tag, localHead, job) {
 
   let ancestorResult = await runGit(["merge-base", "--is-ancestor", remoteHead, localHead], { allowFailure: true });
   if (ancestorResult.code > 1) {
-    await runGit(["fetch", "--no-tags", remote.name, `refs/heads/${branch}`], { job });
+    await runGitWithNetworkRetry(["fetch", "--no-tags", remote.name, `refs/heads/${branch}`], {
+      job,
+      retryLabel: `${remote.name} `,
+      timeoutMs: remoteFetchTimeoutMs
+    });
     ancestorResult = await runGit(["merge-base", "--is-ancestor", "FETCH_HEAD", localHead], { allowFailure: true });
   }
   if (ancestorResult.code !== 0) {
@@ -720,17 +883,412 @@ async function getReleaseContext(status, job) {
   return { branch: status.branch, gitee, github };
 }
 
-async function collectArtifacts(version) {
-  if (!existsSync(releaseDir)) {
+export function expectedWindowsUpdateArtifacts(version) {
+  const baseName = `Git-UI-Pro-Setup-${version}-x64.exe`;
+  return {
+    installer: baseName,
+    blockmap: `${baseName}.blockmap`,
+    metadata: "latest.yml"
+  };
+}
+
+export function validateWindowsUpdateArtifacts(version, artifacts) {
+  const expected = expectedWindowsUpdateArtifacts(version);
+  const names = new Set(artifacts.map((artifact) => artifact.name));
+  const missing = Object.values(expected).filter((name) => !names.has(name));
+  return {
+    valid: missing.length === 0,
+    missing,
+    expected
+  };
+}
+
+function githubRequestHeaders(accept) {
+  return {
+    Accept: accept,
+    "Cache-Control": "no-cache, no-store, max-age=0",
+    Pragma: "no-cache",
+    "User-Agent": "Git-UI-Pro-Release-Console"
+  };
+}
+
+export async function resolveGitHubProxy(requestUrl, options = {}) {
+  const runCommand = options.runCommand ?? runGit;
+  const result = await runCommand(
+    ["config", "--get-urlmatch", "http.proxy", requestUrl],
+    { allowFailure: true }
+  );
+  const configuredProxy = result.stdout.trim();
+  if (result.code === 1 && !configuredProxy && !result.timedOut) {
+    return null;
+  }
+  if (result.code !== 0 || result.timedOut) {
+    const detail = result.timedOut
+      ? "命令执行超时"
+      : result.stderr.trim() || `退出码 ${result.code}`;
+    throw new Error(`读取 GitHub 的 Git 代理配置失败：${detail}`);
+  }
+  if (!configuredProxy) {
+    throw new Error("GitHub 的 Git 代理配置为空，请检查 http.proxy");
+  }
+
+  let parsedProxy;
+  try {
+    parsedProxy = new URL(configuredProxy);
+  } catch {
+    throw new Error("GitHub 的 Git 代理配置不是有效 URL，请检查 http.proxy");
+  }
+  if (!["http:", "https:", "socks:", "socks5:"].includes(parsedProxy.protocol)) {
+    throw new Error(`GitHub 的 Git 代理协议 ${parsedProxy.protocol} 不受发布控制台支持`);
+  }
+  return parsedProxy.toString();
+}
+
+export function createGitHubProxyTransport(proxyUrl, options = {}) {
+  const createDispatcher = options.createDispatcher ?? ((url) => new ProxyAgent(url));
+  const fetchImpl = options.fetchImpl ?? undiciFetch;
+  const dispatcher = createDispatcher(proxyUrl);
+  return {
+    fetchImpl: (url, requestOptions = {}) => fetchImpl(url, { ...requestOptions, dispatcher }),
+    close: async () => {
+      if (typeof dispatcher.close === "function") {
+        await dispatcher.close();
+      }
+    }
+  };
+}
+
+function addCacheBuster(url, value) {
+  const result = new URL(url);
+  result.searchParams.set("release-console", String(value));
+  return result.toString();
+}
+
+function githubRequestError(label, status) {
+  const error = new Error(`${label}返回 HTTP ${status}`);
+  error.retryable = status === 408 || status === 425 || status === 429 || status >= 500;
+  return error;
+}
+
+function githubProtocolError(message) {
+  const error = new Error(message);
+  error.retryable = false;
+  return error;
+}
+
+function githubCertificateErrorCode(error) {
+  const code = String(error?.cause?.code || error?.code || "");
+  return /(?:CERT|SELF_SIGNED|UNABLE_TO_VERIFY|UNABLE_TO_GET_ISSUER)/i.test(code) ? code : null;
+}
+
+function isRetryableGitHubRequestError(error) {
+  if (typeof error?.retryable === "boolean") {
+    return error.retryable;
+  }
+  if (githubCertificateErrorCode(error)) {
+    return false;
+  }
+  return error instanceof TypeError || error?.name === "AbortError" || error?.name === "TimeoutError";
+}
+
+function remainingGitHubRequestTimeout(requestOptions) {
+  const remainingMs = requestOptions.deadline - requestOptions.now();
+  if (remainingMs <= 0) {
+    const error = new Error("已达到 GitHub 正式版等待时限");
+    error.retryable = true;
+    throw error;
+  }
+  return Math.max(1, Math.min(requestOptions.requestTimeoutMs, remainingMs));
+}
+
+async function fetchWithTimeout(fetchImpl, url, options, timeoutMs, handleResponse) {
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetchImpl(url, { ...options, signal: controller.signal });
+    return await handleResponse(response);
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+}
+
+async function readGitHubReleaseMetadata(url, requestOptions) {
+  return fetchWithTimeout(
+    requestOptions.fetchImpl,
+    addCacheBuster(url, requestOptions.cacheBuster),
+    {
+      redirect: "follow",
+      headers: githubRequestHeaders("text/yaml, text/plain, */*")
+    },
+    remainingGitHubRequestTimeout(requestOptions),
+    async (response) => {
+      if (response.status === 404) {
+        await response.body?.cancel().catch(() => {});
+        return null;
+      }
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => {});
+        throw githubRequestError("latest.yml ", response.status);
+      }
+      if (response.headers.get("content-type")?.toLowerCase().includes("text/html")) {
+        await response.body?.cancel().catch(() => {});
+        throw githubProtocolError("latest.yml 返回了网页内容，可能被登录页或网络代理拦截");
+      }
+      return response.text();
+    }
+  );
+}
+
+function isTrustedGitHubAssetRedirect(location, baseUrl) {
+  if (!location) {
+    return false;
+  }
+  try {
+    const redirectUrl = new URL(location, baseUrl);
+    const hostname = redirectUrl.hostname.toLowerCase();
+    if (hostname === "github.com") {
+      const sourceUrl = new URL(baseUrl);
+      return redirectUrl.pathname.toLowerCase() === sourceUrl.pathname.toLowerCase();
+    }
+    return hostname === "objects.githubusercontent.com" ||
+      hostname.endsWith(".githubusercontent.com");
+  } catch {
+    return false;
+  }
+}
+
+async function isGitHubReleaseAssetReady(url, requestOptions) {
+  const requestUrl = addCacheBuster(url, requestOptions.cacheBuster);
+  return fetchWithTimeout(
+    requestOptions.fetchImpl,
+    requestUrl,
+    {
+      redirect: "manual",
+      headers: githubRequestHeaders("application/octet-stream, */*")
+    },
+    remainingGitHubRequestTimeout(requestOptions),
+    async (response) => {
+      const contentType = response.headers.get("content-type")?.toLowerCase() || "";
+      const redirectReady = response.status >= 300 && response.status < 400 &&
+        isTrustedGitHubAssetRedirect(response.headers.get("location"), requestUrl);
+      const directReady = response.ok && !contentType.includes("text/html");
+      await response.body?.cancel().catch(() => {});
+      if (directReady || redirectReady) {
+        return true;
+      }
+      if (response.status === 404) {
+        return false;
+      }
+      if (response.status >= 300 && response.status < 400) {
+        throw githubProtocolError("更新产物被重定向到非 GitHub 发布资产地址；若仓库已改名或转移，请先更新 GitHub 远端地址");
+      }
+      if (response.ok) {
+        throw githubProtocolError("更新产物返回了网页内容，可能被登录页或网络代理拦截");
+      }
+      throw githubRequestError("更新产物 ", response.status);
+    }
+  );
+}
+
+function releaseTagFromLocation(location, baseUrl, repositoryInfo) {
+  if (!location) {
+    return null;
+  }
+  try {
+    const locationUrl = new URL(location, baseUrl);
+    if (locationUrl.hostname.toLowerCase() !== "github.com") {
+      return null;
+    }
+    const segments = locationUrl.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+    if (
+      segments.length !== 5 ||
+      segments[0].toLowerCase() !== repositoryInfo.owner.toLowerCase() ||
+      segments[1].toLowerCase() !== repositoryInfo.repository.toLowerCase() ||
+      segments[2].toLowerCase() !== "releases" ||
+      segments[3].toLowerCase() !== "tag"
+    ) {
+      return null;
+    }
+    return segments[4];
+  } catch {
+    return null;
+  }
+}
+
+async function readGitHubLatestTag(url, requestOptions) {
+  const requestUrl = addCacheBuster(url, requestOptions.cacheBuster);
+  return fetchWithTimeout(
+    requestOptions.fetchImpl,
+    requestUrl,
+    {
+      redirect: "manual",
+      headers: githubRequestHeaders("application/json")
+    },
+    remainingGitHubRequestTimeout(requestOptions),
+    async (response) => {
+      const locationTag = releaseTagFromLocation(
+        response.headers.get("location"),
+        requestUrl,
+        requestOptions.repositoryInfo
+      );
+      if (locationTag) {
+        await response.body?.cancel().catch(() => {});
+        return locationTag;
+      }
+      if (response.status === 404) {
+        await response.body?.cancel().catch(() => {});
+        return null;
+      }
+      if (response.status >= 300 && response.status < 400) {
+        await response.body?.cancel().catch(() => {});
+        throw githubProtocolError("GitHub 最新版地址发生了非目标仓库重定向；若仓库已改名或转移，请先更新 GitHub 远端地址");
+      }
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => {});
+        throw githubRequestError("GitHub 最新版地址 ", response.status);
+      }
+
+      const body = await response.text();
+      try {
+        const release = JSON.parse(body);
+        return typeof release.tag_name === "string" ? release.tag_name : null;
+      } catch {
+        return releaseTagFromLocation(
+          body.match(/href=["']([^"']*\/releases\/tag\/[^"']+)["']/i)?.[1],
+          requestUrl,
+          requestOptions.repositoryInfo
+        );
+      }
+    }
+  );
+}
+
+function releaseMetadataHasVersion(metadata, version) {
+  const escapedVersion = version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^version:\\s*["']?${escapedVersion}["']?\\s*$`, "m").test(metadata);
+}
+
+export async function waitForGitHubReleaseReady(repositoryInfo, tag, version, options = {}) {
+  const owner = String(repositoryInfo?.owner || "");
+  const repository = String(repositoryInfo?.repository || "");
+  if (!/^[A-Za-z0-9_.-]+$/.test(owner) || !/^[A-Za-z0-9_.-]+$/.test(repository)) {
+    throw new Error("无法识别 GitHub 仓库地址，不能确认正式版状态");
+  }
+  if (!parseVersion(version) || tag !== `v${version}`) {
+    throw new Error("GitHub 正式版检查收到无效版本号");
+  }
+
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+  if (typeof fetchImpl !== "function") {
+    throw new Error("当前 Node.js 环境不支持检查 GitHub 正式版状态");
+  }
+  const wait = options.wait ?? waitForRetry;
+  const now = options.now ?? Date.now;
+  const timeoutMs = options.timeoutMs ?? githubReleaseReadyTimeoutMs;
+  const pollIntervalMs = options.pollIntervalMs ?? githubReleasePollIntervalMs;
+  const requestTimeoutMs = options.requestTimeoutMs ?? githubReleaseRequestTimeoutMs;
+  const onProgress = options.onProgress ?? (() => {});
+  if (timeoutMs <= 0 || pollIntervalMs <= 0 || requestTimeoutMs <= 0) {
+    throw new Error("GitHub 正式版检查的超时参数无效");
+  }
+
+  const encodedOwner = encodeURIComponent(owner);
+  const encodedRepository = encodeURIComponent(repository);
+  const encodedTag = encodeURIComponent(tag);
+  const downloadBaseUrl = `https://github.com/${encodedOwner}/${encodedRepository}/releases/download/${encodedTag}`;
+  const latestReleaseUrl = `https://github.com/${encodedOwner}/${encodedRepository}/releases/latest`;
+  const actionsUrl = `https://github.com/${encodedOwner}/${encodedRepository}/actions`;
+  const expected = expectedWindowsUpdateArtifacts(version);
+  const deadline = now() + timeoutMs;
+  let currentProgress = null;
+  let lastFailure = null;
+
+  const report = (key, level, message) => {
+    if (currentProgress === key) {
+      return;
+    }
+    currentProgress = key;
+    onProgress({ key, level, message });
+  };
+
+  report("waiting-release", "info", `${tag} 标签已推送，等待 GitHub Actions 生成 Windows 正式版`);
+  while (now() < deadline) {
+    const cacheBuster = now();
+    const requestOptions = {
+      fetchImpl,
+      requestTimeoutMs,
+      cacheBuster,
+      deadline,
+      now,
+      repositoryInfo: { owner, repository }
+    };
+    try {
+      const metadata = await readGitHubReleaseMetadata(`${downloadBaseUrl}/${expected.metadata}`, requestOptions);
+      if (metadata === null) {
+        report("waiting-release", "info", `${tag} 标签已推送，等待 GitHub Actions 生成 Windows 正式版`);
+      } else if (!releaseMetadataHasVersion(metadata, version) || !metadata.includes(expected.installer)) {
+        report("waiting-metadata", "warning", "GitHub 已生成 latest.yml，但版本或安装包信息尚未同步完成");
+      } else {
+        const [installerReady, blockmapReady] = await Promise.all([
+          isGitHubReleaseAssetReady(`${downloadBaseUrl}/${encodeURIComponent(expected.installer)}`, requestOptions),
+          isGitHubReleaseAssetReady(`${downloadBaseUrl}/${encodeURIComponent(expected.blockmap)}`, requestOptions)
+        ]);
+        if (!installerReady || !blockmapReady) {
+          report("waiting-assets", "info", `${tag} 的版本元数据已生成，等待 Windows 安装包上传完成`);
+        } else {
+          const latestTag = await readGitHubLatestTag(latestReleaseUrl, requestOptions);
+          if (latestTag === tag) {
+            report("ready", "success", `${tag} 的 Windows 正式版与 GitHub 最新版指针均已就绪`);
+            return {
+              tag,
+              version,
+              latestTag,
+              assets: Object.values(expected)
+            };
+          }
+          const currentLatest = latestTag ? `（当前仍为 ${latestTag}）` : "";
+          report("waiting-latest", "info", `Windows 正式版产物已就绪，等待 GitHub 最新版指针切换到 ${tag}${currentLatest}`);
+        }
+      }
+      lastFailure = null;
+    } catch (error) {
+      if (!isRetryableGitHubRequestError(error)) {
+        const certificateCode = githubCertificateErrorCode(error);
+        if (certificateCode) {
+          throw githubProtocolError(`GitHub TLS 证书校验失败（${certificateCode}），请检查系统时间、证书或网络代理`);
+        }
+        throw error;
+      }
+      lastFailure = error instanceof Error ? error.message : String(error);
+      report("network-error", "warning", `GitHub 状态检查暂时失败，将自动重试：${lastFailure}`);
+    }
+
+    const remainingMs = deadline - now();
+    if (remainingMs <= 0) {
+      break;
+    }
+    await wait(Math.min(pollIntervalMs, remainingMs));
+  }
+
+  const failureDetail = lastFailure ? `最近一次检查失败：${lastFailure}。` : "";
+  throw new Error(
+    `标签 ${tag} 已推送，但 GitHub Windows 正式版在 ${Math.ceil(timeoutMs / 60_000)} 分钟内仍未就绪。` +
+    `${failureDetail}请检查 ${actionsUrl}，工作流完成后重试发布流程。`
+  );
+}
+
+export async function collectArtifacts(version, directory = releaseDir) {
+  if (!existsSync(directory)) {
     return [];
   }
-  const entries = await readdir(releaseDir);
+  const expectedNames = new Set(Object.values(expectedWindowsUpdateArtifacts(version)));
+  const entries = await readdir(directory);
   const artifacts = [];
   for (const name of entries) {
-    if (!name.includes(version) || (!name.endsWith(".exe") && !name.endsWith(".blockmap"))) {
+    if (!expectedNames.has(name)) {
       continue;
     }
-    const filePath = path.join(releaseDir, name);
+    const filePath = path.join(directory, name);
     const fileStat = await stat(filePath);
     if (fileStat.isFile()) {
       artifacts.push({ name, size: fileStat.size });
@@ -759,6 +1317,34 @@ async function pushRelease(remote, context, job) {
   addLog(job, "warning", `${remote.name} 不支持原子推送，将依次推送分支和标签`);
   await runGit(["push", remote.name, `HEAD:refs/heads/${context.branch}`], { job });
   await runGit(["push", remote.name, `refs/tags/${job.tag}:refs/tags/${job.tag}`], { job });
+}
+
+async function confirmGitHubReleaseReady(job) {
+  const currentRemote = await runGit(
+    ["remote", "get-url", "--push", job.releaseContext.github.name],
+    { allowFailure: true }
+  );
+  const remoteUrl = currentRemote.code === 0
+    ? currentRemote.stdout.trim()
+    : job.releaseContext.github.pushUrl;
+  const repository = parseGitHubRepository(remoteUrl);
+  if (!repository) {
+    throw new Error("GitHub 标签已推送，但无法从远端地址识别仓库，不能确认正式安装包状态");
+  }
+  const releaseUrl = `https://github.com/${repository.owner}/${repository.repository}/releases/download/${job.tag}/latest.yml`;
+  const proxyUrl = await resolveGitHubProxy(releaseUrl);
+  const transport = proxyUrl ? createGitHubProxyTransport(proxyUrl) : null;
+  if (proxyUrl) {
+    addLog(job, "info", "GitHub 状态检查使用 Git 配置中的网络代理");
+  }
+  try {
+    await waitForGitHubReleaseReady(repository, job.tag, job.version, {
+      fetchImpl: transport?.fetchImpl,
+      onProgress: ({ level, message }) => addLog(job, level, message)
+    });
+  } finally {
+    await transport?.close();
+  }
 }
 
 async function executeRelease(job) {
@@ -794,8 +1380,9 @@ async function executeRelease(job) {
     const buildScript = job.payload.buildMode === "signed" ? "dist:win:signed" : "dist:win";
     await runNpm(["run", buildScript, "--", "--publish", "never"], { job });
     job.artifacts = await collectArtifacts(job.version);
-    if (!job.artifacts.some((artifact) => artifact.name.endsWith(".exe"))) {
-      throw new Error(`打包完成，但 release/ 中没有找到 ${job.version} 的 Windows 安装包`);
+    const artifactValidation = validateWindowsUpdateArtifacts(job.version, job.artifacts);
+    if (!artifactValidation.valid) {
+      throw new Error(`打包完成，但 release/ 缺少 Windows 正式版更新产物：${artifactValidation.missing.join("、")}`);
     }
     for (const artifact of job.artifacts) {
       addLog(job, "success", `产物：${artifact.name}`);
@@ -831,10 +1418,13 @@ async function executeRelease(job) {
 
     setStage(job, "gitee", "running");
     await pushRelease(job.releaseContext.gitee, job.releaseContext, job);
+    job.pushedRemotes.gitee = true;
     setStage(job, "gitee", "completed");
 
     setStage(job, "github", "running");
     await pushRelease(job.releaseContext.github, job.releaseContext, job);
+    job.pushedRemotes.github = true;
+    await confirmGitHubReleaseReady(job);
     setStage(job, "github", "completed");
 
     job.state = "completed";
@@ -859,7 +1449,10 @@ async function executeRelease(job) {
       addLog(job, "warning", "提交未完成，版本变更和暂存区已保留，请检查后手动处理");
     } else if (commitCreated && tagCreated) {
       job.canRetryPush = true;
-      addLog(job, "warning", `本地提交和 ${job.tag} 已保留，可以重试双远端推送`);
+      const retryHint = job.pushedRemotes.gitee && job.pushedRemotes.github
+        ? "远端推送已完成，可以重试 GitHub 正式版确认"
+        : "可以重试双远端发布流程";
+      addLog(job, "warning", `本地提交和 ${job.tag} 已保留，${retryHint}`);
     } else if (commitCreated) {
       job.canRetryPush = false;
       addLog(job, "warning", "版本提交已保留，但标签创建失败，请检查本地仓库后手动处理");
@@ -869,7 +1462,43 @@ async function executeRelease(job) {
   }
 }
 
-async function retryPush(job) {
+async function verifyRetryTagAtCurrentHead(job) {
+  const tagHead = await runGit(["rev-list", "-n", "1", job.tag], { allowFailure: true });
+  const currentHead = await gitOutput(["rev-parse", "HEAD"]);
+  if (tagHead.code !== 0 || tagHead.stdout.trim() !== currentHead) {
+    throw new Error(`${job.tag} 不再指向当前 HEAD，已停止重试`);
+  }
+}
+
+export async function resumeReleasePublication(job, options = {}) {
+  const retryMode = getReleaseRetryMode(job);
+  const verifyTag = options.verifyTag ?? verifyRetryTagAtCurrentHead;
+  const pushRemote = options.pushRemote ?? ((key) => (
+    pushRelease(job.releaseContext[key], job.releaseContext, job)
+  ));
+  const confirmRelease = options.confirmRelease ?? (() => confirmGitHubReleaseReady(job));
+
+  if (retryMode === "push") {
+    await verifyTag(job);
+    for (const key of ["gitee", "github"]) {
+      if (job.pushedRemotes[key]) {
+        setStage(job, key, "completed");
+        continue;
+      }
+      setStage(job, key, "running");
+      await pushRemote(key, job);
+      job.pushedRemotes[key] = true;
+      setStage(job, key, "completed");
+    }
+  }
+
+  setStage(job, "github", "running");
+  await confirmRelease(job);
+  setStage(job, "github", "completed");
+  return retryMode;
+}
+
+export async function retryPush(job, options = {}) {
   if (activeJobId) {
     throw new Error("已有发布任务正在执行");
   }
@@ -881,19 +1510,10 @@ async function retryPush(job) {
   job.state = "running";
   job.error = null;
   job.completedAt = null;
-  addLog(job, "info", "重新开始双远端推送");
+  const retryMode = getReleaseRetryMode(job);
+  addLog(job, "info", retryMode === "confirm" ? "远端推送已完成，重新检查 GitHub 正式版" : "重新检查双远端发布流程");
   try {
-    const tagHead = await runGit(["rev-list", "-n", "1", job.tag], { allowFailure: true });
-    const currentHead = await gitOutput(["rev-parse", "HEAD"]);
-    if (tagHead.code !== 0 || tagHead.stdout.trim() !== currentHead) {
-      throw new Error(`${job.tag} 不再指向当前 HEAD，已停止重试`);
-    }
-
-    for (const key of ["gitee", "github"]) {
-      setStage(job, key, "running");
-      await pushRelease(job.releaseContext[key], job.releaseContext, job);
-      setStage(job, key, "completed");
-    }
+    await resumeReleasePublication(job, options);
     job.state = "completed";
     job.currentStage = null;
     job.canRetryPush = false;
@@ -904,6 +1524,7 @@ async function retryPush(job) {
     job.state = "failed";
     job.error = error instanceof Error ? error.message : String(error);
     job.completedAt = new Date().toISOString();
+    job.canRetryPush = true;
     addLog(job, "error", job.error);
     throw error;
   } finally {
@@ -1010,6 +1631,11 @@ export async function startReleaseConsole(options = {}) {
 
       if (request.method === "GET" && url.pathname === "/api/status") {
         sendJson(response, 200, await collectStatus());
+        return;
+      }
+      if (request.method === "GET" && url.pathname === "/api/jobs/latest") {
+        const job = getLatestJob();
+        sendJson(response, 200, job ? publicJob(job) : null);
         return;
       }
       if (request.method === "GET" && url.pathname.startsWith("/api/jobs/")) {

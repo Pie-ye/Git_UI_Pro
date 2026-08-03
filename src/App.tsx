@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type MouseEvent } from "react";
 import {
   AlertTriangle,
   Check,
@@ -10,10 +10,13 @@ import {
   Moon,
   PanelLeftClose,
   PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
   Plus,
   RefreshCw,
   Sun,
   Terminal,
+  Trash2,
   X
 } from "lucide-react";
 import { Toaster, toast } from "sonner";
@@ -22,8 +25,11 @@ import { AppChrome } from "./components/AppChrome";
 import { ConsolePanel } from "./components/ConsolePanel";
 import { FeedbackConfirmDialog, type FeedbackConfirmOptions } from "./components/FeedbackConfirmDialog";
 import { GraphSidebar } from "./components/GraphSidebar";
+import { GitOperationCenter } from "./components/GitOperationCenter";
 import { PathTooltip } from "./components/PathTooltip";
 import { ProjectRail } from "./components/ProjectRail";
+import { RepositoryCenterContainer } from "./components/RepositoryCenterContainer";
+import type { RepositoryCenterTab } from "./components/RepositoryCenter";
 import { RemoteProjectDialog } from "./components/RemoteProjectDialog";
 import { TopBar, type ThemeMode } from "./components/TopBar";
 import { WorktreeDetailPanel, type WorktreeEditorTab } from "./components/WorktreeDetailPanel";
@@ -37,16 +43,22 @@ import type {
   CommitNode,
   ConflictResolutionInput,
   GitHistoryFilter,
+  GitHistoryQuery,
   GitHistoryRef,
   GitMergePreview,
   GitMergeStrategy,
   GitOperationResult,
   GitProject,
   GitResetMode,
+  GitStatusSummary,
+  ProjectLibraryState,
   RemoteProjectInput,
   RemoteProjectTestResult,
+  UiPreferences,
   WorktreeState
 } from "./types/domain";
+import { cancelGitOperation, dismissGitOperation, getGitOperationsSnapshot, subscribeGitOperations } from "./api/operationTracker";
+import { absoluteFilePath } from "./utils/filePath";
 
 const emptyWorktree: WorktreeState = {
   stagedFiles: [],
@@ -60,31 +72,56 @@ const DEFAULT_CONSOLE_HEIGHT = 240;
 const MIN_CONSOLE_HEIGHT = 80;
 const CONSOLE_TOP_SNAP_DISTANCE = 36;
 const SELECTED_PROJECT_REFRESH_INTERVAL_MS = 4000;
+const REMOTE_PROJECT_REFRESH_INTERVAL_MS = 30_000;
 const PROJECT_LIST_STATUS_REFRESH_INTERVAL_MS = 20000;
 const PROJECT_LIST_STATUS_BATCH_SIZE = 3;
+const REMOTE_PROJECT_LIST_INITIAL_DELAY_MS = 15_000;
+const REMOTE_PROJECT_LIST_REFRESH_INTERVAL_MS = 120_000;
 const PROJECT_SELECTION_LOAD_DELAY_MS = 180;
 const PROJECT_DATA_CACHE_TTL_MS = 20_000;
 const GRAPH_HISTORY_CACHE_TTL_MS = 20_000;
-const REMOTE_PROJECT_DATA_CACHE_TTL_MS = 120_000;
-const REMOTE_GRAPH_HISTORY_CACHE_TTL_MS = 120_000;
 const RESET_OPERATION_TIMEOUT_MS = 45_000;
 const GIT_DOWNLOAD_URL = "https://git-scm.com/downloads";
+const HISTORY_PAGE_SIZE = 150;
+
+const defaultUiPreferences = (): UiPreferences => ({
+  theme: "system",
+  language: "zh-CN",
+  bottomConsoleVisible: true,
+  sidebarWidth: 240,
+  rightPanelWidth: 420,
+  consoleHeight: 240,
+  fontSize: 14,
+  fontFamily: "system-ui",
+  diffViewMode: "split",
+  diffWrap: false,
+  pullStrategy: "ff-only",
+  density: "comfortable",
+  sidebarPosition: "left",
+  confirmDestructiveActions: true,
+  shortcuts: {}
+});
 
 type ResizeTarget = "sidebar" | "detail" | "sourceSplit" | "console";
 type ToastId = string | number;
-type ProjectStatusRefresh = { projectId: string; status: GitProject["status"] };
+type ProjectStatusRefresh = { projectId: string; status: GitStatusSummary };
 type ProjectDataSnapshot = {
-  status: GitProject["status"];
+  status: GitStatusSummary;
   history: CommitNode[];
   historyRefs: GitHistoryRef[];
   worktree: WorktreeState;
+  historyHasMore: boolean;
+  historyNextSkip: number;
   loadedAt: number;
 };
 type GraphHistorySnapshot = {
   history: CommitNode[];
   historyRefs: GitHistoryRef[];
+  historyHasMore: boolean;
+  historyNextSkip: number;
   loadedAt: number;
 };
+type AdvancedHistoryQuery = Pick<GitHistoryQuery, "search" | "author" | "after" | "before" | "path">;
 type GitDependencyState =
   | { status: "checking" }
   | { status: "ready"; version: string }
@@ -92,6 +129,7 @@ type GitDependencyState =
 type BranchDialogState =
   | { mode: "create"; project: GitProject; branchName: string; checkout: boolean; startPoint?: string; startLabel?: string }
   | { mode: "switch"; project: GitProject; branches: BranchInfo[]; query: string }
+  | { mode: "delete"; project: GitProject; branches: BranchInfo[]; query: string }
   | {
       mode: "merge";
       project: GitProject;
@@ -112,12 +150,18 @@ type CommitMessageDraftRequest = {
 };
 
 export function App() {
+  const gitOperations = useSyncExternalStore(subscribeGitOperations, getGitOperationsSnapshot, getGitOperationsSnapshot);
   const [projects, setProjects] = useState<GitProject[]>([]);
+  const [projectLibrary, setProjectLibrary] = useState<ProjectLibraryState>({ groups: [], recentProjectIds: [] });
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [commits, setCommits] = useState<CommitNode[]>([]);
   const [graphLoading, setGraphLoading] = useState(false);
   const [graphHistoryFilter, setGraphHistoryFilter] = useState<GitHistoryFilter>(() => defaultGraphHistoryFilter());
   const [graphHistoryRefs, setGraphHistoryRefs] = useState<GitHistoryRef[]>([]);
+  const [graphHistoryQuery, setGraphHistoryQuery] = useState<AdvancedHistoryQuery>({});
+  const [graphHistoryHasMore, setGraphHistoryHasMore] = useState(false);
+  const [graphHistoryNextSkip, setGraphHistoryNextSkip] = useState(0);
+  const [graphHistoryLoadingMore, setGraphHistoryLoadingMore] = useState(false);
   const [selectedCommitHash, setSelectedCommitHash] = useState("");
   const [worktree, setWorktree] = useState<WorktreeState>(emptyWorktree);
   const [worktreeTabs, setWorktreeTabs] = useState<WorktreeEditorTab[]>([]);
@@ -146,10 +190,14 @@ export function App() {
   const [commitMessageDialog, setCommitMessageDialog] = useState<CommitMessageDialogState | null>(null);
   const [commitMessageDialogBusy, setCommitMessageDialogBusy] = useState(false);
   const [pendingConfirm, setPendingConfirm] = useState<FeedbackConfirmOptions | null>(null);
+  const [repositoryCenterOpen, setRepositoryCenterOpen] = useState(false);
+  const [repositoryCenterInitialTab, setRepositoryCenterInitialTab] = useState<RepositoryCenterTab>("recovery");
+  const [uiPreferences, setUiPreferences] = useState<UiPreferences>(() => defaultUiPreferences());
   const projectsRef = useRef<GitProject[]>([]);
   const selectedProjectIdRef = useRef<string | null>(null);
   const autoRefreshBusyRef = useRef(false);
   const projectListRefreshBusyRef = useRef(false);
+  const remoteProjectListRefreshBusyRef = useRef(false);
   const selectedProjectLoadTimerRef = useRef<number | undefined>();
   const projectLoadRequestRef = useRef(0);
   const projectDataCacheRef = useRef(new Map<string, ProjectDataSnapshot>());
@@ -220,8 +268,22 @@ export function App() {
     setPendingConfirm(null);
   }
 
-  function selectProject(projectId: string | null) {
+  function selectProject(projectId: string | null, openedProject?: GitProject) {
     setSelectedProjectId((current) => (current === projectId ? current : projectId));
+    if (openedProject) {
+      setProjects((current) => current.map((project) => (project.id === openedProject.id ? { ...project, ...openedProject } : project)));
+      return;
+    }
+
+    if (projectId && window.gitUI) {
+      void apiClient.markProjectOpened(projectId).then((updatedProject) => {
+        setProjects((current) => current.map((project) => (project.id === updatedProject.id ? { ...project, ...updatedProject } : project)));
+      }).catch((error) => notifyError(error instanceof Error ? error.message : "无法记录最近项目"));
+    }
+  }
+
+  function requestDestructiveConfirm(options: FeedbackConfirmOptions): Promise<boolean> {
+    return uiPreferences.confirmDestructiveActions ? requestConfirm(options) : Promise.resolve(true);
   }
 
   function projectCacheKey(projectId: string, filter: GitHistoryFilter) {
@@ -236,53 +298,60 @@ export function App() {
     return `custom:${[...(filter.refIds ?? [])].sort().join("|")}`;
   }
 
-  function applyProjectStatus(projectId: string, status: GitProject["status"]) {
-    if (!status) {
-      return;
-    }
-
+  function applyProjectStatus(projectId: string, status: GitStatusSummary) {
     setProjects((current) => {
       let changed = false;
       const nextProjects = current.map((item) => {
-        if (item.id !== projectId || statusSignature(item.status) === statusSignature(status)) {
+        if (item.id !== projectId) {
+          return item;
+        }
+
+        if (statusSignature(item.status) === statusSignature(status) && !item.statusError) {
           return item;
         }
 
         changed = true;
-        return { ...item, status };
+        return { ...item, status, statusError: undefined };
       });
 
       return changed ? nextProjects : current;
     });
   }
 
-  function applyProjectDataSnapshot(
-    project: GitProject,
-    snapshot: ProjectDataSnapshot,
-    options: { clearTabs?: boolean; cached?: "fresh" | "stale" } = {}
-  ) {
+  function markProjectStatusUnavailable(projectId: string, error: unknown) {
+    const statusError = errorText(error, "无法读取仓库状态");
+    invalidateProjectCaches(projectId);
+    setProjects((current) => current.map((item) => {
+      if (item.id !== projectId || (!item.status && item.statusError === statusError)) {
+        return item;
+      }
+      return { ...item, status: undefined, statusError };
+    }));
+  }
+
+  function applyProjectDataSnapshot(project: GitProject, snapshot: ProjectDataSnapshot, options: { clearTabs?: boolean; cached?: boolean } = {}) {
     applyProjectStatus(project.id, snapshot.status);
     setCommits(snapshot.history);
     setGraphHistoryRefs(snapshot.historyRefs);
+    setGraphHistoryHasMore(snapshot.historyHasMore);
+    setGraphHistoryNextSkip(snapshot.historyNextSkip);
     setWorktree(snapshot.worktree);
     setSelectedCommitHash("");
     if (options.clearTabs) {
       clearWorktreeEditorTabs();
     }
-    if (options.cached === "stale") {
+    if (options.cached) {
       rememberStatus(`已恢复 ${project.name} 的最近状态，正在后台刷新...`);
-    } else if (options.cached === "fresh") {
-      rememberStatus(`已恢复 ${project.name} 的最近状态。`);
     }
   }
 
-  function readProjectDataCache(projectId: string, filter: GitHistoryFilter) {
-    return projectDataCacheRef.current.get(projectCacheKey(projectId, filter));
-  }
+  function readFreshProjectDataCache(projectId: string, filter: GitHistoryFilter) {
+    const snapshot = projectDataCacheRef.current.get(projectCacheKey(projectId, filter));
+    if (!snapshot || Date.now() - snapshot.loadedAt > PROJECT_DATA_CACHE_TTL_MS) {
+      return undefined;
+    }
 
-  function isProjectDataCacheFresh(project: GitProject, snapshot: ProjectDataSnapshot) {
-    const ttl = project.remote ? REMOTE_PROJECT_DATA_CACHE_TTL_MS : PROJECT_DATA_CACHE_TTL_MS;
-    return Date.now() - snapshot.loadedAt <= ttl;
+    return snapshot;
   }
 
   function writeProjectDataCache(project: GitProject, filter: GitHistoryFilter, snapshot: Omit<ProjectDataSnapshot, "loadedAt">) {
@@ -292,13 +361,13 @@ export function App() {
     });
   }
 
-  function readGraphHistoryCache(projectId: string, filter: GitHistoryFilter) {
-    return graphHistoryCacheRef.current.get(projectCacheKey(projectId, filter));
-  }
+  function readFreshGraphHistoryCache(projectId: string, filter: GitHistoryFilter) {
+    const snapshot = graphHistoryCacheRef.current.get(projectCacheKey(projectId, filter));
+    if (!snapshot || Date.now() - snapshot.loadedAt > GRAPH_HISTORY_CACHE_TTL_MS) {
+      return undefined;
+    }
 
-  function isGraphHistoryCacheFresh(project: GitProject, snapshot: GraphHistorySnapshot) {
-    const ttl = project.remote ? REMOTE_GRAPH_HISTORY_CACHE_TTL_MS : GRAPH_HISTORY_CACHE_TTL_MS;
-    return Date.now() - snapshot.loadedAt <= ttl;
+    return snapshot;
   }
 
   function writeGraphHistoryCache(project: GitProject, filter: GitHistoryFilter, snapshot: Omit<GraphHistorySnapshot, "loadedAt">) {
@@ -318,19 +387,6 @@ export function App() {
       if (key.startsWith(`${projectId}:`)) {
         graphHistoryCacheRef.current.delete(key);
       }
-    }
-  }
-
-  function updateCachedProjectChanges(projectId: string, status: GitProject["status"], worktreeState: WorktreeState) {
-    for (const [key, snapshot] of projectDataCacheRef.current.entries()) {
-      if (!key.startsWith(`${projectId}:`)) {
-        continue;
-      }
-      projectDataCacheRef.current.set(key, {
-        ...snapshot,
-        status: status ?? snapshot.status,
-        worktree: worktreeState
-      });
     }
   }
 
@@ -407,12 +463,57 @@ export function App() {
   );
 
   useEffect(() => {
+    const handleShortcut = (event: globalThis.KeyboardEvent) => {
+      if (event.defaultPrevented || event.repeat || isEditableShortcutTarget(event.target)) {
+        return;
+      }
+
+      const command = Object.entries(uiPreferences.shortcuts).find(([, shortcut]) => matchesShortcut(event, shortcut))?.[0];
+      if (!command) {
+        return;
+      }
+
+      event.preventDefault();
+      if (command === "project.search") {
+        if (leftCollapsed) {
+          setLeftCollapsed(false);
+          window.requestAnimationFrame(() => document.querySelector<HTMLInputElement>(".project-rail-search input")?.focus());
+        } else {
+          document.querySelector<HTMLInputElement>(".project-rail-search input")?.focus();
+        }
+        return;
+      }
+      if (command === "repository.center") {
+        setRepositoryCenterInitialTab(selectedProject ? "recovery" : "projects");
+        setRepositoryCenterOpen(true);
+        return;
+      }
+      if (command === "terminal.toggle") {
+        setConsoleVisibility(!consoleOpen);
+        return;
+      }
+      if (!selectedProject || !selectedProjectGitReady) {
+        notifyInfo("请先选择可用的 Git 仓库");
+        return;
+      }
+      if (command === "git.fetch" || command === "git.pull" || command === "git.push") {
+        void runRemoteOperation(command.slice(4) as "fetch" | "pull" | "push", selectedProject);
+      }
+    };
+
+    window.addEventListener("keydown", handleShortcut);
+    return () => window.removeEventListener("keydown", handleShortcut);
+  }, [consoleOpen, leftCollapsed, selectedProject?.id, selectedProjectGitReady, uiPreferences.pullStrategy, uiPreferences.shortcuts]);
+
+  useEffect(() => {
     window.clearTimeout(selectedProjectLoadTimerRef.current);
     const requestId = nextProjectLoadRequestId();
     const nextHistoryFilter = defaultGraphHistoryFilter();
 
     if (!selectedProject) {
       setGraphLoading(false);
+      setGraphHistoryHasMore(false);
+      setGraphHistoryNextSkip(0);
       return;
     }
 
@@ -420,6 +521,8 @@ export function App() {
       setGraphLoading(false);
       setCommits([]);
       setGraphHistoryRefs([]);
+      setGraphHistoryHasMore(false);
+      setGraphHistoryNextSkip(0);
       setSelectedCommitHash("");
       setWorktree(emptyWorktree);
       clearWorktreeEditorTabs();
@@ -427,41 +530,21 @@ export function App() {
     }
 
     setGraphHistoryFilter(nextHistoryFilter);
-    setSelectedCommitHash("");
-
-    const cachedSnapshot = readProjectDataCache(selectedProject.id, nextHistoryFilter);
-    const cacheIsFresh = cachedSnapshot ? isProjectDataCacheFresh(selectedProject, cachedSnapshot) : false;
-    if (cachedSnapshot) {
-      applyProjectDataSnapshot(selectedProject, cachedSnapshot, {
-        clearTabs: true,
-        cached: cacheIsFresh ? "fresh" : "stale"
-      });
-      setGraphLoading(false);
-    } else {
-      setCommits([]);
-      setGraphHistoryRefs([]);
-      setWorktree(emptyWorktree);
-      clearWorktreeEditorTabs();
-    }
-
-    if (cacheIsFresh) {
-      return;
-    }
+    setGraphHistoryQuery({});
+    setGraphHistoryRefs([]);
 
     selectedProjectLoadTimerRef.current = window.setTimeout(() => {
       if (projectLoadRequestRef.current !== requestId) {
         return;
       }
 
+      const cachedSnapshot = readFreshProjectDataCache(selectedProject.id, nextHistoryFilter);
       if (!cachedSnapshot) {
         setGraphLoading(true);
+        setCommits([]);
       }
-      void loadProjectData(selectedProject, requestId, nextHistoryFilter, {
-        preferCache: true,
-        clearTabs: !cachedSnapshot,
-        background: Boolean(cachedSnapshot),
-        preserveOnError: Boolean(cachedSnapshot)
-      });
+      setSelectedCommitHash("");
+      void loadProjectData(selectedProject, requestId, nextHistoryFilter, { preferCache: true, clearTabs: true, historyQuery: {} });
     }, PROJECT_SELECTION_LOAD_DELAY_MS);
 
     return () => window.clearTimeout(selectedProjectLoadTimerRef.current);
@@ -486,9 +569,10 @@ export function App() {
       }
     };
 
+    const refreshInterval = selectedProject.remote ? REMOTE_PROJECT_REFRESH_INTERVAL_MS : SELECTED_PROJECT_REFRESH_INTERVAL_MS;
     const intervalId = window.setInterval(() => {
       void refresh();
-    }, SELECTED_PROJECT_REFRESH_INTERVAL_MS);
+    }, refreshInterval);
     const onFocus = () => void refresh();
     const onVisibilityChange = () => {
       if (!document.hidden) {
@@ -507,7 +591,7 @@ export function App() {
   }, [selectedProject?.id, selectedProject?.path, selectedProjectGitReady]);
 
   useEffect(() => {
-    if (gitDependency.status !== "ready" && !projectsRef.current.some((project) => project.remote)) {
+    if (gitDependency.status !== "ready") {
       return;
     }
 
@@ -531,14 +615,41 @@ export function App() {
     };
   }, [gitDependency.status, projects.some((project) => Boolean(project.remote))]);
 
+  useEffect(() => {
+    if (!projects.some((project) => Boolean(project.remote))) {
+      return;
+    }
+
+    let disposed = false;
+    const refresh = () => {
+      if (!document.hidden) {
+        void refreshProjectListStatuses(undefined, () => disposed, "remote");
+      }
+    };
+    const initialTimerId = window.setTimeout(refresh, REMOTE_PROJECT_LIST_INITIAL_DELAY_MS);
+    const intervalId = window.setInterval(refresh, REMOTE_PROJECT_LIST_REFRESH_INTERVAL_MS);
+    return () => {
+      disposed = true;
+      window.clearTimeout(initialTimerId);
+      window.clearInterval(intervalId);
+    };
+  }, [projects.some((project) => Boolean(project.remote))]);
+
   async function loadInitialData() {
     try {
-      const [projectList, versionResult] = await Promise.all([apiClient.getProjects(), apiClient.getGitVersion()]);
+      const [projectList, versionResult, preferences, library] = await Promise.all([
+        apiClient.getProjects(),
+        apiClient.getGitVersion(),
+        window.gitUI ? apiClient.getUiPreferences() : Promise.resolve(defaultUiPreferences()),
+        apiClient.getProjectLibrary()
+      ]);
       const orderedProjects = orderProjectsWithPinnedFirst(projectList);
       setProjects(orderedProjects);
       selectProject(orderedProjects[0]?.id ?? null);
+      applyUiPreferences(preferences);
+      setProjectLibrary(library);
       applyGitVersionResult(versionResult);
-      const refreshableProjects = versionResult.ok ? orderedProjects : orderedProjects.filter((project) => project.remote);
+      const refreshableProjects = versionResult.ok ? orderedProjects.filter((project) => !project.remote) : [];
       if (refreshableProjects.length > 0) {
         void refreshProjectListStatuses(refreshableProjects);
       }
@@ -618,27 +729,30 @@ export function App() {
     project: GitProject,
     requestId = nextProjectLoadRequestId(),
     historyFilter = graphHistoryFilter,
-    options: {
-      preferCache?: boolean;
-      clearTabs?: boolean;
-      background?: boolean;
-      preserveOnError?: boolean;
-    } = {}
+    options: { preferCache?: boolean; clearTabs?: boolean; historyQuery?: AdvancedHistoryQuery } = {}
   ) {
+    let statusReadSucceeded = false;
     try {
+      const advancedQuery = options.historyQuery ?? graphHistoryQuery;
+      const cacheAllowed = !hasAdvancedHistoryQuery(advancedQuery);
       if (!options.preferCache) {
         invalidateProjectCaches(project.id);
       }
 
       if (isCurrentProjectLoad(requestId)) {
-        if (!options.background) {
-          rememberStatus(`正在加载 ${project.name} 的 Git 状态...`);
+        if (options.preferCache && cacheAllowed) {
+          const cachedSnapshot = readFreshProjectDataCache(project.id, historyFilter);
+          if (cachedSnapshot) {
+            applyProjectDataSnapshot(project, cachedSnapshot, { clearTabs: options.clearTabs, cached: true });
+          }
         }
+
+        rememberStatus(`正在加载 ${project.name} 的 Git 状态...`);
       }
 
-      const [status, history, historyRefs, worktreeState] = await Promise.all([
+      const [statusResult, historyPageResult, historyRefsResult, worktreeResult] = await Promise.allSettled([
         apiClient.getProjectStatus(project),
-        apiClient.getHistory(project, historyFilter),
+        apiClient.getHistoryPage(project, { filter: historyFilter, ...advancedQuery, skip: 0, limit: HISTORY_PAGE_SIZE }),
         apiClient.getHistoryRefs(project),
         apiClient.getWorktree(project)
       ]);
@@ -647,12 +761,47 @@ export function App() {
         return;
       }
 
-      applyProjectStatus(project.id, status);
-      writeProjectDataCache(project, historyFilter, { status, history, historyRefs, worktree: worktreeState });
-      writeGraphHistoryCache(project, historyFilter, { history, historyRefs });
+      if (statusResult.status === "rejected") {
+        throw statusResult.reason;
+      }
+      statusReadSucceeded = true;
+      applyProjectStatus(project.id, statusResult.value);
+      if (historyPageResult.status === "rejected") {
+        throw historyPageResult.reason;
+      }
+      if (historyRefsResult.status === "rejected") {
+        throw historyRefsResult.reason;
+      }
+      if (worktreeResult.status === "rejected") {
+        throw worktreeResult.reason;
+      }
+
+      const status = statusResult.value;
+      const historyPage = historyPageResult.value;
+      const historyRefs = historyRefsResult.value;
+      const worktreeState = worktreeResult.value;
+      const history = historyPage.commits;
+      if (cacheAllowed) {
+        writeProjectDataCache(project, historyFilter, {
+          status,
+          history,
+          historyRefs,
+          worktree: worktreeState,
+          historyHasMore: historyPage.hasMore,
+          historyNextSkip: historyPage.nextSkip
+        });
+        writeGraphHistoryCache(project, historyFilter, {
+          history,
+          historyRefs,
+          historyHasMore: historyPage.hasMore,
+          historyNextSkip: historyPage.nextSkip
+        });
+      }
 
       setCommits(history);
       setGraphHistoryRefs(historyRefs);
+      setGraphHistoryHasMore(historyPage.hasMore);
+      setGraphHistoryNextSkip(historyPage.nextSkip);
       setWorktree(worktreeState);
       if (options.clearTabs ?? true) {
         clearWorktreeEditorTabs();
@@ -664,12 +813,15 @@ export function App() {
         return;
       }
 
-      if (!options.preserveOnError) {
-        setCommits([]);
-        setGraphHistoryRefs([]);
-        setWorktree(emptyWorktree);
-        clearWorktreeEditorTabs();
+      if (!statusReadSucceeded) {
+        markProjectStatusUnavailable(project.id, error);
       }
+      setCommits([]);
+      setGraphHistoryRefs([]);
+      setGraphHistoryHasMore(false);
+      setGraphHistoryNextSkip(0);
+      setWorktree(emptyWorktree);
+      clearWorktreeEditorTabs();
       notifyError(error instanceof Error ? error.message : "加载项目失败");
     } finally {
       if (isCurrentProjectLoad(requestId)) {
@@ -699,37 +851,58 @@ export function App() {
     const requestId = nextProjectLoadRequestId();
     setGraphHistoryFilter(filter);
     setSelectedCommitHash("");
-    const cachedHistory = readGraphHistoryCache(selectedProject.id, filter);
-    const cacheIsFresh = cachedHistory ? isGraphHistoryCacheFresh(selectedProject, cachedHistory) : false;
+    setGraphLoading(true);
+    setGraphHistoryLoadingMore(false);
+    const cacheAllowed = !hasAdvancedHistoryQuery(graphHistoryQuery);
+    const cachedHistory = cacheAllowed ? readFreshGraphHistoryCache(selectedProject.id, filter) : undefined;
     if (cachedHistory) {
       setCommits(cachedHistory.history);
       setGraphHistoryRefs(cachedHistory.historyRefs);
-      setGraphLoading(false);
-      rememberStatus(cacheIsFresh ? "已恢复最近一次图表结果。" : "已恢复最近一次图表结果，正在后台刷新...");
+      setGraphHistoryHasMore(cachedHistory.historyHasMore);
+      setGraphHistoryNextSkip(cachedHistory.historyNextSkip);
+      rememberStatus("已恢复最近一次图表结果，正在后台刷新...");
     } else {
-      setGraphLoading(true);
+      setCommits([]);
+      setGraphHistoryRefs([]);
+      setGraphHistoryHasMore(false);
+      setGraphHistoryNextSkip(0);
       rememberStatus("正在按新的图表引用加载提交...");
     }
 
-    if (cacheIsFresh) {
-      return;
-    }
-
     try {
-      const [history, historyRefs] = await Promise.all([apiClient.getHistory(selectedProject, filter), apiClient.getHistoryRefs(selectedProject)]);
+      const [historyPage, historyRefs] = await Promise.all([
+        apiClient.getHistoryPage(selectedProject, { filter, ...graphHistoryQuery, skip: 0, limit: HISTORY_PAGE_SIZE }),
+        apiClient.getHistoryRefs(selectedProject)
+      ]);
       if (!isCurrentProjectLoad(requestId)) {
         return;
       }
 
+      const history = historyPage.commits;
       setCommits(history);
       setGraphHistoryRefs(historyRefs);
-      writeGraphHistoryCache(selectedProject, filter, { history, historyRefs });
+      setGraphHistoryHasMore(historyPage.hasMore);
+      setGraphHistoryNextSkip(historyPage.nextSkip);
+      if (cacheAllowed) {
+        writeGraphHistoryCache(selectedProject, filter, {
+          history,
+          historyRefs,
+          historyHasMore: historyPage.hasMore,
+          historyNextSkip: historyPage.nextSkip
+        });
+      }
       rememberStatus(history.length > 0 ? `已加载 ${history.length} 条提交。` : "当前引用范围没有可显示的提交。");
     } catch (error) {
       if (!isCurrentProjectLoad(requestId)) {
         return;
       }
 
+      if (!cachedHistory) {
+        setCommits([]);
+        setGraphHistoryRefs([]);
+        setGraphHistoryHasMore(false);
+        setGraphHistoryNextSkip(0);
+      }
       notifyError(error instanceof Error ? error.message : "无法加载图表引用。");
     } finally {
       if (isCurrentProjectLoad(requestId)) {
@@ -739,64 +912,82 @@ export function App() {
   }
 
   async function refreshProjectChanges(project: GitProject) {
-    try {
-      const [status, worktreeState] = await Promise.all([apiClient.getProjectStatus(project), apiClient.getWorktree(project)]);
+    const [statusResult, worktreeResult] = await Promise.allSettled([
+      apiClient.getProjectStatus(project),
+      apiClient.getWorktree(project)
+    ]);
+    if (selectedProjectIdRef.current !== project.id) {
+      return;
+    }
 
-      if (selectedProjectIdRef.current !== project.id) {
-        return;
-      }
+    const refreshErrors: string[] = [];
+    if (statusResult.status === "fulfilled") {
+      applyProjectStatus(project.id, statusResult.value);
+    } else {
+      markProjectStatusUnavailable(project.id, statusResult.reason);
+      refreshErrors.push(`仓库状态：${errorText(statusResult.reason, "读取失败")}`);
+    }
 
-      updateCachedProjectChanges(project.id, status, worktreeState);
+    if (worktreeResult.status === "fulfilled") {
+      setWorktree((current) => (worktreeSignature(current) === worktreeSignature(worktreeResult.value) ? current : worktreeResult.value));
+    } else {
+      setWorktree(emptyWorktree);
+      refreshErrors.push(`工作区：${errorText(worktreeResult.reason, "读取失败")}`);
+    }
 
-      if (status) {
-        setProjects((current) => {
-          let changed = false;
-          const nextProjects = current.map((item) => {
-            if (item.id !== project.id) {
-              return item;
-            }
-
-            if (statusSignature(item.status) === statusSignature(status)) {
-              return item;
-            }
-
-            changed = true;
-            return { ...item, status };
-          });
-
-          return changed ? nextProjects : current;
-        });
-      }
-
-      setWorktree((current) => (worktreeSignature(current) === worktreeSignature(worktreeState) ? current : worktreeState));
-    } catch {
-      // Background refresh should not replace the user's current status message.
+    const refreshToastId = `project-refresh:${project.id}`;
+    if (refreshErrors.length > 0) {
+      notifyError("项目后台刷新失败", refreshErrors.join("\n"), refreshToastId);
+    } else {
+      toast.dismiss(refreshToastId);
     }
   }
 
   async function reloadProjectWorktree(project: GitProject): Promise<WorktreeState> {
-    const [status, worktreeState] = await Promise.all([apiClient.getProjectStatus(project), apiClient.getWorktree(project)]);
+    const [statusResult, worktreeResult] = await Promise.allSettled([
+      apiClient.getProjectStatus(project),
+      apiClient.getWorktree(project)
+    ]);
     if (selectedProjectIdRef.current !== project.id) {
       throw new Error("当前项目已切换，已取消刷新。");
     }
 
     invalidateProjectCaches(project.id);
-    applyProjectStatus(project.id, status);
-    setWorktree(worktreeState);
-    return worktreeState;
+    if (statusResult.status === "rejected") {
+      markProjectStatusUnavailable(project.id, statusResult.reason);
+      setWorktree(emptyWorktree);
+      throw statusResult.reason;
+    }
+    applyProjectStatus(project.id, statusResult.value);
+    if (worktreeResult.status === "rejected") {
+      setWorktree(emptyWorktree);
+      throw worktreeResult.reason;
+    }
+    setWorktree(worktreeResult.value);
+    return worktreeResult.value;
   }
 
-  async function refreshProjectListStatuses(projectSnapshot = projectsRef.current, isDisposed: () => boolean = () => false) {
-    projectSnapshot = projectSnapshot.filter((project) => gitDependency.status === "ready" || project.remote);
-    if (isDisposed() || projectListRefreshBusyRef.current || projectSnapshot.length === 0) {
+  async function refreshProjectListStatuses(
+    projectSnapshot = projectsRef.current,
+    isDisposed: () => boolean = () => false,
+    mode: "local" | "remote" = "local"
+  ) {
+    const remoteMode = mode === "remote";
+    projectSnapshot = projectSnapshot.filter((project) => remoteMode
+      ? Boolean(project.remote) && project.id !== selectedProjectIdRef.current
+      : !project.remote && gitDependency.status === "ready");
+    const busyRef = remoteMode ? remoteProjectListRefreshBusyRef : projectListRefreshBusyRef;
+    if (isDisposed() || busyRef.current || projectSnapshot.length === 0) {
       return;
     }
 
-    projectListRefreshBusyRef.current = true;
-    const statusUpdates = new Map<string, GitProject["status"]>();
+    busyRef.current = true;
+    const statusUpdates = new Map<string, GitStatusSummary>();
+    const statusErrors = new Map<string, string>();
+    const batchSize = remoteMode ? 1 : PROJECT_LIST_STATUS_BATCH_SIZE;
     try {
-      for (let index = 0; index < projectSnapshot.length && !isDisposed(); index += PROJECT_LIST_STATUS_BATCH_SIZE) {
-        const batch = projectSnapshot.slice(index, index + PROJECT_LIST_STATUS_BATCH_SIZE);
+      for (let index = 0; index < projectSnapshot.length && !isDisposed(); index += batchSize) {
+        const batch = projectSnapshot.slice(index, index + batchSize);
         const results = await Promise.allSettled(
           batch.map(async (project): Promise<ProjectStatusRefresh> => ({
             projectId: project.id,
@@ -804,14 +995,18 @@ export function App() {
           }))
         );
 
-        for (const result of results) {
-          if (result.status === "fulfilled" && result.value.status) {
+        for (let resultIndex = 0; resultIndex < results.length; resultIndex += 1) {
+          const result = results[resultIndex];
+          const project = batch[resultIndex];
+          if (result.status === "fulfilled") {
             statusUpdates.set(result.value.projectId, result.value.status);
+          } else {
+            statusErrors.set(project.id, errorText(result.reason, "无法读取仓库状态"));
           }
         }
       }
 
-      if (isDisposed() || statusUpdates.size === 0) {
+      if (isDisposed() || (statusUpdates.size === 0 && statusErrors.size === 0)) {
         return;
       }
 
@@ -819,19 +1014,114 @@ export function App() {
         let changed = false;
         const nextProjects = current.map((project) => {
           const nextStatus = statusUpdates.get(project.id);
-          if (!nextStatus || statusSignature(project.status) === statusSignature(nextStatus)) {
+          const statusError = statusErrors.get(project.id);
+          if (statusError) {
+            if (!project.status && project.statusError === statusError) {
+              return project;
+            }
+
+            changed = true;
+            return { ...project, status: undefined, statusError };
+          }
+
+          if (!nextStatus || (statusSignature(project.status) === statusSignature(nextStatus) && !project.statusError)) {
             return project;
           }
 
           changed = true;
-          return { ...project, status: nextStatus };
+          return { ...project, status: nextStatus, statusError: undefined };
         });
 
         return changed ? nextProjects : current;
       });
     } finally {
-      projectListRefreshBusyRef.current = false;
+      busyRef.current = false;
     }
+  }
+
+  async function handleAdvancedHistoryQueryChange(query: AdvancedHistoryQuery) {
+    setGraphHistoryQuery(query);
+    setSelectedCommitHash("");
+    setCommits([]);
+    setGraphHistoryHasMore(false);
+    setGraphHistoryNextSkip(0);
+    setGraphHistoryLoadingMore(false);
+    if (!selectedProject) {
+      return;
+    }
+
+    const requestId = nextProjectLoadRequestId();
+    setGraphLoading(true);
+    rememberStatus("正在按高级条件查询提交历史...");
+    try {
+      const historyPage = await apiClient.getHistoryPage(selectedProject, {
+        filter: graphHistoryFilter,
+        ...query,
+        skip: 0,
+        limit: HISTORY_PAGE_SIZE
+      });
+      if (!isCurrentProjectLoad(requestId)) {
+        return;
+      }
+      setCommits(historyPage.commits);
+      setGraphHistoryHasMore(historyPage.hasMore);
+      setGraphHistoryNextSkip(historyPage.nextSkip);
+      rememberStatus(historyPage.commits.length > 0 ? `已找到 ${historyPage.commits.length} 条提交。` : "没有符合条件的提交。");
+    } catch (error) {
+      if (isCurrentProjectLoad(requestId)) {
+        notifyError(error instanceof Error ? error.message : "高级历史查询失败");
+      }
+    } finally {
+      if (isCurrentProjectLoad(requestId)) {
+        setGraphLoading(false);
+      }
+    }
+  }
+
+  async function handleLoadMoreHistory() {
+    if (!selectedProject || !graphHistoryHasMore || graphHistoryLoadingMore) {
+      return;
+    }
+    const requestId = projectLoadRequestRef.current;
+    const projectId = selectedProject.id;
+    const expectedSkip = graphHistoryNextSkip;
+    setGraphHistoryLoadingMore(true);
+    try {
+      const historyPage = await apiClient.getHistoryPage(selectedProject, {
+        filter: graphHistoryFilter,
+        ...graphHistoryQuery,
+        skip: expectedSkip,
+        limit: HISTORY_PAGE_SIZE
+      });
+      if (!isCurrentProjectLoad(requestId) || selectedProjectIdRef.current !== projectId) {
+        return;
+      }
+      setCommits((current) => {
+        const knownHashes = new Set(current.map((commit) => commit.hash));
+        return [...current, ...historyPage.commits.filter((commit) => !knownHashes.has(commit.hash))];
+      });
+      setGraphHistoryHasMore(historyPage.hasMore);
+      setGraphHistoryNextSkip(historyPage.nextSkip);
+      rememberStatus(`已继续加载 ${historyPage.commits.length} 条提交。`);
+    } catch (error) {
+      if (isCurrentProjectLoad(requestId) && selectedProjectIdRef.current === projectId) {
+        notifyError(error instanceof Error ? error.message : "无法继续加载提交历史");
+      }
+    } finally {
+      if (isCurrentProjectLoad(requestId) && selectedProjectIdRef.current === projectId) {
+        setGraphHistoryLoadingMore(false);
+      }
+    }
+  }
+
+  function applyUiPreferences(preferences: UiPreferences) {
+    setUiPreferences(preferences);
+    applyThemeMode(preferences.theme);
+    setSidebarWidth(preferences.sidebarWidth);
+    setDetailWidth(preferences.rightPanelWidth);
+    setConsoleHeight(preferences.consoleHeight);
+    setConsoleOpen(preferences.bottomConsoleVisible);
+    restoreConsoleHeightRef.current = preferences.consoleHeight;
   }
 
   async function handleSelectCommitFile(commit: CommitNode, file: ChangedFile) {
@@ -995,9 +1285,13 @@ export function App() {
         return true;
       }
 
-      const status = await apiClient.getProjectStatus(selectedProject).catch(() => undefined);
-      if (status?.operationState === "merge" && !status.hasConflicts) {
-        notifyInfo("所有冲突文件已解决", "检查暂存结果后可以继续合并。");
+      try {
+        const status = await apiClient.getProjectStatus(selectedProject);
+        if (status?.operationState === "merge" && !status.hasConflicts) {
+          notifyInfo("所有冲突文件已解决", "检查暂存结果后可以继续合并。");
+        }
+      } catch (error) {
+        notifyError(errorText(error, "冲突已解决，但无法读取最新合并状态。"));
       }
       return true;
     } catch (error) {
@@ -1169,7 +1463,9 @@ export function App() {
 
     const confirmed = await requestConfirm({
       title: "移除项目记录",
-      description: "只会从项目列表移除，不会删除本地文件。",
+      description: project.remote
+        ? "只会移除连接记录，不会删除服务器上的仓库或文件。"
+        : "只会从项目列表移除，不会删除本地文件。",
       detail: project.name,
       confirmLabel: "移除",
       tone: "warning"
@@ -1238,10 +1534,10 @@ export function App() {
       return;
     }
 
-    const label = { fetch: "抓取", pull: "拉取", push: "推送" }[action];
+    const label = action === "pull" ? `拉取（${pullStrategyLabel(uiPreferences.pullStrategy)}）` : { fetch: "抓取", push: "推送" }[action];
     const toastId = notifyLoading(`正在${label}...`);
 
-    const result = await apiClient[action](project);
+    const result = action === "pull" ? await apiClient.pull(project, uiPreferences.pullStrategy) : await apiClient[action](project);
     if (!notifyGitResult(result, `${label}完成`, `${label}失败，请查看原始 Git 输出。`, toastId)) {
       return;
     }
@@ -1256,7 +1552,7 @@ export function App() {
 
     const toastId = notifyLoading("正在同步...");
 
-    const pullResult = await apiClient.pull(project);
+    const pullResult = await apiClient.pull(project, uiPreferences.pullStrategy);
     if (!pullResult.ok) {
       notifyGitResult(pullResult, "", "同步失败：拉取远程更改失败。", toastId);
       await loadProjectData(project);
@@ -1467,7 +1763,7 @@ export function App() {
       return;
     }
 
-    const confirmed = await requestConfirm({
+    const confirmed = await requestDestructiveConfirm({
       title: "终止合并",
       description: project.status.mergeSourceBranch
         ? `将取消当前 merge，恢复目标分支后切回 ${project.status.mergeSourceBranch}。`
@@ -1606,13 +1902,43 @@ export function App() {
     }
 
     const branches = (await apiClient.getBranches(project)).filter((branch) => branch.type === "local" && !branch.current);
-    const target = chooseBranch(branches, "输入要删除的本地分支序号或名称：");
-    if (!target) {
+    if (branches.length === 0) {
+      notifyInfo("没有可删除的本地分支");
+      return;
+    }
+
+    setBranchDialog({ mode: "delete", project, branches, query: "" });
+  }
+
+  async function handleOpenWorktreeFile(tab: WorktreeEditorTab) {
+    if (!selectedProject || selectedProject.remote || !window.gitUI) {
+      return;
+    }
+    try {
+      await apiClient.openPath(absoluteFilePath(selectedProject.path, tab.file.path));
+    } catch (error) {
+      notifyError(errorText(error, "无法使用系统默认应用打开文件。"));
+    }
+  }
+
+  async function handleRevealWorktreeFile(tab: WorktreeEditorTab) {
+    if (!selectedProject || selectedProject.remote || !window.gitUI) {
+      return;
+    }
+    try {
+      await apiClient.revealPath(absoluteFilePath(selectedProject.path, tab.file.path));
+    } catch (error) {
+      notifyError(errorText(error, "无法在文件资源管理器中定位文件。"));
+    }
+  }
+
+  async function submitDeleteBranch(target: BranchInfo) {
+    if (!branchDialog || branchDialog.mode !== "delete") {
       return;
     }
 
     if (
-      !(await requestConfirm({
+      !(await requestDestructiveConfirm({
         title: "删除本地分支",
         description: "只会删除本地分支，不会删除远程分支。",
         detail: target.name,
@@ -1623,13 +1949,20 @@ export function App() {
       return;
     }
 
+    setBranchDialogBusy(true);
     const toastId = notifyLoading(`正在删除分支 ${target.name}...`);
-    const result = await apiClient.deleteBranch(project, target.name);
-    if (!notifyGitResult(result, `已删除本地分支：${target.name}`, "删除分支失败，请查看原始 Git 输出。", toastId)) {
-      return;
-    }
+    try {
+      const result = await apiClient.deleteBranch(branchDialog.project, target.name, false);
+      if (!notifyGitResult(result, `已删除本地分支：${target.name}`, "删除分支失败，请查看原始 Git 输出。", toastId)) {
+        return;
+      }
 
-    await loadProjectData(project);
+      const project = branchDialog.project;
+      setBranchDialog(null);
+      await loadProjectData(project);
+    } finally {
+      setBranchDialogBusy(false);
+    }
   }
 
   function openAmendLastCommitDialog() {
@@ -1642,9 +1975,9 @@ export function App() {
       return;
     }
 
-    const commit = commits[0];
+    const commit = findCurrentHeadCommit(commits);
     if (!commit) {
-      notifyInfo("当前仓库还没有可修改的提交");
+      notifyInfo("当前图表未能精确认定 HEAD，请切换到包含当前提交的引用范围后重试");
       return;
     }
 
@@ -1674,8 +2007,14 @@ export function App() {
     }
 
     const project = commitMessageDialog.project;
+    const currentHeadCommit = findCurrentHeadCommit(commits);
+    if (selectedProject?.id !== project.id || currentHeadCommit?.hash !== commitMessageDialog.commit.hash) {
+      notifyInfo("当前 HEAD 已变化或不在图表范围内，请刷新后重试");
+      return;
+    }
+
     if (isCommitHistoryPublished(project)) {
-      const confirmed = await requestConfirm({
+      const confirmed = await requestDestructiveConfirm({
         title: "修改已发布提交",
         description: "上次提交可能已经同步到远程，修改提交信息会改写历史。",
         confirmLabel: "继续修改",
@@ -1712,16 +2051,15 @@ export function App() {
       return;
     }
 
-    if (commits.length === 0) {
-      notifyInfo("当前仓库还没有可撤销的提交");
+    const commitToRestore = findCurrentHeadCommit(commits);
+    if (!commitToRestore) {
+      notifyInfo("当前图表未能精确认定 HEAD，请切换到包含当前提交的引用范围后重试");
       return;
     }
-
-    const commitToRestore = commits[0];
     const modeText = mode === "soft" ? "保留更改并保持暂存" : "保留更改但取消暂存";
     const publishedWarning = isCommitHistoryPublished(selectedProject) ? "\n\n注意：上次提交可能已经同步到远程，撤销会改写历史。" : "";
     if (
-      !(await requestConfirm({
+      !(await requestDestructiveConfirm({
         title: "撤销上次提交",
         description: `将撤销上次提交，并${modeText}。`,
         detail: publishedWarning.trim() || commitToRestore.subject,
@@ -1753,8 +2091,7 @@ export function App() {
   }
 
   function isCommitLocalOnly(project: GitProject, commit: CommitNode): boolean {
-    const commitIndex = commits.findIndex((item) => item.hash === commit.hash);
-    if (commitIndex < 0) {
+    if (!project.status || !isCurrentHeadCommit(commit)) {
       return false;
     }
 
@@ -1762,16 +2099,11 @@ export function App() {
       return true;
     }
 
-    return commitIndex < (project.status.ahead ?? 0);
+    return (project.status.ahead ?? 0) > 0;
   }
 
-  function isCurrentHeadCommit(project: GitProject, commit: CommitNode): boolean {
-    const currentBranch = project.status?.currentBranch;
-    if (currentBranch) {
-      return commit.refs.some((ref) => ref.type === "localBranch" && ref.name === currentBranch);
-    }
-
-    return commit.hash === commits[0]?.hash;
+  function isCurrentHeadCommit(commit: CommitNode): boolean {
+    return commit.refs.some((ref) => ref.type === "head");
   }
 
   function restoreCommitMessageDraft(commit: CommitNode) {
@@ -1811,8 +2143,9 @@ export function App() {
     }
 
     if (action === "amendMessage") {
-      if (commit.hash !== commits[0]?.hash) {
-        notifyInfo("当前仅支持直接修改最新提交的信息");
+      const currentHeadCommit = findCurrentHeadCommit(commits);
+      if (currentHeadCommit?.hash !== commit.hash) {
+        notifyInfo("当前仅支持修改由 HEAD 精确认定的提交信息");
         return;
       }
 
@@ -1882,12 +2215,15 @@ export function App() {
   }
 
   async function runResetToCommit(project: GitProject, commit: CommitNode, mode: GitResetMode) {
-    const undoHead = isCurrentHeadCommit(project, commit);
-    const resetTarget = undoHead ? commit.parents[0] : commit.hash;
-    if (!resetTarget) {
-      notifyInfo("根提交没有父提交，暂不支持从这里撤销");
+    const currentHeadCommit = findCurrentHeadCommit(commits);
+    if (!currentHeadCommit || !commits.some((item) => item.hash === commit.hash)) {
+      notifyInfo("当前图表未能精确认定 HEAD，无法执行 reset");
       return;
     }
+
+    const undoHead = currentHeadCommit.hash === commit.hash;
+    const undoRootCommit = undoHead && commit.parents.length === 0;
+    const resetTarget = undoHead ? commit.parents[0] : commit.hash;
 
     const modeText =
       mode === "soft"
@@ -1900,7 +2236,7 @@ export function App() {
     const publishedWarning = isCommitHistoryPublished(project) ? "\n\n注意：当前分支可能已经同步到远程，reset 会改写历史。" : "";
     const confirmTitle = undoHead ? `撤销提交 ${commit.shortHash}，并${modeText}？` : `将当前分支重置到 ${commit.shortHash}，并${modeText}？`;
     if (
-      !(await requestConfirm({
+      !(await requestDestructiveConfirm({
         title: confirmTitle,
         description: "reset 会移动当前分支指针，请确认目标提交正确。",
         detail: `${publishedWarning.trim() ? `${publishedWarning.trim()}\n\n` : ""}${commit.subject}`,
@@ -1912,7 +2248,7 @@ export function App() {
     }
 
     if (mode === "hard") {
-      const confirmed = await requestConfirm({
+      const confirmed = await requestDestructiveConfirm({
         title: "确认 reset --hard",
         description: "该操作会丢弃目标提交之后的改动和当前工作区未提交内容，无法从工作区恢复。",
         confirmLabel: "确认丢弃",
@@ -1926,7 +2262,13 @@ export function App() {
     const toastId = notifyLoading("正在重置分支...");
     let result: GitOperationResult;
     try {
-      result = await withTimeout(apiClient.resetToCommit(project, resetTarget, mode), RESET_OPERATION_TIMEOUT_MS, "重置分支超时，请确认仓库未被其它 Git 进程锁定后重试");
+      result = await withTimeout(
+        undoRootCommit
+          ? apiClient.resetLastCommit(project, mode)
+          : apiClient.resetToCommit(project, resetTarget!, mode),
+        RESET_OPERATION_TIMEOUT_MS,
+        "重置分支超时，请确认仓库未被其它 Git 进程锁定后重试"
+      );
     } catch (error) {
       notifyError(error instanceof Error ? error.message : "重置分支失败", undefined, toastId);
       await loadProjectData(project);
@@ -1961,7 +2303,7 @@ export function App() {
       return;
     }
 
-    const result = await apiClient.stageFile(selectedProject, file.path);
+    const result = await apiClient.stageFile(selectedProject, file);
     notifyGitResult(result, `已暂存：${file.path}`, "暂存失败");
     clearWorktreeEditorTabs();
     await loadProjectData(selectedProject);
@@ -1991,7 +2333,7 @@ export function App() {
       return;
     }
 
-    const result = await apiClient.unstageFile(selectedProject, file.path);
+    const result = await apiClient.unstageFile(selectedProject, file);
     notifyGitResult(result, `已取消暂存：${file.path}`, "取消暂存失败");
     clearWorktreeEditorTabs();
     await loadProjectData(selectedProject);
@@ -2021,7 +2363,7 @@ export function App() {
       return;
     }
 
-    const confirmed = await requestConfirm({
+    const confirmed = await requestDestructiveConfirm({
       title: "放弃文件更改",
       description: "该操作无法从 Git 恢复未提交内容。",
       detail: file.path,
@@ -2048,7 +2390,7 @@ export function App() {
     }
 
     const count = worktree.unstagedFiles.length;
-    const confirmed = await requestConfirm({
+    const confirmed = await requestDestructiveConfirm({
       title: "放弃所有未暂存更改",
       description: "该操作无法从 Git 恢复未提交内容。",
       detail: `${count} 个文件`,
@@ -2091,7 +2433,12 @@ export function App() {
     }
 
     if (input.amend) {
-      const confirmed = await requestConfirm({
+      if (!findCurrentHeadCommit(commits)) {
+        notifyInfo("当前图表未能精确认定 HEAD，无法执行 amend");
+        return false;
+      }
+
+      const confirmed = await requestDestructiveConfirm({
         title: "修改上一次提交",
         description: "amend 会改写上一次提交。",
         confirmLabel: "继续提交",
@@ -2145,14 +2492,38 @@ export function App() {
     return true;
   }
 
-  function handleThemeModeChange(mode: ThemeMode) {
+  function applyThemeMode(mode: ThemeMode) {
     window.localStorage.setItem("git-ui-pro-theme", mode);
     setThemeModeState(mode);
     setResolvedTheme(resolveTheme(mode));
   }
 
   function toggleThemeMode() {
-    handleThemeModeChange(resolvedTheme === "dark" ? "light" : "dark");
+    const nextTheme = resolvedTheme === "dark" ? "light" : "dark";
+    const previousTheme = uiPreferences.theme;
+    applyThemeMode(nextTheme);
+    persistUiPreferences({ theme: nextTheme }, () => applyThemeMode(previousTheme));
+  }
+
+  function setConsoleVisibility(visible: boolean) {
+    const previousVisible = consoleOpen;
+    setConsoleOpen(visible);
+    persistUiPreferences({ bottomConsoleVisible: visible }, () => setConsoleOpen(previousVisible));
+  }
+
+  function persistUiPreferences(update: Partial<UiPreferences>, rollback: () => void) {
+    const previousValues = Object.fromEntries(
+      Object.keys(update).map((key) => [key, uiPreferences[key as keyof UiPreferences]])
+    ) as Partial<UiPreferences>;
+    setUiPreferences((current) => ({ ...current, ...update }));
+    if (!window.gitUI) {
+      return;
+    }
+    void apiClient.updateUiPreferences(update).then(setUiPreferences).catch((error) => {
+      setUiPreferences((current) => ({ ...current, ...previousValues }));
+      rollback();
+      notifyError(error instanceof Error ? error.message : "无法保存界面偏好");
+    });
   }
 
   function runAppCommand(command: string) {
@@ -2166,7 +2537,7 @@ export function App() {
 
   function toggleConsoleMaximized() {
     if (!consoleOpen) {
-      setConsoleOpen(true);
+      setConsoleVisibility(true);
     }
 
     if (consoleMaximized) {
@@ -2184,11 +2555,18 @@ export function App() {
   function renderSidebarControls(collapsed: boolean) {
     const sidebarToggleLabel = collapsed ? "展开项目栏" : "收起项目栏";
     const themeToggleLabel = resolvedTheme === "dark" ? "切换浅色主题" : "切换深色主题";
+    const sidebarOnRight = uiPreferences.sidebarPosition === "right";
     return (
-      <div className={`sidebar-bottom-controls ${collapsed ? "collapsed" : ""}`} aria-label="左侧栏控制">
+      <div className={`sidebar-bottom-controls ${collapsed ? "collapsed" : ""}`} aria-label={`${sidebarOnRight ? "右" : "左"}侧栏控制`}>
         <PathTooltip content={sidebarToggleLabel} className="sidebar-control-tooltip">
           <button type="button" className="icon-button compact-icon" aria-label={sidebarToggleLabel} onClick={() => setLeftCollapsed(!collapsed)}>
-            {collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+            {collapsed ? (
+              sidebarOnRight ? <PanelRightOpen size={16} /> : <PanelLeftOpen size={16} />
+            ) : sidebarOnRight ? (
+              <PanelRightClose size={16} />
+            ) : (
+              <PanelLeftClose size={16} />
+            )}
           </button>
         </PathTooltip>
         <PathTooltip content={themeToggleLabel} className="sidebar-control-tooltip">
@@ -2209,14 +2587,20 @@ export function App() {
     const startDetailWidth = detailWidth;
     const startSourcePaneHeight = sourcePaneHeight;
     const startConsoleHeight = consoleHeight;
+    let finalSidebarWidth = startSidebarWidth;
+    let finalDetailWidth = startDetailWidth;
+    let finalConsoleHeight = startConsoleHeight;
 
     const onMove = (moveEvent: globalThis.MouseEvent) => {
       if (target === "sidebar") {
-        setSidebarWidth(clamp(startSidebarWidth + moveEvent.clientX - startX, 180, 340));
+        const delta = uiPreferences.sidebarPosition === "right" ? startX - moveEvent.clientX : moveEvent.clientX - startX;
+        finalSidebarWidth = clamp(startSidebarWidth + delta, 180, 420);
+        setSidebarWidth(finalSidebarWidth);
       }
 
       if (target === "detail") {
-        setDetailWidth(clamp(startDetailWidth + moveEvent.clientX - startX, 300, 520));
+        finalDetailWidth = clamp(startDetailWidth + moveEvent.clientX - startX, 280, 720);
+        setDetailWidth(finalDetailWidth);
       }
 
       if (target === "sourceSplit") {
@@ -2234,6 +2618,7 @@ export function App() {
         setConsoleMaximized(nextConsoleHeight >= maxConsoleHeight - 1);
         if (nextConsoleHeight < maxConsoleHeight - 1) {
           restoreConsoleHeightRef.current = nextConsoleHeight;
+          finalConsoleHeight = nextConsoleHeight;
         }
       }
     };
@@ -2241,6 +2626,17 @@ export function App() {
     const onUp = () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      if (!window.gitUI || target === "sourceSplit") {
+        return;
+      }
+      const update = target === "sidebar"
+        ? { sidebarWidth: finalSidebarWidth }
+        : target === "detail"
+          ? { rightPanelWidth: finalDetailWidth }
+          : { consoleHeight: finalConsoleHeight };
+      void apiClient.updateUiPreferences(update).then(setUiPreferences).catch((error) => {
+        notifyError(error instanceof Error ? error.message : "无法保存面板尺寸");
+      });
     };
 
     window.addEventListener("mousemove", onMove);
@@ -2251,7 +2647,9 @@ export function App() {
     "--sidebar-width": leftCollapsed ? "64px" : `${sidebarWidth}px`,
     "--detail-width": rightCollapsed ? "0px" : `${detailWidth}px`,
     "--scm-pane-height": `${sourcePaneHeight}px`,
-    "--console-height": `${consoleHeight}px`
+    "--console-height": `${consoleHeight}px`,
+    "--ui-font-size": `${uiPreferences.fontSize}px`,
+    "--app-font": uiPreferences.fontFamily === "monospace" ? "var(--mono-font)" : uiPreferences.fontFamily
   } as CSSProperties;
   const detailStackStyle = {
     gridTemplateRows: consoleOpen
@@ -2261,7 +2659,7 @@ export function App() {
 
   return (
     <div
-      className={`app-shell theme-${resolvedTheme} ${leftCollapsed ? "left-collapsed" : ""} ${rightCollapsed ? "right-collapsed" : ""} ${
+      className={`app-shell theme-${resolvedTheme} density-${uiPreferences.density} sidebar-${uiPreferences.sidebarPosition} ${leftCollapsed ? "left-collapsed" : ""} ${rightCollapsed ? "right-collapsed" : ""} ${
         consoleOpen ? "console-open" : ""
       }`}
       style={layoutStyle}
@@ -2295,6 +2693,7 @@ export function App() {
       ) : (
         <ProjectRail
           projects={projects}
+          groups={projectLibrary.groups}
           selectedProjectId={selectedProject?.id ?? null}
           onSelectProject={selectProject}
           onAddProject={handleAddProject}
@@ -2322,6 +2721,10 @@ export function App() {
           project={selectedProject}
           gitVersion={gitVersion}
           gitReady={selectedProjectGitReady}
+          onOpenRepositoryCenter={() => {
+            setRepositoryCenterInitialTab(selectedProject ? "recovery" : "projects");
+            setRepositoryCenterOpen(true);
+          }}
         />
 
         {!selectedProjectGitReady ? (
@@ -2358,7 +2761,7 @@ export function App() {
                 onUndoLastCommit={(mode) => void handleUndoLastCommit(mode)}
                 onSyncChanges={() => (selectedProject ? runSyncOperation(selectedProject) : Promise.resolve())}
                 onMergeRemote={() => (selectedProject ? runMergeRemoteOperation(selectedProject) : Promise.resolve())}
-                hasCommits={commits.length > 0}
+                hasCommits={Boolean(findCurrentHeadCommit(commits))}
                 focusRequest={commitFocusRequest}
                 messageDraftRequest={commitMessageDraftRequest}
                 panelOpen={changesPanelOpen}
@@ -2372,6 +2775,11 @@ export function App() {
                 historyFilter={graphHistoryFilter}
                 loading={graphLoading}
                 onHistoryFilterChange={(filter) => void handleGraphHistoryFilterChange(filter)}
+                advancedQuery={graphHistoryQuery}
+                onAdvancedQueryChange={(query) => void handleAdvancedHistoryQueryChange(query)}
+                hasMore={graphHistoryHasMore}
+                loadingMore={graphHistoryLoadingMore}
+                onLoadMore={() => void handleLoadMoreHistory()}
                 selectedHash={selectedCommitHash}
                 onSelectCommit={handleSelectCommit}
                 onSelectCommitFile={handleSelectCommitFile}
@@ -2399,11 +2807,16 @@ export function App() {
                   tabs={worktreeTabs}
                   activeTabId={activeWorktreeTabId}
                   repositoryPath={selectedProject?.path}
+                  desktopFileActionsEnabled={Boolean(window.gitUI && selectedProject && !selectedProject.remote)}
                   onSelectTab={handleSelectWorktreeTab}
                   onCloseTab={handleCloseWorktreeTab}
                   onPinTab={handlePinWorktreeTab}
+                  onOpenFile={(tab) => void handleOpenWorktreeFile(tab)}
+                  onRevealFile={(tab) => void handleRevealWorktreeFile(tab)}
                   onResolveConflict={handleResolveConflict}
                   onRetryLoad={handleRetryWorktreeLoad}
+                  diffViewMode={uiPreferences.diffViewMode}
+                  diffWrap={uiPreferences.diffWrap}
                 />
                 <div className="console-resize" hidden={!consoleOpen} onMouseDown={(event) => beginResize("console", event)} />
                 <ConsolePanel
@@ -2412,19 +2825,28 @@ export function App() {
                   visible={consoleOpen}
                   maximized={consoleMaximized}
                   onToggleMaximized={toggleConsoleMaximized}
-                  onHide={() => setConsoleOpen(false)}
+                  onHide={() => setConsoleVisibility(false)}
                   onConfirmCloseTabs={(count) =>
                     requestConfirm({
-                      title: "关闭当前项目终端",
+                      title: "关闭全部终端",
                       description: "正在运行的终端进程会被结束。",
                       detail: `${count} 个终端标签`,
                       confirmLabel: "关闭终端",
                       tone: "warning"
                     })
                   }
+                  onConfirmClearHistory={(count) =>
+                    requestConfirm({
+                      title: "清空命令历史",
+                      description: "已保存的终端命令历史会从本机删除，此操作无法撤销。",
+                      detail: `${count} 条命令`,
+                      confirmLabel: "清空历史",
+                      tone: "danger"
+                    })
+                  }
                 />
                 {!consoleOpen ? (
-                  <button type="button" className="console-dock-toggle" aria-label="打开控制台" onClick={() => setConsoleOpen(true)}>
+                  <button type="button" className="console-dock-toggle" aria-label="打开控制台" onClick={() => setConsoleVisibility(true)}>
                     <Terminal size={15} />
                     控制台
                   </button>
@@ -2437,6 +2859,26 @@ export function App() {
         <div className="sr-only" aria-live="polite">
           {statusMessage}
         </div>
+        <RepositoryCenterContainer
+          open={repositoryCenterOpen}
+          project={selectedProject}
+          projects={projects}
+          initialTab={repositoryCenterInitialTab}
+          onClose={() => setRepositoryCenterOpen(false)}
+          onOpenProject={(projectId, openedProject) => {
+            selectProject(projectId, openedProject);
+            setRepositoryCenterOpen(false);
+          }}
+          onProjectsChange={(nextProjects) => setProjects(orderProjectsWithPinnedFirst(nextProjects))}
+          onLibraryChange={setProjectLibrary}
+          onRepositoryChange={() => (selectedProject ? loadProjectData(selectedProject) : Promise.resolve())}
+          onPreferencesChange={applyUiPreferences}
+        />
+        <GitOperationCenter
+          operations={gitOperations}
+          onCancel={(operationId) => void cancelGitOperation(operationId)}
+          onDismiss={dismissGitOperation}
+        />
         <Toaster
           position="top-center"
           theme={resolvedTheme}
@@ -2448,6 +2890,8 @@ export function App() {
           <RemoteProjectDialog
             onClose={() => setRemoteProjectDialogOpen(false)}
             onChooseIdentityFile={() => apiClient.chooseIdentityFile()}
+            onInspectHost={(host, port) => apiClient.inspectSshHost(host, port)}
+            onTrustHost={(token, replaceExisting) => apiClient.trustSshHost(token, replaceExisting)}
             onTest={handleTestRemoteProject}
             onAdd={handleAddRemoteProject}
           />
@@ -2462,13 +2906,14 @@ export function App() {
             }
             onCheckoutChange={(checkout) => setBranchDialog((current) => (current?.mode === "create" ? { ...current, checkout } : current))}
             onBranchQueryChange={(query) =>
-              setBranchDialog((current) => (current?.mode === "switch" || current?.mode === "merge" ? { ...current, query } : current))
+              setBranchDialog((current) => (current?.mode === "switch" || current?.mode === "delete" || current?.mode === "merge" ? { ...current, query } : current))
             }
             onMergeStrategyChange={(strategy) =>
               setBranchDialog((current) => (current?.mode === "merge" ? { ...current, strategy } : current))
             }
             onCreate={submitCreateBranch}
             onSwitch={submitSwitchBranch}
+            onDelete={submitDeleteBranch}
             onMergeTarget={previewMergeTarget}
             onMerge={submitMerge}
           />
@@ -2560,6 +3005,7 @@ function BranchDialog({
   onMergeStrategyChange,
   onCreate,
   onSwitch,
+  onDelete,
   onMergeTarget,
   onMerge
 }: {
@@ -2572,6 +3018,7 @@ function BranchDialog({
   onMergeStrategyChange: (value: GitMergeStrategy) => void;
   onCreate: () => void;
   onSwitch: (branch: BranchInfo) => void;
+  onDelete: (branch: BranchInfo) => void;
   onMergeTarget: (branch: BranchInfo) => void;
   onMerge: () => void;
 }) {
@@ -2587,17 +3034,17 @@ function BranchDialog({
   }, [onClose]);
 
   const filteredBranches =
-    state.mode === "switch" || state.mode === "merge"
+    state.mode === "switch" || state.mode === "delete" || state.mode === "merge"
       ? state.branches.filter((branch) => `${branch.name} ${branch.fullName}`.toLowerCase().includes(state.query.trim().toLowerCase()))
       : [];
-  const dialogTitle = state.mode === "create" ? "新建分支" : state.mode === "switch" ? "切换分支" : "合并分支";
+  const dialogTitle = state.mode === "create" ? "新建分支" : state.mode === "switch" ? "切换分支" : state.mode === "delete" ? "删除分支" : "合并分支";
 
   return (
     <div className="branch-dialog-backdrop" role="presentation" onMouseDown={onClose}>
       <section className={`branch-dialog ${state.mode === "merge" ? "merge-dialog" : ""}`} role="dialog" aria-modal="true" aria-label={dialogTitle} onMouseDown={(event) => event.stopPropagation()}>
         <header className="branch-dialog-header">
           <span className="branch-dialog-title">
-            {state.mode === "create" ? <Plus size={15} /> : state.mode === "merge" ? <GitMerge size={15} /> : <GitBranch size={15} />}
+            {state.mode === "create" ? <Plus size={15} /> : state.mode === "merge" ? <GitMerge size={15} /> : state.mode === "delete" ? <Trash2 size={15} /> : <GitBranch size={15} />}
             {dialogTitle}
           </span>
           <button type="button" className="icon-button compact-icon" title="关闭" onClick={onClose}>
@@ -2640,7 +3087,7 @@ function BranchDialog({
           <div className={`branch-switch-panel ${state.mode === "merge" ? "merge-branch-panel" : ""}`}>
             <label className="branch-search">
               <GitBranch size={14} />
-              <input value={state.query} autoFocus onChange={(event) => onBranchQueryChange(event.target.value)} placeholder={state.mode === "merge" ? "搜索目标分支" : "搜索分支"} disabled={busy} />
+              <input value={state.query} autoFocus onChange={(event) => onBranchQueryChange(event.target.value)} placeholder={state.mode === "merge" ? "搜索目标分支" : state.mode === "delete" ? "搜索要删除的本地分支" : "搜索分支"} disabled={busy} />
             </label>
             <div className="branch-list" role="list">
               {filteredBranches.map((branch) => (
@@ -2648,14 +3095,14 @@ function BranchDialog({
                   type="button"
                   className={`branch-list-item ${branch.current ? "current" : ""} ${state.mode === "merge" && state.preview?.targetBranch === branch.name ? "selected" : ""}`}
                   key={`${branch.type}-${branch.fullName}`}
-                  onClick={() => (state.mode === "merge" ? onMergeTarget(branch) : onSwitch(branch))}
+                  onClick={() => (state.mode === "merge" ? onMergeTarget(branch) : state.mode === "delete" ? onDelete(branch) : onSwitch(branch))}
                   disabled={busy}
                 >
                   <span>
                     <GitBranch size={13} />
                     {branch.name}
                   </span>
-                  <small>{state.mode === "merge" && state.preview?.targetBranch === branch.name ? "目标" : branch.current ? "当前" : branch.type === "remote" ? "远程" : branch.upstream ? `跟踪 ${branch.upstream}` : "本地"}</small>
+                  <small>{state.mode === "delete" ? "删除" : state.mode === "merge" && state.preview?.targetBranch === branch.name ? "目标" : branch.current ? "当前" : branch.type === "remote" ? "远程" : branch.upstream ? `跟踪 ${branch.upstream}` : "本地"}</small>
                 </button>
               ))}
               {filteredBranches.length === 0 ? <div className="empty-inline branch-empty">没有匹配分支。</div> : null}
@@ -2860,7 +3307,7 @@ function projectIdentityKey(project: GitProject): string {
   return [
     "ssh",
     project.remote.host.toLowerCase(),
-    project.remote.username?.toLowerCase() ?? "",
+    project.remote.username ?? "",
     project.remote.port ?? 22,
     project.path
   ].join(":");
@@ -2895,32 +3342,9 @@ function addProjectWithPinnedOrder(projects: GitProject[], project: GitProject):
   return project.favorite ? [project, ...remainingProjects] : placeProjectAfterPinned(remainingProjects, project);
 }
 
-function chooseBranch(branches: BranchInfo[], promptTitle: string): BranchInfo | undefined {
-  if (branches.length === 0) {
-    window.alert("没有可选择的分支。");
-    return undefined;
-  }
-
-  const options = branches
-    .map((branch, index) => `${index + 1}. ${branch.name} ${branch.current ? "(当前)" : ""} ${branch.type === "remote" ? "[远程]" : "[本地]"}`)
-    .join("\n");
-  const input = window.prompt(`${promptTitle}\n\n${options}`);
-  if (!input?.trim()) {
-    return undefined;
-  }
-
-  const trimmed = input.trim();
-  const index = Number(trimmed);
-  if (Number.isInteger(index) && index >= 1 && index <= branches.length) {
-    return branches[index - 1];
-  }
-
-  const matchedBranch = branches.find((branch) => branch.name === trimmed || branch.fullName === trimmed);
-  if (!matchedBranch) {
-    window.alert("没有找到这个分支，请检查输入的序号或名称。");
-  }
-
-  return matchedBranch;
+function findCurrentHeadCommit(commits: CommitNode[]): CommitNode | undefined {
+  const headCommits = commits.filter((commit) => commit.refs.some((ref) => ref.type === "head"));
+  return headCommits.length === 1 ? headCommits[0] : undefined;
 }
 
 function commitMessageDraft(commit: CommitNode): Pick<CommitMessageDialogState, "subject" | "body"> {
@@ -2997,6 +3421,57 @@ function projectInitial(project: GitProject): string {
   return (alphaNumeric ?? source[0] ?? "?").toUpperCase();
 }
 
+function hasAdvancedHistoryQuery(query: AdvancedHistoryQuery): boolean {
+  return Boolean(query.search?.trim() || query.author?.trim() || query.after?.trim() || query.before?.trim() || query.path?.trim());
+}
+
+function isEditableShortcutTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  return target.isContentEditable || Boolean(target.closest("input, textarea, select, [contenteditable='true']"));
+}
+
+function matchesShortcut(event: globalThis.KeyboardEvent, shortcut: string): boolean {
+  const parsed = parseShortcut(shortcut);
+  if (!parsed) {
+    return false;
+  }
+  if (
+    event.ctrlKey !== parsed.ctrl ||
+    event.altKey !== parsed.alt ||
+    event.shiftKey !== parsed.shift ||
+    event.metaKey !== parsed.meta
+  ) {
+    return false;
+  }
+  const normalizedKey = event.key.toLowerCase() === " " ? "space" : event.key.toLowerCase();
+  return normalizedKey === parsed.key || event.code.toLowerCase() === parsed.key;
+}
+
+function parseShortcut(shortcut: string): { ctrl: boolean; alt: boolean; shift: boolean; meta: boolean; key: string } | null {
+  const aliases: Record<string, "ctrl" | "alt" | "shift" | "meta"> = {
+    ctrl: "ctrl", control: "ctrl", alt: "alt", option: "alt", shift: "shift", meta: "meta", cmd: "meta", command: "meta"
+  };
+  const modifiers = new Set<"ctrl" | "alt" | "shift" | "meta">();
+  const mainKeys: string[] = [];
+  for (const token of shortcut.split("+").map((value) => value.trim().toLowerCase()).filter(Boolean)) {
+    const modifier = aliases[token];
+    if (modifier) modifiers.add(modifier);
+    else mainKeys.push(token);
+  }
+  if (mainKeys.length !== 1) {
+    return null;
+  }
+  return {
+    ctrl: modifiers.has("ctrl"),
+    alt: modifiers.has("alt"),
+    shift: modifiers.has("shift"),
+    meta: modifiers.has("meta"),
+    key: mainKeys[0]
+  };
+}
+
 function remoteProjectAddress(project: GitProject): string | undefined {
   if (!project.remote) {
     return undefined;
@@ -3004,6 +3479,10 @@ function remoteProjectAddress(project: GitProject): string | undefined {
   const destination = project.remote.username ? `${project.remote.username}@${project.remote.host}` : project.remote.host;
   const port = project.remote.port ? `:${project.remote.port}` : "";
   return `${destination}${port}:${project.path}`;
+}
+
+function pullStrategyLabel(strategy: UiPreferences["pullStrategy"]): string {
+  return strategy === "ff-only" ? "仅快进" : strategy === "rebase" ? "变基" : "变基并自动暂存";
 }
 
 function upsertWorktreeTab(tabs: WorktreeEditorTab[], incomingTab: WorktreeEditorTab, forcePinned: boolean): WorktreeEditorTab[] {

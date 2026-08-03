@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
-import { access, mkdir, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
+import { access, mkdir, readFile, readdir, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { TextDecoder } from "node:util";
 import type { RemoteProjectInput, SshConnection } from "./configStore";
@@ -23,6 +24,7 @@ export interface GitOperationResult {
 
 export interface GitStatusSummary {
   currentBranch: string | null;
+  unborn?: boolean;
   upstream?: string;
   ahead: number;
   behind: number;
@@ -30,6 +32,7 @@ export interface GitStatusSummary {
   unstagedCount: number;
   untrackedCount: number;
   hasConflicts: boolean;
+  conflictedCount: number;
   operationState?: GitOperationState;
   mergeSourceBranch?: string;
   mergeTargetBranch?: string;
@@ -115,6 +118,238 @@ export interface BranchInfo {
   current: boolean;
   upstream?: string;
   headHash: string;
+  ahead?: number;
+  behind?: number;
+  merged?: boolean;
+}
+
+export type GitLongOperationKind = "clone" | "fetch" | "pull" | "push" | "lfs-pull" | "lfs-migrate";
+export type GitLongOperationPhase = "running" | "cancelling" | "completed" | "failed" | "cancelled";
+
+export interface GitLongOperationProgress {
+  id: string;
+  kind: GitLongOperationKind;
+  phase: GitLongOperationPhase;
+  label: string;
+  repositoryPath?: string;
+  message?: string;
+  percent?: number;
+  receivedObjects?: number;
+  totalObjects?: number;
+  updatedAt: string;
+}
+
+export interface GitLongOperationContext {
+  id: string;
+  kind: GitLongOperationKind;
+  label: string;
+  repositoryPath?: string;
+  onProgress: (progress: GitLongOperationProgress) => void;
+}
+
+export interface GitStashEntry {
+  selector: string;
+  hash: string;
+  subject: string;
+  createdAt: string;
+}
+
+export interface GitStashDetails {
+  selector: string;
+  files: ChangedFile[];
+  diff: DiffLine[];
+}
+
+export interface GitStashCreateOptions {
+  message?: string;
+  includeUntracked?: boolean;
+  keepIndex?: boolean;
+}
+
+export type GitRebaseAction = "pick" | "edit" | "squash" | "fixup" | "drop";
+
+export interface GitRebasePlanItem {
+  hash: string;
+  shortHash: string;
+  subject: string;
+  action: GitRebaseAction;
+}
+
+export interface GitRemoteInfo {
+  name: string;
+  fetchUrls: string[];
+  pushUrls: string[];
+  explicitPushUrls: string[];
+  defaultBranch?: string;
+  defaultFetch?: boolean;
+  defaultPush?: boolean;
+}
+
+export interface GitRemoteUpdateInput {
+  name?: string;
+  fetchUrl?: string;
+  pushUrl?: string | null;
+}
+
+export interface GitTagInfo {
+  name: string;
+  hash: string;
+  targetHash: string;
+  annotated: boolean;
+  subject?: string;
+  taggerDate?: string;
+}
+
+export interface GitReflogEntry {
+  selector: string;
+  hash: string;
+  action: string;
+  message: string;
+  authorName: string;
+  authorDate: string;
+}
+
+export interface GitLinkedWorktree {
+  path: string;
+  head: string;
+  branch?: string;
+  bare: boolean;
+  detached: boolean;
+  lockedReason?: string;
+  prunableReason?: string;
+}
+
+export interface GitWorktreeAddOptions {
+  path: string;
+  ref?: string;
+  newBranch?: string;
+  detach?: boolean;
+  force?: boolean;
+}
+
+export interface GitWorktreeMoveOptions {
+  worktreePath: string;
+  destinationPath: string;
+}
+
+export type GitSubmoduleState = "initialized" | "uninitialized" | "modified" | "conflicted";
+
+export interface GitSubmoduleInfo {
+  path: string;
+  url: string;
+  branch?: string;
+  hash: string;
+  state: GitSubmoduleState;
+  description?: string;
+}
+
+export interface GitSubmoduleUpdateOptions {
+  paths?: string[];
+  initialize?: boolean;
+  recursive?: boolean;
+  remote?: boolean;
+}
+
+export interface GitSubmoduleAddOptions {
+  url: string;
+  path: string;
+  branch?: string;
+  name?: string;
+  force?: boolean;
+}
+
+export interface GitLfsFileStatus {
+  path: string;
+  status?: string;
+  staged: boolean;
+}
+
+export interface GitLfsStatus {
+  installed: boolean;
+  initialized: boolean;
+  version: string;
+  files: GitLfsFileStatus[];
+}
+
+export interface GitLfsLock {
+  id: string;
+  path: string;
+  owner: string;
+  lockedAt?: string;
+}
+
+export interface GitLfsMigrateOptions {
+  include: string[];
+  exclude?: string[];
+  everything?: boolean;
+  rewriteHistory: true;
+}
+
+export interface GitIgnoreDocument {
+  exists: boolean;
+  content: string;
+  revision: string;
+}
+
+export type GitSigningFormat = "openpgp" | "ssh" | "x509";
+
+export interface GitSigningConfig {
+  commitGpgSign?: boolean;
+  tagGpgSign?: boolean;
+  signingKey?: string;
+  format?: GitSigningFormat;
+}
+
+export interface GitSigningConfigUpdate {
+  commitGpgSign?: boolean | null;
+  tagGpgSign?: boolean | null;
+  signingKey?: string | null;
+  format?: GitSigningFormat | null;
+}
+
+export interface GitIdentityValidationIssue {
+  field: "name" | "email";
+  messageZh: string;
+}
+
+export interface GitIdentityConfig {
+  name?: string;
+  email?: string;
+  localName?: string;
+  localEmail?: string;
+  valid: boolean;
+  issues: GitIdentityValidationIssue[];
+}
+
+export interface GitIdentityUpdate {
+  name: string;
+  email: string;
+}
+
+export interface GitPushOptions {
+  forceWithLease?: boolean;
+  operation?: GitLongOperationContext;
+}
+
+export type GitHostingProvider = "github" | "gitlab" | "gitee";
+
+export interface GitHostingLinks {
+  provider: GitHostingProvider;
+  ownerPath: string;
+  repositoryName: string;
+  repositoryUrl: string;
+  commitsUrl: string;
+  branchesUrl: string;
+  pullRequestsUrl: string;
+  issuesUrl: string;
+  commitUrl?: string;
+  branchUrl?: string;
+}
+
+export interface GitCloneOptions {
+  branch?: string;
+  depth?: number;
+  recurseSubmodules?: boolean;
 }
 
 export type GitHistoryFilterMode = "auto" | "all" | "custom";
@@ -122,6 +357,39 @@ export type GitHistoryFilterMode = "auto" | "all" | "custom";
 export interface GitHistoryFilter {
   mode: GitHistoryFilterMode;
   refIds?: string[];
+}
+
+export interface GitHistoryQuery {
+  filter?: GitHistoryFilter;
+  skip?: number;
+  limit?: number;
+  search?: string;
+  author?: string;
+  after?: string;
+  before?: string;
+  path?: string;
+}
+
+export interface GitHistoryPage {
+  commits: CommitNode[];
+  hasMore: boolean;
+  nextSkip: number;
+}
+
+interface GitRunOptions {
+  timeoutMs?: number;
+  stdin?: Buffer;
+  operation?: GitLongOperationContext;
+}
+
+export interface GitBlameLine {
+  lineNumber: number;
+  hash: string;
+  shortHash: string;
+  authorName: string;
+  authorEmail: string;
+  authorDate: string;
+  content: string;
 }
 
 export interface GitHistoryRef {
@@ -150,6 +418,7 @@ export type GitResetMode = "soft" | "mixed" | "hard";
 export type GitOperationState = "merge" | "rebase" | "cherry-pick" | "revert" | "bisect";
 export type GitMergeStrategy = "ff" | "no-ff";
 export type GitMergeMode = "up-to-date" | "fast-forward" | "merge-commit";
+export type GitPullStrategy = "ff-only" | "rebase" | "rebase-autostash";
 
 export interface GitMergePreview {
   sourceBranch: string;
@@ -164,6 +433,9 @@ interface ManagedMergeState {
   sourceBranch: string;
   targetBranch: string;
   startedAt: string;
+  mergeHead: string;
+  originalHead: string;
+  mergeMarkerToken: string;
 }
 
 interface ConflictSnapshot {
@@ -179,7 +451,26 @@ const fieldSeparator = "\x1f";
 const recordSeparator = "\x1e";
 const resetCommandTimeoutMs = 30_000;
 const mergeCommandTimeoutMs = 120_000;
+const remoteReadCommandTimeoutMs = 30_000;
 const managedMergeStateFile = "git-ui-pro-merge-state.json";
+const readOnlyGitCommands = new Set([
+  "cat-file",
+  "check-ref-format",
+  "diff",
+  "diff-tree",
+  "for-each-ref",
+  "log",
+  "ls-files",
+  "ls-tree",
+  "merge-base",
+  "reflog",
+  "rev-list",
+  "rev-parse",
+  "show",
+  "show-ref",
+  "status",
+  "verify-commit"
+]);
 const maxEditableConflictBytes = 2 * 1024 * 1024;
 const maxPreviewImageBytes = 25 * 1024 * 1024;
 const maxPreviewVideoBytes = 80 * 1024 * 1024;
@@ -253,8 +544,26 @@ function decodeGitOutput(buffer: Buffer): string {
 
 export class GitService {
   private readonly activeMergeRepositories = new Set<string>();
+  private readonly pendingStatusRequests = new Map<string, Promise<GitStatusSummary>>();
+  private readonly cleanManagedMergeRepositories = new Set<string>();
+  private readonly activeLongOperations = new Map<string, {
+    child: ReturnType<typeof spawn>;
+    context: GitLongOperationContext;
+    cancelled: boolean;
+  }>();
 
-  async run(cwd: RepositoryLocation, args: string[], options: { timeoutMs?: number } = {}): Promise<GitOperationResult> {
+  cancelLongOperation(operationId: string): boolean {
+    const active = this.activeLongOperations.get(operationId);
+    if (!active) {
+      return false;
+    }
+    active.cancelled = true;
+    active.context.onProgress(operationProgress(active.context, "cancelling", "正在取消"));
+    active.child.kill();
+    return true;
+  }
+
+  async run(cwd: RepositoryLocation, args: string[], options: GitRunOptions = {}): Promise<GitOperationResult> {
     const result = await this.runProcess(cwd, args, options);
     return {
       ...result,
@@ -265,7 +574,7 @@ export class GitService {
   private async runBinary(
     cwd: RepositoryLocation,
     args: string[],
-    options: { timeoutMs?: number } = {}
+    options: GitRunOptions = {}
   ): Promise<Omit<GitOperationResult, "stdout"> & { stdout: Buffer }> {
     return this.runProcess(cwd, args, options);
   }
@@ -273,10 +582,14 @@ export class GitService {
   private async runProcess(
     cwd: RepositoryLocation,
     args: string[],
-    options: { timeoutMs?: number } = {}
+    options: GitRunOptions = {}
   ): Promise<Omit<GitOperationResult, "stdout"> & { stdout: Buffer }> {
+    if (options.operation && this.activeLongOperations.has(options.operation.id)) {
+      throw new Error(`Git 后台任务编号重复：${options.operation.id}`);
+    }
     return new Promise((resolve) => {
       const target = normalizeRepositoryTarget(cwd);
+      const timeoutMs = options.timeoutMs ?? (target.remote && isReadOnlyGitCommand(args) ? remoteReadCommandTimeoutMs : undefined);
       const remoteCommand = target.remote ? buildRemoteGitCommand(target.path, args) : undefined;
       const executable = target.remote ? "ssh" : "git";
       const executableArgs = target.remote ? [...buildSshArgs(target.remote, true), remoteCommand!] : args;
@@ -300,11 +613,22 @@ export class GitService {
         if (timeoutId) {
           clearTimeout(timeoutId);
         }
+        if (options.operation) {
+          const active = this.activeLongOperations.get(options.operation.id);
+          const cancelled = active?.cancelled === true;
+          this.activeLongOperations.delete(options.operation.id);
+          options.operation.onProgress(operationProgress(
+            options.operation,
+            cancelled ? "cancelled" : result.ok ? "completed" : "failed",
+            cancelled ? "已取消" : result.ok ? "已完成" : result.messageZh ?? "执行失败",
+            result.ok ? 100 : undefined
+          ));
+        }
         resolve(result);
       };
-      const timeoutId = options.timeoutMs
+      const timeoutId = timeoutMs
         ? setTimeout(() => {
-            const timeoutText = `Git command timed out after ${Math.round((options.timeoutMs ?? 0) / 1000)}s.`;
+            const timeoutText = `Git command timed out after ${Math.round(timeoutMs / 1000)}s.`;
             const stderrText = decodeGitOutput(Buffer.concat(stderrChunks));
             const stderr = stderrText ? `${stderrText}\n${timeoutText}` : timeoutText;
             child.kill();
@@ -316,16 +640,29 @@ export class GitService {
               exitCode: -1,
               messageZh: target.remote ? "远程 Git 命令执行超时，请检查 SSH 连接后重试" : "Git 命令执行超时，请确认仓库未被其它进程锁定后重试"
             });
-          }, options.timeoutMs)
+          }, timeoutMs)
         : undefined;
 
       child.stdout.on("data", (chunk: Buffer) => {
         stdoutChunks.push(chunk);
+        if (options.operation) {
+          emitOperationChunk(options.operation, chunk);
+        }
       });
 
       child.stderr.on("data", (chunk: Buffer) => {
         stderrChunks.push(chunk);
+        if (options.operation) {
+          emitOperationChunk(options.operation, chunk);
+        }
       });
+      child.stdin.on("error", () => undefined);
+
+      if (options.stdin) {
+        child.stdin.end(options.stdin);
+      } else {
+        child.stdin.end();
+      }
 
       child.on("error", (error) => {
         finish({
@@ -351,7 +688,11 @@ export class GitService {
           messageZh: exitCode === 0 ? undefined : target.remote ? toChineseSshError(stderr) : toChineseGitError(decodeGitOutput(stdout), stderr)
         });
       });
-      child.stdin.end();
+
+      if (options.operation) {
+        this.activeLongOperations.set(options.operation.id, { child, context: options.operation, cancelled: false });
+        options.operation.onProgress(operationProgress(options.operation, "running", "正在启动", 0));
+      }
     });
   }
 
@@ -367,10 +708,62 @@ export class GitService {
     return result.stdout.trim();
   }
 
+  async initializeRepository(directoryPath: string, initialBranch: string): Promise<GitOperationResult> {
+    const targetPath = requireAbsoluteLocalPath(directoryPath, "仓库目录");
+    const branch = requireValue(initialBranch, "初始分支名");
+    const validationResult = await this.run(process.cwd(), ["check-ref-format", "--branch", branch]);
+    if (!validationResult.ok) {
+      return {
+        ...validationResult,
+        messageZh: "初始分支名不合法，请检查是否包含空格、连续点号或 Git 不允许的字符。"
+      };
+    }
+
+    await mkdir(targetPath, { recursive: true });
+    return this.run(targetPath, ["init", `--initial-branch=${branch}`]);
+  }
+
+  async cloneRepository(
+    sourceUrl: string,
+    destinationPath: string,
+    options: GitCloneOptions = {},
+    operation?: GitLongOperationContext
+  ): Promise<GitOperationResult> {
+    const source = requireNonOptionValue(sourceUrl, "仓库地址");
+    const destination = requireAbsoluteLocalPath(destinationPath, "克隆目录");
+    if (options.depth !== undefined && (!Number.isInteger(options.depth) || options.depth < 1)) {
+      throw new Error("克隆深度必须是大于 0 的整数。");
+    }
+
+    const args = ["clone", "--progress"];
+    if (options.branch) {
+      args.push("--branch", requireNonOptionValue(options.branch, "克隆分支"));
+    }
+    if (options.depth !== undefined) {
+      args.push("--depth", String(options.depth));
+    }
+    if (options.recurseSubmodules) {
+      args.push("--recurse-submodules");
+    }
+    args.push("--", source, destination);
+
+    const parentDirectory = path.dirname(destination);
+    await mkdir(parentDirectory, { recursive: true });
+    return this.run(parentDirectory, args, { timeoutMs: 10 * 60_000, operation });
+  }
+
   async testRemoteRepository(input: RemoteProjectInput): Promise<GitOperationResult & { repositoryRoot?: string; projectName?: string }> {
     const validationError = validateRemoteProjectInput(input);
     if (validationError) {
       return gitFailure("ssh", validationError);
+    }
+
+    if (input.identityFile) {
+      try {
+        await access(input.identityFile.trim(), fsConstants.R_OK);
+      } catch {
+        return gitFailure("ssh", "无法读取所选 SSH 私钥，请确认文件仍然存在且当前用户有读取权限。");
+      }
     }
 
     const target: RepositoryTarget = {
@@ -397,18 +790,36 @@ export class GitService {
   }
 
   async getStatus(repositoryPath: RepositoryLocation): Promise<GitStatusSummary> {
-    const result = await this.run(repositoryPath, ["status", "--porcelain=v2", "--branch", "--ignored=matching"]);
+    const requestKey = this.mergeRepositoryKey(repositoryPath);
+    const pendingRequest = this.pendingStatusRequests.get(requestKey);
+    if (pendingRequest) {
+      return { ...(await pendingRequest) };
+    }
+
+    const request = this.loadStatus(repositoryPath).finally(() => {
+      if (this.pendingStatusRequests.get(requestKey) === request) {
+        this.pendingStatusRequests.delete(requestKey);
+      }
+    });
+    this.pendingStatusRequests.set(requestKey, request);
+    return { ...(await request) };
+  }
+
+  private async loadStatus(repositoryPath: RepositoryLocation): Promise<GitStatusSummary> {
+    const result = await this.run(repositoryPath, ["status", "--porcelain=v2", "--branch"]);
     if (!result.ok) {
       throw new Error(result.messageZh ?? "无法读取仓库状态。");
     }
 
     const summary = parseStatus(result.stdout);
     summary.operationState = await this.getOperationState(repositoryPath);
+    const repositoryKey = this.mergeRepositoryKey(repositoryPath);
     if (summary.operationState === "merge") {
-      const managedState = await this.readManagedMergeState(repositoryPath);
+      this.cleanManagedMergeRepositories.delete(repositoryKey);
+      const managedState = await this.readCurrentManagedMergeState(repositoryPath, summary.currentBranch);
       summary.mergeSourceBranch = managedState?.sourceBranch;
       summary.mergeTargetBranch = managedState?.targetBranch;
-    } else {
+    } else if (!this.cleanManagedMergeRepositories.has(repositoryKey)) {
       await this.clearManagedMergeState(repositoryPath);
     }
     return summary;
@@ -417,18 +828,31 @@ export class GitService {
   private async getOperationState(repositoryPath: RepositoryLocation): Promise<GitOperationState | undefined> {
     const result = await this.run(repositoryPath, ["rev-parse", ...gitOperationMarkers.flatMap((marker) => ["--git-path", marker.path])]);
     if (!result.ok) {
-      return undefined;
+      throw new Error(result.messageZh ?? "无法读取 Git 操作状态。");
     }
 
     const markerPaths = result.stdout.split(/\r?\n/).filter(Boolean);
+    if (markerPaths.length !== gitOperationMarkers.length) {
+      throw new Error("Git 返回的操作状态路径不完整。");
+    }
     const target = normalizeRepositoryTarget(repositoryPath);
     if (target.remote) {
       const checks = markerPaths
-        .map((markerPath, index) => `test -e ${shellQuote(resolveGitReportedPath(repositoryPath, markerPath))} && printf '${index}\\n'`)
-        .join("; ") + "; true";
+        .map((markerPath, index) => `if test -e ${shellQuote(resolveGitReportedPath(repositoryPath, markerPath))}; then printf '${index}\\n'; fi`)
+        .join("; ");
       const checkResult = await runSshShell(target.remote, checks, { timeoutMs: 10_000 });
-      const markerIndex = checkResult.ok ? Number(checkResult.stdout.toString("utf8").split(/\r?\n/).find(Boolean)) : Number.NaN;
-      return Number.isInteger(markerIndex) ? gitOperationMarkers[markerIndex]?.state : undefined;
+      if (!checkResult.ok) {
+        throw new Error(checkResult.messageZh ?? "无法检查远程仓库的 Git 操作状态。");
+      }
+      const firstMarker = checkResult.stdout.toString("utf8").split(/\r?\n/).find(Boolean);
+      if (firstMarker === undefined) {
+        return undefined;
+      }
+      const markerIndex = Number(firstMarker);
+      if (!Number.isInteger(markerIndex) || !gitOperationMarkers[markerIndex]) {
+        throw new Error("远程仓库返回了无效的 Git 操作状态。");
+      }
+      return gitOperationMarkers[markerIndex].state;
     }
 
     for (const [index, marker] of gitOperationMarkers.entries()) {
@@ -446,46 +870,89 @@ export class GitService {
     return undefined;
   }
 
-  async getHistory(repositoryPath: RepositoryLocation, filter: GitHistoryFilter = { mode: "auto" }, maxCount = 300): Promise<CommitNode[]> {
-    const status = await this.getStatus(repositoryPath).catch(() => undefined);
-    const revisions = await this.getHistoryRevisions(repositoryPath, status, filter);
-    const format = [
-      "%H",
-      "%P",
-      "%an",
-      "%ae",
-      "%aI",
-      "%cn",
-      "%ce",
-      "%cI",
-      "%D",
-      "%s",
-      "%b"
-    ].join(`%x${fieldSeparator.charCodeAt(0).toString(16)}`);
+  async getHistory(repositoryPath: RepositoryLocation, filter: GitHistoryFilter = { mode: "auto" }): Promise<CommitNode[]> {
+    const history: CommitNode[] = [];
+    let skip = 0;
+    while (true) {
+      const page = await this.getHistoryPage(repositoryPath, { filter, skip, limit: 500 });
+      history.push(...page.commits);
+      if (!page.hasMore) {
+        return history;
+      }
+      if (!Number.isInteger(page.nextSkip) || page.nextSkip <= skip) {
+        throw new Error("提交历史分页位置没有向后推进，已停止读取。");
+      }
+      skip = page.nextSkip;
+    }
+  }
 
-    const result = await this.run(repositoryPath, [
+  async getHistoryPage(repositoryPath: RepositoryLocation, query: GitHistoryQuery = {}): Promise<GitHistoryPage> {
+    const skip = query.skip ?? 0;
+    if (!Number.isInteger(skip) || skip < 0) {
+      throw new Error("历史分页偏移量必须是大于或等于 0 的整数。");
+    }
+    const limit = requirePositiveInteger(query.limit ?? 150, "历史分页条数");
+    if (limit > 500) {
+      throw new Error("单次最多读取 500 条提交，请使用分页继续加载。");
+    }
+
+    const status = await this.getStatus(repositoryPath);
+    const revisions = await this.getHistoryRevisions(repositoryPath, status, query.filter ?? { mode: "auto" });
+    const format = ["%H", "%P", "%an", "%ae", "%aI", "%cn", "%ce", "%cI", "%D", "%s", "%b"]
+      .join(`%x${fieldSeparator.charCodeAt(0).toString(16)}`);
+    const args = [
       "log",
       "--topo-order",
       "--decorate=full",
       "--date=iso-strict",
-      `--max-count=${maxCount}`,
-      `--pretty=format:${format}%x${recordSeparator.charCodeAt(0).toString(16)}`,
-      ...revisions
-    ]);
-
-    if (!result.ok) {
-      if (isEmptyRepositoryError(result.stderr)) {
-        return [];
-      }
-      throw new Error(result.messageZh ?? "无法读取提交历史。");
+      `--skip=${skip}`,
+      `--max-count=${limit + 1}`,
+      `--pretty=format:${format}%x${recordSeparator.charCodeAt(0).toString(16)}`
+    ];
+    if (query.search?.trim()) {
+      args.push("--regexp-ignore-case", "--fixed-strings", `--grep=${query.search.trim()}`);
+    }
+    if (query.author?.trim()) {
+      args.push(`--author=${query.author.trim()}`);
+    }
+    if (query.after?.trim()) {
+      args.push(`--since=${requireDateQuery(query.after, "开始日期", "start")}`);
+    }
+    if (query.before?.trim()) {
+      args.push(`--until=${requireDateQuery(query.before, "结束日期", "end")}`);
+    }
+    args.push(...revisions);
+    if (query.path?.trim()) {
+      args.push("--", toGitPath(requireNonOptionValue(query.path, "历史文件路径")));
     }
 
-    return parseCommitLog(result.stdout);
+    const result = await this.run(repositoryPath, args);
+    if (!result.ok) {
+      if (isEmptyRepositoryError(result.stderr)) {
+        return { commits: [], hasMore: false, nextSkip: skip };
+      }
+      throw new Error(result.messageZh ?? "无法读取提交历史。" );
+    }
+
+    const parsed = parseCommitLog(result.stdout);
+    const hasMore = parsed.length > limit;
+    const commits = hasMore ? parsed.slice(0, limit) : parsed;
+    return { commits, hasMore, nextSkip: skip + commits.length };
+  }
+
+  async getBlame(repositoryPath: RepositoryLocation, filePath: string, revision = "HEAD"): Promise<GitBlameLine[]> {
+    const targetPath = toGitPath(requireNonOptionValue(filePath, "Blame 文件路径"));
+    const targetRevision = requireNonOptionValue(revision, "Blame 提交引用");
+    const result = await this.run(repositoryPath, ["blame", "--line-porcelain", targetRevision, "--", targetPath]);
+    if (!result.ok) {
+      throw new Error(result.messageZh ?? "无法读取文件 Blame。" );
+    }
+    return parseBlamePorcelain(result.stdout);
   }
 
   async getHistoryRefs(repositoryPath: RepositoryLocation): Promise<GitHistoryRef[]> {
     const [status, refsResult] = await Promise.all([
-      this.getStatus(repositoryPath).catch(() => undefined),
+      this.getStatus(repositoryPath),
       this.run(repositoryPath, [
         "for-each-ref",
         "refs/heads",
@@ -612,14 +1079,15 @@ export class GitService {
     if (!statusResult.ok) {
       throw new Error(statusResult.messageZh ?? "无法读取工作区状态。");
     }
+    if (!untrackedResult.ok) {
+      throw new Error(untrackedResult.messageZh ?? "无法扫描未跟踪文件。");
+    }
 
     const worktree = parseWorktree(statusResult.stdout);
-    if (untrackedResult.ok) {
-      const existingPaths = new Set([...worktree.stagedFiles, ...worktree.unstagedFiles].map((file) => file.path));
-      for (const filePath of untrackedResult.stdout.split(/\r?\n/).filter(Boolean)) {
-        if (!existingPaths.has(filePath)) {
-          worktree.unstagedFiles.push({ path: filePath, status: "untracked", staged: false });
-        }
+    const existingPaths = new Set([...worktree.stagedFiles, ...worktree.unstagedFiles].map((file) => file.path));
+    for (const filePath of untrackedResult.stdout.split(/\r?\n/).filter(Boolean)) {
+      if (!existingPaths.has(filePath)) {
+        worktree.unstagedFiles.push({ path: filePath, status: "untracked", staged: false });
       }
     }
 
@@ -646,9 +1114,8 @@ export class GitService {
 
   async getConflictFileDetails(repositoryPath: RepositoryLocation, filePath: string): Promise<ConflictFileDetails> {
     const snapshot = await this.loadConflictSnapshot(repositoryPath, filePath);
-    const [status, managedState, incomingLabel] = await Promise.all([
+    const [status, incomingLabel] = await Promise.all([
       this.getStatus(repositoryPath),
-      this.readManagedMergeState(repositoryPath),
       this.getMergeHeadLabel(repositoryPath)
     ]);
     const buffers = [snapshot.base, snapshot.current, snapshot.incoming, snapshot.result].filter((value): value is Buffer => Boolean(value));
@@ -665,8 +1132,8 @@ export class GitService {
       currentExists: Boolean(snapshot.current),
       incomingExists: Boolean(snapshot.incoming),
       resultExists: Boolean(snapshot.result),
-      currentLabel: managedState?.targetBranch ?? status.currentBranch ?? "当前分支",
-      incomingLabel: managedState?.sourceBranch ?? incomingLabel ?? "传入分支",
+      currentLabel: status.mergeTargetBranch ?? status.currentBranch ?? "当前分支",
+      incomingLabel: status.mergeSourceBranch ?? incomingLabel ?? "传入分支",
       editable,
       isBinary,
       token: snapshot.token
@@ -738,43 +1205,137 @@ export class GitService {
     return null;
   }
 
-  async stageFile(repositoryPath: RepositoryLocation, filePath: string): Promise<GitOperationResult> {
-    return this.run(repositoryPath, ["add", "--", filePath]);
+  async stageFile(repositoryPath: RepositoryLocation, file: ChangedFile): Promise<GitOperationResult> {
+    const filePaths = changedFilePathspecs(repositoryPath, file);
+    return this.run(repositoryPath, ["add", "--", ...filePaths]);
   }
 
   async stageAll(repositoryPath: RepositoryLocation): Promise<GitOperationResult> {
     return this.run(repositoryPath, ["add", "-A"]);
   }
 
-  async unstageFile(repositoryPath: RepositoryLocation, filePath: string): Promise<GitOperationResult> {
-    return this.runWithFallbacks(repositoryPath, [
-      ["restore", "--staged", "--", filePath],
-      ["reset", "--", filePath],
-      ["rm", "--cached", "-r", "--", filePath]
-    ]);
+  async unstageFile(repositoryPath: RepositoryLocation, file: ChangedFile): Promise<GitOperationResult> {
+    const filePaths = changedFilePathspecs(repositoryPath, file);
+    const hasHead = await this.repositoryHasHead(repositoryPath);
+    return hasHead
+      ? this.run(repositoryPath, ["restore", "--staged", "--", ...filePaths])
+      : this.run(repositoryPath, ["rm", "--cached", "-r", "--", ...filePaths]);
   }
 
   async unstageAll(repositoryPath: RepositoryLocation): Promise<GitOperationResult> {
-    return this.runWithFallbacks(repositoryPath, [
-      ["restore", "--staged", "--", "."],
-      ["reset"],
-      ["rm", "--cached", "-r", "--", "."]
-    ]);
+    const hasHead = await this.repositoryHasHead(repositoryPath);
+    return hasHead
+      ? this.run(repositoryPath, ["restore", "--staged", "--", "."])
+      : this.run(repositoryPath, ["rm", "--cached", "-r", "--", "."]);
   }
 
   async discardFile(repositoryPath: RepositoryLocation, file: ChangedFile): Promise<GitOperationResult> {
+    const filePaths = changedFilePathspecs(repositoryPath, file);
+    const results: GitOperationResult[] = [];
     if (file.staged) {
-      const unstageResult = await this.unstageFile(repositoryPath, file.path);
+      const unstageResult = await this.unstageFile(repositoryPath, file);
+      results.push(unstageResult);
       if (!unstageResult.ok) {
         return unstageResult;
       }
     }
 
-    if (file.status === "untracked" || file.status === "added") {
-      return this.run(repositoryPath, ["clean", "-fd", "--", file.path]);
+    if (file.status === "renamed") {
+      const [oldPath, newPath] = filePaths;
+      if (!file.oldPath || !newPath) {
+        throw new Error("重命名文件缺少原路径，无法安全放弃更改。");
+      }
+      const restoreResult = await this.run(repositoryPath, ["restore", "--worktree", "--", oldPath]);
+      results.push(restoreResult);
+      if (!restoreResult.ok) {
+        return combineGitResults(results, false);
+      }
+      const cleanResult = await this.run(repositoryPath, ["clean", "-fd", "--", newPath]);
+      results.push(cleanResult);
+      return combineGitResults(results, cleanResult.ok);
     }
 
-    return this.run(repositoryPath, ["restore", "--", file.path]);
+    if (file.status === "untracked" || file.status === "added" || file.status === "copied") {
+      const cleanResult = await this.run(repositoryPath, ["clean", "-fd", "--", file.path]);
+      results.push(cleanResult);
+      return combineGitResults(results, cleanResult.ok);
+    }
+
+    const restoreResult = await this.run(repositoryPath, ["restore", "--worktree", "--", file.path]);
+    results.push(restoreResult);
+    return combineGitResults(results, restoreResult.ok);
+  }
+
+  async getStashes(repositoryPath: RepositoryLocation): Promise<GitStashEntry[]> {
+    const result = await this.run(repositoryPath, [
+      "stash",
+      "list",
+      `--format=%gd${fieldSeparator}%H${fieldSeparator}%gs${fieldSeparator}%ci`
+    ]);
+    if (!result.ok) {
+      throw new Error(result.messageZh ?? "无法读取 stash 列表。");
+    }
+
+    return result.stdout
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line): GitStashEntry => {
+        const [selector, hash, subject, createdAt] = line.split(fieldSeparator);
+        return {
+          selector: selector ?? "",
+          hash: hash ?? "",
+          subject: subject ?? "",
+          createdAt: createdAt ?? ""
+        };
+      });
+  }
+
+  async getStashDetails(repositoryPath: RepositoryLocation, selectorOrHash: string): Promise<GitStashDetails> {
+    const selector = await this.resolveStashSelector(repositoryPath, selectorOrHash);
+    const [filesResult, diffResult] = await Promise.all([
+      this.run(repositoryPath, ["stash", "show", "--name-status", "--include-untracked", selector]),
+      this.run(repositoryPath, ["stash", "show", "--patch", "--include-untracked", "--no-ext-diff", selector])
+    ]);
+    if (!filesResult.ok) {
+      throw new Error(filesResult.messageZh ?? "无法读取 stash 文件列表。");
+    }
+    if (!diffResult.ok) {
+      throw new Error(diffResult.messageZh ?? "无法读取 stash 差异。");
+    }
+    return {
+      selector,
+      files: parseNameStatus(filesResult.stdout),
+      diff: parseUnifiedDiff(diffResult.stdout)
+    };
+  }
+
+  async createStash(repositoryPath: RepositoryLocation, options: GitStashCreateOptions = {}): Promise<GitOperationResult> {
+    const args = ["stash", "push"];
+    if (options.includeUntracked) {
+      args.push("--include-untracked");
+    }
+    if (options.keepIndex) {
+      args.push("--keep-index");
+    }
+    if (options.message?.trim()) {
+      args.push("--message", options.message.trim());
+    }
+    return this.run(repositoryPath, args);
+  }
+
+  async applyStash(repositoryPath: RepositoryLocation, selectorOrHash: string, restoreIndex = false): Promise<GitOperationResult> {
+    const stashSelector = await this.resolveStashSelector(repositoryPath, selectorOrHash);
+    return this.run(repositoryPath, ["stash", "apply", ...(restoreIndex ? ["--index"] : []), stashSelector]);
+  }
+
+  async popStash(repositoryPath: RepositoryLocation, selectorOrHash: string, restoreIndex = false): Promise<GitOperationResult> {
+    const stashSelector = await this.resolveStashSelector(repositoryPath, selectorOrHash);
+    return this.run(repositoryPath, ["stash", "pop", ...(restoreIndex ? ["--index"] : []), stashSelector]);
+  }
+
+  async dropStash(repositoryPath: RepositoryLocation, selectorOrHash: string): Promise<GitOperationResult> {
+    const stashSelector = await this.resolveStashSelector(repositoryPath, selectorOrHash);
+    return this.run(repositoryPath, ["stash", "drop", stashSelector]);
   }
 
   async commit(repositoryPath: RepositoryLocation, input: CommitInput): Promise<GitOperationResult> {
@@ -810,12 +1371,35 @@ export class GitService {
     };
   }
 
-  async fetch(repositoryPath: RepositoryLocation): Promise<GitOperationResult> {
-    return this.run(repositoryPath, ["fetch", "--prune"]);
+  async fetch(repositoryPath: RepositoryLocation, operation?: GitLongOperationContext): Promise<GitOperationResult> {
+    return this.run(repositoryPath, ["fetch", "--progress", "--prune"], { operation });
   }
 
-  async pull(repositoryPath: RepositoryLocation): Promise<GitOperationResult> {
-    return this.run(repositoryPath, ["pull", "--ff-only"]);
+  async fetchRemote(
+    repositoryPath: RepositoryLocation,
+    remoteName: string,
+    prune = false,
+    operation?: GitLongOperationContext
+  ): Promise<GitOperationResult> {
+    const remote = requireRemoteName(remoteName);
+    return this.run(repositoryPath, ["fetch", "--progress", ...(prune ? ["--prune"] : []), remote], { operation });
+  }
+
+  async pull(
+    repositoryPath: RepositoryLocation,
+    strategy: GitPullStrategy,
+    operation?: GitLongOperationContext
+  ): Promise<GitOperationResult> {
+    if (strategy === "ff-only") {
+      return this.run(repositoryPath, ["pull", "--progress", "--ff-only"], { operation });
+    }
+    if (strategy === "rebase") {
+      return this.run(repositoryPath, ["pull", "--progress", "--rebase"], { operation });
+    }
+    if (strategy === "rebase-autostash") {
+      return this.run(repositoryPath, ["pull", "--progress", "--rebase", "--autostash"], { operation });
+    }
+    throw new Error(`不支持的拉取策略：${String(strategy)}`);
   }
 
   async mergeRemote(repositoryPath: RepositoryLocation): Promise<GitOperationResult> {
@@ -838,14 +1422,40 @@ export class GitService {
       }
 
       status = await this.getStatus(repositoryPath);
-      const refreshedValidationFailure = validateRemoteMergeStatus(status, true);
+      const refreshedValidationFailure = validateRemoteMergeStatus(status);
       if (refreshedValidationFailure) {
         return combineGitResults([fetchResult, refreshedValidationFailure], false);
       }
 
+      const divergenceResult = await this.run(repositoryPath, [
+        "rev-list",
+        "--left-right",
+        "--count",
+        `HEAD...${status.upstream!}`
+      ]);
+      if (!divergenceResult.ok) {
+        return combineGitResults([fetchResult, divergenceResult], false);
+      }
+      const divergenceMatch = divergenceResult.stdout.trim().match(/^(\d+)\s+(\d+)$/);
+      if (!divergenceMatch) {
+        return combineGitResults([
+          fetchResult,
+          gitFailure(divergenceResult.command, "Git 返回的当前分支领先落后数量格式不正确。", divergenceResult.stdout)
+        ], false);
+      }
+      status = {
+        ...status,
+        ahead: Number(divergenceMatch[1]),
+        behind: Number(divergenceMatch[2])
+      };
+      const divergenceValidationFailure = validateRemoteMergeStatus(status, true);
+      if (divergenceValidationFailure) {
+        return combineGitResults([fetchResult, divergenceResult, divergenceValidationFailure], false);
+      }
+
       if (status.behind === 0) {
         return {
-          ...fetchResult,
+          ...combineGitResults([fetchResult, divergenceResult], true),
           messageZh: "远程分支没有需要合并的新提交。"
         };
       }
@@ -853,7 +1463,7 @@ export class GitService {
       const mergeResult = await this.run(repositoryPath, ["merge", "--no-edit", status.upstream!], {
         timeoutMs: mergeCommandTimeoutMs
       });
-      return combineGitResults([fetchResult, mergeResult], mergeResult.ok);
+      return combineGitResults([fetchResult, divergenceResult, mergeResult], mergeResult.ok);
     } catch (error) {
       return gitFailure("git fetch --prune ; git merge", errorMessage(error, "合并远程更改失败。"));
     } finally {
@@ -861,10 +1471,18 @@ export class GitService {
     }
   }
 
-  async push(repositoryPath: RepositoryLocation): Promise<GitOperationResult> {
-    const status = await this.getStatus(repositoryPath).catch(() => undefined);
-    if (status?.upstream || !status?.currentBranch) {
-      return this.run(repositoryPath, ["push"]);
+  async push(repositoryPath: RepositoryLocation, options: GitPushOptions = {}): Promise<GitOperationResult> {
+    if (!options || typeof options !== "object" || Array.isArray(options)) {
+      throw new Error("推送选项格式不正确。");
+    }
+    if (options.forceWithLease !== undefined && typeof options.forceWithLease !== "boolean") {
+      throw new Error("安全强制推送选项必须是布尔值。");
+    }
+
+    const status = await this.getStatus(repositoryPath);
+    const pushOptions = options.forceWithLease ? ["--force-with-lease"] : [];
+    if (status.upstream || !status.currentBranch) {
+      return this.run(repositoryPath, ["push", "--progress", ...pushOptions], { operation: options.operation });
     }
 
     const remote = await this.getPushRemote(repositoryPath, status.currentBranch);
@@ -879,29 +1497,222 @@ export class GitService {
       };
     }
 
-    return this.run(repositoryPath, ["push", "--set-upstream", remote, status.currentBranch]);
+    return this.run(repositoryPath, ["push", "--progress", ...pushOptions, "--set-upstream", remote, status.currentBranch], { operation: options.operation });
+  }
+
+  async getRemotes(repositoryPath: RepositoryLocation): Promise<GitRemoteInfo[]> {
+    const [listResult, status] = await Promise.all([
+      this.run(repositoryPath, ["remote"]),
+      this.getStatus(repositoryPath)
+    ]);
+    if (!listResult.ok) {
+      throw new Error(listResult.messageZh ?? "无法读取远程仓库列表。");
+    }
+
+    const fetchDefault = status.currentBranch
+      ? await this.getGitConfigValue(repositoryPath, `branch.${status.currentBranch}.remote`)
+      : undefined;
+    const pushDefault = status.currentBranch
+      ? await this.getConfiguredPushRemote(repositoryPath, status.currentBranch)
+      : await this.getGitConfigValue(repositoryPath, "remote.pushDefault");
+
+    const names = listResult.stdout.split(/\r?\n/).map((name) => name.trim()).filter(Boolean);
+    return Promise.all(
+      names.map(async (name): Promise<GitRemoteInfo> => {
+        const [fetchResult, pushResult, explicitPushUrls, defaultBranchResult] = await Promise.all([
+          this.run(repositoryPath, ["remote", "get-url", "--all", name]),
+          this.run(repositoryPath, ["remote", "get-url", "--all", "--push", name]),
+          this.getLocalGitConfigValues(repositoryPath, `remote.${name}.pushurl`),
+          this.run(repositoryPath, ["symbolic-ref", "--quiet", "--short", `refs/remotes/${name}/HEAD`])
+        ]);
+        if (!fetchResult.ok) {
+          throw new Error(fetchResult.messageZh ?? `无法读取远程仓库 ${name} 的拉取地址。`);
+        }
+        if (!pushResult.ok) {
+          throw new Error(pushResult.messageZh ?? `无法读取远程仓库 ${name} 的推送地址。`);
+        }
+
+        const remoteHead = defaultBranchResult.ok ? defaultBranchResult.stdout.trim() : "";
+        const defaultBranch = remoteHead.startsWith(`${name}/`) ? remoteHead.slice(name.length + 1) : undefined;
+        return {
+          name,
+          fetchUrls: splitNonEmptyLines(fetchResult.stdout),
+          pushUrls: splitNonEmptyLines(pushResult.stdout),
+          explicitPushUrls,
+          defaultBranch,
+          defaultFetch: name === fetchDefault,
+          defaultPush: name === pushDefault
+        };
+      })
+    );
+  }
+
+  async addRemote(repositoryPath: RepositoryLocation, name: string, fetchUrl: string, pushUrl?: string): Promise<GitOperationResult> {
+    const remoteName = requireRemoteName(name);
+    const remoteUrl = requireNonOptionValue(fetchUrl, "远程拉取地址");
+    const remotePushUrl = pushUrl === undefined ? undefined : requireNonOptionValue(pushUrl, "远程推送地址");
+    const addResult = await this.run(repositoryPath, ["remote", "add", remoteName, remoteUrl]);
+    if (!addResult.ok || remotePushUrl === undefined || remotePushUrl === remoteUrl) {
+      return addResult;
+    }
+
+    const pushResult = await this.run(repositoryPath, ["remote", "set-url", "--push", remoteName, remotePushUrl]);
+    if (pushResult.ok) {
+      return combineGitResults([addResult, pushResult], true);
+    }
+
+    const rollbackResult = await this.run(repositoryPath, ["remote", "remove", remoteName]);
+    return gitTransactionFailure("新增远程仓库", [addResult, pushResult], [rollbackResult]);
+  }
+
+  async updateRemote(repositoryPath: RepositoryLocation, currentName: string, input: GitRemoteUpdateInput): Promise<GitOperationResult> {
+    const originalName = requireRemoteName(currentName);
+    const nextName = input.name === undefined ? originalName : requireRemoteName(input.name);
+    const fetchUrl = input.fetchUrl === undefined ? undefined : requireNonOptionValue(input.fetchUrl, "远程拉取地址");
+    const pushUrl = input.pushUrl === undefined
+      ? undefined
+      : input.pushUrl === null || input.pushUrl.trim() === ""
+        ? null
+        : requireNonOptionValue(input.pushUrl, "远程推送地址");
+    const renameRequested = nextName !== originalName;
+    const fetchUpdateRequested = fetchUrl !== undefined;
+    const pushUpdateRequested = pushUrl !== undefined;
+    if (!renameRequested && !fetchUpdateRequested && !pushUpdateRequested) {
+      throw new Error("没有需要更新的远程仓库配置。");
+    }
+
+    const originalFetchUrls = await this.getLocalGitConfigValues(repositoryPath, `remote.${originalName}.url`);
+    if (originalFetchUrls.length === 0) {
+      throw new Error(`远程仓库 ${originalName} 不存在或没有拉取地址。`);
+    }
+    const originalPushUrls = await this.getLocalGitConfigValues(repositoryPath, `remote.${originalName}.pushurl`);
+    const results: GitOperationResult[] = [];
+    let activeName = originalName;
+    let renamed = false;
+    let fetchUpdated = false;
+    let pushMutationAttempted = false;
+
+    const failAndRollback = async (): Promise<GitOperationResult> => {
+      const rollbackResults: GitOperationResult[] = [];
+      if (pushMutationAttempted) {
+        rollbackResults.push(...await this.restoreLocalGitConfigValues(
+          repositoryPath,
+          `remote.${activeName}.pushurl`,
+          originalPushUrls
+        ));
+      }
+      if (fetchUpdated) {
+        rollbackResults.push(...await this.restoreLocalGitConfigValues(
+          repositoryPath,
+          `remote.${activeName}.url`,
+          originalFetchUrls
+        ));
+      }
+      if (renamed) {
+        rollbackResults.push(await this.run(repositoryPath, ["remote", "rename", activeName, originalName]));
+      }
+      return gitTransactionFailure("远程仓库配置更新", results, rollbackResults);
+    };
+
+    if (renameRequested) {
+      const renameResult = await this.run(repositoryPath, ["remote", "rename", activeName, nextName]);
+      results.push(renameResult);
+      if (!renameResult.ok) {
+        return combineGitResults(results, false);
+      }
+      activeName = nextName;
+      renamed = true;
+    }
+
+    if (fetchUpdateRequested) {
+      const fetchResult = await this.run(repositoryPath, ["remote", "set-url", activeName, fetchUrl!]);
+      results.push(fetchResult);
+      if (!fetchResult.ok) {
+        return failAndRollback();
+      }
+      fetchUpdated = true;
+    }
+
+    if (pushUpdateRequested) {
+      pushMutationAttempted = true;
+      const pushResult =
+        pushUrl === null
+          ? await this.run(repositoryPath, ["config", "--local", "--unset-all", `remote.${activeName}.pushurl`])
+          : await this.run(repositoryPath, [
+              "remote",
+              "set-url",
+              "--push",
+              activeName,
+              pushUrl!
+            ]);
+      const normalizedPushResult = pushUrl === null ? acceptAbsentConfigResult(pushResult) : pushResult;
+      results.push(normalizedPushResult);
+      if (!normalizedPushResult.ok) {
+        return failAndRollback();
+      }
+    }
+
+    return combineGitResults(results, true);
+  }
+
+  async removeRemote(repositoryPath: RepositoryLocation, name: string): Promise<GitOperationResult> {
+    return this.run(repositoryPath, ["remote", "remove", requireRemoteName(name)]);
+  }
+
+  async setBranchUpstream(repositoryPath: RepositoryLocation, branchName: string, upstream: string): Promise<GitOperationResult> {
+    const branch = requireNonOptionValue(branchName, "本地分支名");
+    const upstreamBranch = requireNonOptionValue(upstream, "上游分支名");
+    return this.run(repositoryPath, ["branch", `--set-upstream-to=${upstreamBranch}`, branch]);
+  }
+
+  async unsetBranchUpstream(repositoryPath: RepositoryLocation, branchName: string): Promise<GitOperationResult> {
+    const branch = requireNonOptionValue(branchName, "本地分支名");
+    return this.run(repositoryPath, ["branch", "--unset-upstream", branch]);
+  }
+
+  async setDefaultRemote(
+    repositoryPath: RepositoryLocation,
+    remoteName: string,
+    role: "fetch" | "push",
+    branchName?: string
+  ): Promise<GitOperationResult> {
+    const remote = requireRemoteName(remoteName);
+    if (role === "push") {
+      return this.run(repositoryPath, ["config", "--local", "remote.pushDefault", remote]);
+    }
+
+    const branch = requireNonOptionValue(branchName ?? "", "当前分支名");
+    return this.setBranchUpstream(repositoryPath, branch, `${remote}/${branch}`);
   }
 
   async getBranches(repositoryPath: RepositoryLocation): Promise<BranchInfo[]> {
     const [status, refsResult] = await Promise.all([
-      this.getStatus(repositoryPath).catch(() => undefined),
+      this.getStatus(repositoryPath),
       this.run(repositoryPath, [
         "for-each-ref",
         "refs/heads",
         "refs/remotes",
-        `--format=%(refname)${fieldSeparator}%(refname:short)${fieldSeparator}%(objectname)${fieldSeparator}%(upstream:short)`
+        `--format=%(refname)${fieldSeparator}%(refname:short)${fieldSeparator}%(objectname)${fieldSeparator}%(upstream:short)${fieldSeparator}%(upstream)`
       ])
     ]);
 
     if (!refsResult.ok) {
       throw new Error(refsResult.messageZh ?? "无法读取分支列表。");
     }
-
-    return refsResult.stdout
+    let mergedRefs: Set<string> | undefined;
+    if (!status.unborn) {
+      const mergedResult = await this.run(repositoryPath, ["for-each-ref", "--merged=HEAD", "--format=%(refname)", "refs/heads", "refs/remotes"]);
+      if (!mergedResult.ok) {
+        throw new Error(mergedResult.messageZh ?? "无法判断分支是否已合并到当前提交。");
+      }
+      mergedRefs = new Set(mergedResult.stdout.split(/\r?\n/).filter(Boolean));
+    }
+    type BranchCandidate = BranchInfo & { upstreamFullName?: string };
+    const branches = refsResult.stdout
       .split(/\r?\n/)
       .filter(Boolean)
-      .map((line): BranchInfo | null => {
-        const [fullName, shortName, headHash, upstream] = line.split(fieldSeparator);
+      .map((line): BranchCandidate | null => {
+        const [fullName, shortName, headHash, upstream, upstreamFullName] = line.split(fieldSeparator);
         if (!fullName || !shortName || fullName === "refs/remotes/origin/HEAD" || shortName.endsWith("/HEAD")) {
           return null;
         }
@@ -913,11 +1724,40 @@ export class GitService {
           type,
           current: type === "local" && shortName === status?.currentBranch,
           upstream: upstream || undefined,
-          headHash: headHash ?? ""
+          upstreamFullName: upstreamFullName || undefined,
+          headHash: headHash ?? "",
+          merged: mergedRefs?.has(fullName)
         };
       })
-      .filter((branch): branch is BranchInfo => Boolean(branch))
+      .filter((branch): branch is BranchCandidate => Boolean(branch))
       .sort(compareBranches);
+    return Promise.all(branches.map(async (branch) => {
+      const { upstreamFullName, ...branchInfo } = branch;
+      if (branch.type !== "local" || !branch.upstream) {
+        return branchInfo;
+      }
+      if (!upstreamFullName) {
+        throw new Error(`分支 ${branch.name} 的上游引用不完整。`);
+      }
+      const divergenceResult = await this.run(repositoryPath, [
+        "rev-list",
+        "--left-right",
+        "--count",
+        `${branch.fullName}...${upstreamFullName}`
+      ]);
+      if (!divergenceResult.ok) {
+        throw new Error(divergenceResult.messageZh ?? `无法计算分支 ${branch.name} 与上游的差异。`);
+      }
+      const divergence = divergenceResult.stdout.trim().match(/^(\d+)\s+(\d+)$/);
+      if (!divergence) {
+        throw new Error(`分支 ${branch.name} 的 ahead/behind 结果格式不正确。`);
+      }
+      return {
+        ...branchInfo,
+        ahead: Number(divergence[1]),
+        behind: Number(divergence[2])
+      };
+    }));
   }
 
   async createBranch(repositoryPath: RepositoryLocation, branchName: string, checkout: boolean, startPoint?: string): Promise<GitOperationResult> {
@@ -939,10 +1779,7 @@ export class GitService {
       return this.run(repositoryPath, ["branch", name, ...(normalizedStartPoint ? [normalizedStartPoint] : [])]);
     }
 
-    return this.runWithFallbacks(repositoryPath, [
-      ["switch", "-c", name, ...(normalizedStartPoint ? [normalizedStartPoint] : [])],
-      ["checkout", "-b", name, ...(normalizedStartPoint ? [normalizedStartPoint] : [])]
-    ]);
+    return this.run(repositoryPath, ["switch", "-c", name, ...(normalizedStartPoint ? [normalizedStartPoint] : [])]);
   }
 
   async amendLastCommitMessage(repositoryPath: RepositoryLocation, input: CommitMessageInput): Promise<GitOperationResult> {
@@ -959,8 +1796,25 @@ export class GitService {
     return this.run(repositoryPath, args);
   }
 
-  async resetLastCommit(repositoryPath: RepositoryLocation, mode: Exclude<GitResetMode, "hard">): Promise<GitOperationResult> {
-    return this.resetToCommit(repositoryPath, "HEAD~1", mode);
+  async resetLastCommit(repositoryPath: RepositoryLocation, mode: GitResetMode): Promise<GitOperationResult> {
+    if (mode !== "soft" && mode !== "mixed" && mode !== "hard") {
+      throw new Error("撤销上次提交只支持 soft、mixed 或 hard 模式。");
+    }
+    const headWithParentsResult = await this.run(repositoryPath, ["rev-list", "--parents", "-n", "1", "HEAD"]);
+    if (!headWithParentsResult.ok) {
+      return headWithParentsResult;
+    }
+
+    const [headHash, firstParent] = headWithParentsResult.stdout.trim().split(/\s+/);
+    if (!headHash) {
+      return gitFailure(headWithParentsResult.command, "无法读取当前提交，撤销操作已停止。", headWithParentsResult.stdout);
+    }
+    if (firstParent) {
+      const resetResult = await this.resetToCommit(repositoryPath, firstParent, mode);
+      return combineGitResults([headWithParentsResult, resetResult], resetResult.ok);
+    }
+
+    return this.resetRootCommit(repositoryPath, headHash, mode, headWithParentsResult);
   }
 
   async resetToCommit(repositoryPath: RepositoryLocation, hash: string, mode: GitResetMode): Promise<GitOperationResult> {
@@ -990,20 +1844,153 @@ export class GitService {
     return this.run(repositoryPath, ["cherry-pick", target]);
   }
 
-  async switchBranch(repositoryPath: RepositoryLocation, branch: BranchInfo): Promise<GitOperationResult> {
-    if (branch.type === "remote") {
-      return this.runWithFallbacks(repositoryPath, [
-        ["switch", "--track", branch.name],
-        ["checkout", "-t", branch.name],
-        ["switch", branch.name],
-        ["checkout", branch.name]
-      ]);
+  async startRebase(repositoryPath: RepositoryLocation, upstream: string, onto?: string): Promise<GitOperationResult> {
+    const upstreamRef = requireNonOptionValue(upstream, "rebase 上游引用");
+    const args = ["rebase"];
+    if (onto !== undefined) {
+      args.push("--onto", requireNonOptionValue(onto, "rebase 目标引用"));
+    }
+    args.push(upstreamRef);
+    return this.run(repositoryPath, args, { timeoutMs: mergeCommandTimeoutMs });
+  }
+
+  async getRebasePlan(repositoryPath: RepositoryLocation, upstream: string): Promise<GitRebasePlanItem[]> {
+    const upstreamRef = requireNonOptionValue(upstream, "rebase 上游引用");
+    const result = await this.run(repositoryPath, [
+      "log",
+      "--reverse",
+      "--no-merges",
+      `--format=%H${fieldSeparator}%s`,
+      `${upstreamRef}..HEAD`
+    ]);
+    if (!result.ok) {
+      throw new Error(result.messageZh ?? "无法生成交互式变基计划。" );
+    }
+    return result.stdout.split(/\r?\n/).filter(Boolean).map((line) => {
+      const [hash, subject] = line.split(fieldSeparator);
+      return { hash, shortHash: hash.slice(0, 10), subject: subject ?? "", action: "pick" as const };
+    });
+  }
+
+  async startInteractiveRebase(
+    repositoryPath: RepositoryLocation,
+    upstream: string,
+    plan: GitRebasePlanItem[],
+    onto?: string
+  ): Promise<GitOperationResult> {
+    const upstreamRef = requireNonOptionValue(upstream, "rebase 上游引用");
+    if (plan.length === 0) {
+      throw new Error("交互式变基计划不能为空。");
     }
 
-    return this.runWithFallbacks(repositoryPath, [
-      ["switch", branch.name],
-      ["checkout", branch.name]
-    ]);
+    const availablePlan = await this.getRebasePlan(repositoryPath, upstreamRef);
+    const availableHashes = new Set(availablePlan.map((item) => item.hash));
+    const submittedHashes = new Set<string>();
+    for (const item of plan) {
+      if (!isGitRebaseAction(item.action)) {
+        throw new Error(`不支持的 rebase 动作：${String(item.action)}`);
+      }
+      if (!/^[0-9a-f]{40,64}$/i.test(item.hash) || !availableHashes.has(item.hash)) {
+        throw new Error(`rebase 计划包含不属于当前范围的提交：${item.hash}`);
+      }
+      if (submittedHashes.has(item.hash)) {
+        throw new Error(`rebase 计划包含重复提交：${item.shortHash || item.hash.slice(0, 10)}`);
+      }
+      submittedHashes.add(item.hash);
+    }
+    if (submittedHashes.size !== availableHashes.size) {
+      throw new Error("rebase 计划必须保留范围内的全部提交；需要移除的提交请明确选择 drop。");
+    }
+
+    const sequenceEditor = buildRebaseSequenceEditor(plan);
+    const args = ["-c", `sequence.editor=${sequenceEditor}`, "-c", "core.editor=true", "rebase", "-i"];
+    if (onto !== undefined) {
+      args.push("--onto", requireNonOptionValue(onto, "rebase 目标引用"));
+    }
+    args.push(upstreamRef);
+    return this.run(repositoryPath, args, { timeoutMs: mergeCommandTimeoutMs });
+  }
+
+  async continueRebase(repositoryPath: RepositoryLocation): Promise<GitOperationResult> {
+    return this.run(repositoryPath, ["-c", "core.editor=true", "rebase", "--continue"], { timeoutMs: mergeCommandTimeoutMs });
+  }
+
+  async skipRebase(repositoryPath: RepositoryLocation): Promise<GitOperationResult> {
+    return this.run(repositoryPath, ["rebase", "--skip"], { timeoutMs: mergeCommandTimeoutMs });
+  }
+
+  async abortRebase(repositoryPath: RepositoryLocation): Promise<GitOperationResult> {
+    return this.run(repositoryPath, ["rebase", "--abort"], { timeoutMs: mergeCommandTimeoutMs });
+  }
+
+  async continueCherryPick(repositoryPath: RepositoryLocation): Promise<GitOperationResult> {
+    return this.run(repositoryPath, ["-c", "core.editor=true", "cherry-pick", "--continue"], { timeoutMs: mergeCommandTimeoutMs });
+  }
+
+  async abortCherryPick(repositoryPath: RepositoryLocation): Promise<GitOperationResult> {
+    return this.run(repositoryPath, ["cherry-pick", "--abort"], { timeoutMs: mergeCommandTimeoutMs });
+  }
+
+  async skipCherryPick(repositoryPath: RepositoryLocation): Promise<GitOperationResult> {
+    return this.run(repositoryPath, ["cherry-pick", "--skip"], { timeoutMs: mergeCommandTimeoutMs });
+  }
+
+  async continueRevert(repositoryPath: RepositoryLocation): Promise<GitOperationResult> {
+    return this.run(repositoryPath, ["-c", "core.editor=true", "revert", "--continue"], { timeoutMs: mergeCommandTimeoutMs });
+  }
+
+  async abortRevert(repositoryPath: RepositoryLocation): Promise<GitOperationResult> {
+    return this.run(repositoryPath, ["revert", "--abort"], { timeoutMs: mergeCommandTimeoutMs });
+  }
+
+  async skipRevert(repositoryPath: RepositoryLocation): Promise<GitOperationResult> {
+    return this.run(repositoryPath, ["revert", "--skip"], { timeoutMs: mergeCommandTimeoutMs });
+  }
+
+  async startBisect(repositoryPath: RepositoryLocation, badRef?: string, goodRef?: string): Promise<GitOperationResult> {
+    if ((badRef === undefined) !== (goodRef === undefined)) {
+      throw new Error("启动 bisect 时必须同时提供已知坏提交和已知好提交，或两者都不提供。");
+    }
+    return this.run(
+      repositoryPath,
+      badRef === undefined
+        ? ["bisect", "start"]
+        : ["bisect", "start", requireNonOptionValue(badRef, "已知坏提交"), requireNonOptionValue(goodRef!, "已知好提交")]
+    );
+  }
+
+  async markBisectGood(repositoryPath: RepositoryLocation, ref?: string): Promise<GitOperationResult> {
+    return this.run(repositoryPath, ["bisect", "good", ...(ref !== undefined ? [requireNonOptionValue(ref, "bisect 好提交")] : [])]);
+  }
+
+  async markBisectBad(repositoryPath: RepositoryLocation, ref?: string): Promise<GitOperationResult> {
+    return this.run(repositoryPath, ["bisect", "bad", ...(ref !== undefined ? [requireNonOptionValue(ref, "bisect 坏提交")] : [])]);
+  }
+
+  async skipBisect(repositoryPath: RepositoryLocation, refs: string[] = []): Promise<GitOperationResult> {
+    return this.run(repositoryPath, ["bisect", "skip", ...refs.map((ref) => requireNonOptionValue(ref, "bisect 跳过提交"))]);
+  }
+
+  async resetBisect(repositoryPath: RepositoryLocation): Promise<GitOperationResult> {
+    return this.run(repositoryPath, ["bisect", "reset"]);
+  }
+
+  async showCommitSignature(repositoryPath: RepositoryLocation, revision: string): Promise<GitOperationResult> {
+    const target = requireNonOptionValue(revision, "签名提交引用");
+    return this.run(repositoryPath, ["show", "--show-signature", "--no-patch", "--format=fuller", target]);
+  }
+
+  async verifyCommitSignature(repositoryPath: RepositoryLocation, revision: string): Promise<GitOperationResult> {
+    const target = requireNonOptionValue(revision, "签名提交引用");
+    return this.run(repositoryPath, ["verify-commit", "--raw", target]);
+  }
+
+  async switchBranch(repositoryPath: RepositoryLocation, branch: BranchInfo): Promise<GitOperationResult> {
+    if (branch.type === "remote") {
+      return this.run(repositoryPath, ["switch", "--track", branch.name]);
+    }
+
+    return this.run(repositoryPath, ["switch", branch.name]);
   }
 
   async getMergePreview(repositoryPath: RepositoryLocation, targetBranch: string): Promise<GitMergePreview> {
@@ -1053,10 +2040,19 @@ export class GitService {
       const operationState = await this.getOperationState(repositoryPath);
       if (operationState === "merge") {
         try {
+          const [mergeIdentity, mergeMarkerToken] = await Promise.all([
+            this.readMergeIdentity(repositoryPath),
+            this.readMergeMarkerToken(repositoryPath)
+          ]);
+          if (!mergeIdentity || !mergeMarkerToken) {
+            throw new Error("无法确认当前合并身份。");
+          }
           await this.writeManagedMergeState(repositoryPath, {
             sourceBranch: plan.sourceBranch,
             targetBranch: plan.targetBranch,
-            startedAt: new Date().toISOString()
+            startedAt: new Date().toISOString(),
+            ...mergeIdentity,
+            mergeMarkerToken
           });
         } catch (error) {
           return {
@@ -1128,7 +2124,7 @@ export class GitService {
         return gitFailure("git merge --abort", "当前没有正在进行的合并操作。", "No merge operation is in progress.");
       }
 
-      const managedState = await this.readManagedMergeState(repositoryPath);
+      const managedState = await this.readCurrentManagedMergeState(repositoryPath, status.currentBranch);
       const abortResult = await this.run(repositoryPath, ["merge", "--abort"], { timeoutMs: mergeCommandTimeoutMs });
       if (!abortResult.ok) {
         return abortResult;
@@ -1155,13 +2151,757 @@ export class GitService {
     }
   }
 
-  async deleteBranch(repositoryPath: RepositoryLocation, branchName: string): Promise<GitOperationResult> {
+  async renameBranch(
+    repositoryPath: RepositoryLocation,
+    currentName: string,
+    nextName: string,
+    force = false
+  ): Promise<GitOperationResult> {
+    const current = requireNonOptionValue(currentName, "当前分支名");
+    const next = requireNonOptionValue(nextName, "新分支名");
+    const validationResult = await this.run(repositoryPath, ["check-ref-format", "--branch", next]);
+    if (!validationResult.ok) {
+      return {
+        ...validationResult,
+        messageZh: "新分支名不合法，请检查是否包含空格、连续点号或 Git 不允许的字符。"
+      };
+    }
+    return this.run(repositoryPath, ["branch", force ? "-M" : "-m", current, next]);
+  }
+
+  async deleteBranch(repositoryPath: RepositoryLocation, branchName: string, force = false): Promise<GitOperationResult> {
     const name = branchName.trim();
     if (!name) {
       throw new Error("分支名不能为空。");
     }
 
-    return this.run(repositoryPath, ["branch", "-d", name]);
+    return this.run(repositoryPath, ["branch", force ? "-D" : "-d", requireNonOptionValue(name, "分支名")]);
+  }
+
+  async deleteRemoteBranch(repositoryPath: RepositoryLocation, remoteName: string, branchName: string): Promise<GitOperationResult> {
+    const remote = requireRemoteName(remoteName);
+    const branch = requireNonOptionValue(branchName, "远程分支名");
+    return this.run(repositoryPath, ["push", remote, "--delete", branch]);
+  }
+
+  async getTags(repositoryPath: RepositoryLocation): Promise<GitTagInfo[]> {
+    const result = await this.run(repositoryPath, [
+      "for-each-ref",
+      "refs/tags",
+      `--format=%(refname:short)${fieldSeparator}%(objectname)${fieldSeparator}%(*objectname)${fieldSeparator}%(objecttype)${fieldSeparator}%(subject)${fieldSeparator}%(taggerdate:iso-strict)`
+    ]);
+    if (!result.ok) {
+      throw new Error(result.messageZh ?? "无法读取标签列表。");
+    }
+
+    return result.stdout
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line): GitTagInfo => {
+        const [name, hash, peeledHash, objectType, subject, taggerDate] = line.split(fieldSeparator);
+        return {
+          name: name ?? "",
+          hash: hash ?? "",
+          targetHash: peeledHash || hash || "",
+          annotated: objectType === "tag",
+          subject: subject || undefined,
+          taggerDate: taggerDate || undefined
+        };
+      });
+  }
+
+  async createTag(
+    repositoryPath: RepositoryLocation,
+    tagName: string,
+    target = "HEAD",
+    message?: string
+  ): Promise<GitOperationResult> {
+    const name = requireTagName(tagName);
+    const targetRef = requireNonOptionValue(target, "标签目标");
+    const validationResult = await this.run(repositoryPath, ["check-ref-format", `refs/tags/${name}`]);
+    if (!validationResult.ok) {
+      return {
+        ...validationResult,
+        messageZh: "标签名不合法，请检查是否包含空格、连续点号或 Git 不允许的字符。"
+      };
+    }
+    const annotation = message?.trim();
+    return this.run(
+      repositoryPath,
+      annotation ? ["tag", "--annotate", name, targetRef, "--message", annotation] : ["tag", name, targetRef]
+    );
+  }
+
+  async deleteTag(repositoryPath: RepositoryLocation, tagName: string): Promise<GitOperationResult> {
+    return this.run(repositoryPath, ["tag", "--delete", requireTagName(tagName)]);
+  }
+
+  async pushTag(repositoryPath: RepositoryLocation, remoteName: string, tagName: string): Promise<GitOperationResult> {
+    const remote = requireRemoteName(remoteName);
+    const tag = requireTagName(tagName);
+    return this.run(repositoryPath, ["push", remote, `refs/tags/${tag}`]);
+  }
+
+  async deleteRemoteTag(repositoryPath: RepositoryLocation, remoteName: string, tagName: string): Promise<GitOperationResult> {
+    const remote = requireRemoteName(remoteName);
+    const tag = requireTagName(tagName);
+    return this.run(repositoryPath, ["push", remote, "--delete", `refs/tags/${tag}`]);
+  }
+
+  async getReflog(repositoryPath: RepositoryLocation, maxCount = 100): Promise<GitReflogEntry[]> {
+    const limit = requirePositiveInteger(maxCount, "reflog 条数");
+    const result = await this.run(repositoryPath, [
+      "reflog",
+      "show",
+      `--max-count=${limit}`,
+      "--date=iso-strict",
+      `--format=%H${fieldSeparator}%gD${fieldSeparator}%gs${fieldSeparator}%gN`
+    ]);
+    if (!result.ok) {
+      throw new Error(result.messageZh ?? "无法读取 reflog。");
+    }
+
+    return result.stdout
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line, index): GitReflogEntry => {
+        const [hash, datedSelector, subject, authorName] = line.split(fieldSeparator);
+        const selectorMatch = datedSelector?.match(/^(.*)@\{(.+)\}$/);
+        if (!selectorMatch || !selectorMatch[1] || !isIsoDate(selectorMatch[2])) {
+          throw new Error("Git 返回的 reflog 时间格式不正确。");
+        }
+        const separatorIndex = (subject ?? "").indexOf(": ");
+        return {
+          selector: `${selectorMatch[1]}@{${index}}`,
+          hash: hash ?? "",
+          action: separatorIndex >= 0 ? subject.slice(0, separatorIndex) : subject ?? "",
+          message: separatorIndex >= 0 ? subject.slice(separatorIndex + 2) : "",
+          authorName: authorName ?? "",
+          authorDate: selectorMatch[2]
+        };
+      });
+  }
+
+  async resetToReflogEntry(
+    repositoryPath: RepositoryLocation,
+    selector: string,
+    mode: GitResetMode
+  ): Promise<GitOperationResult> {
+    const target = requireReflogTarget(selector);
+    return this.run(repositoryPath, ["reset", `--${mode}`, target], { timeoutMs: resetCommandTimeoutMs });
+  }
+
+  async getLinkedWorktrees(repositoryPath: RepositoryLocation): Promise<GitLinkedWorktree[]> {
+    const result = await this.run(repositoryPath, ["worktree", "list", "--porcelain", "-z"]);
+    if (!result.ok) {
+      throw new Error(result.messageZh ?? "无法读取 worktree 列表。");
+    }
+    return parseLinkedWorktrees(result.stdout);
+  }
+
+  async addLinkedWorktree(repositoryPath: RepositoryLocation, options: GitWorktreeAddOptions): Promise<GitOperationResult> {
+    const targetPath = requireNonOptionValue(options.path, "worktree 路径");
+    if (options.newBranch && options.detach) {
+      throw new Error("新建分支和分离 HEAD 不能同时使用。");
+    }
+
+    const args = ["worktree", "add"];
+    if (options.force) {
+      args.push("--force");
+    }
+    if (options.newBranch) {
+      const newBranch = requireNonOptionValue(options.newBranch, "worktree 新分支名");
+      const validationResult = await this.run(repositoryPath, ["check-ref-format", "--branch", newBranch]);
+      if (!validationResult.ok) {
+        return {
+          ...validationResult,
+          messageZh: "worktree 新分支名不合法，请检查是否包含 Git 不允许的字符。"
+        };
+      }
+      args.push("-b", newBranch);
+    }
+    if (options.detach) {
+      args.push("--detach");
+    }
+    args.push(targetPath);
+    if (options.ref) {
+      args.push(requireNonOptionValue(options.ref, "worktree 引用"));
+    }
+    return this.run(repositoryPath, args);
+  }
+
+  async removeLinkedWorktree(repositoryPath: RepositoryLocation, worktreePath: string, force = false): Promise<GitOperationResult> {
+    const targetPath = requireNonOptionValue(worktreePath, "worktree 路径");
+    return this.run(repositoryPath, ["worktree", "remove", ...(force ? ["--force", "--force"] : []), targetPath]);
+  }
+
+  async pruneLinkedWorktrees(repositoryPath: RepositoryLocation, dryRun = false): Promise<GitOperationResult> {
+    return this.run(repositoryPath, ["worktree", "prune", ...(dryRun ? ["--dry-run", "--verbose"] : [])]);
+  }
+
+  async lockLinkedWorktree(repositoryPath: RepositoryLocation, worktreePath: string, reason?: string): Promise<GitOperationResult> {
+    const targetPath = requireNonOptionValue(worktreePath, "worktree 路径");
+    const lockReason = reason?.trim();
+    return this.run(repositoryPath, ["worktree", "lock", ...(lockReason ? ["--reason", lockReason] : []), targetPath]);
+  }
+
+  async unlockLinkedWorktree(repositoryPath: RepositoryLocation, worktreePath: string): Promise<GitOperationResult> {
+    return this.run(repositoryPath, ["worktree", "unlock", requireNonOptionValue(worktreePath, "worktree 路径")]);
+  }
+
+  async moveLinkedWorktree(repositoryPath: RepositoryLocation, options: GitWorktreeMoveOptions): Promise<GitOperationResult> {
+    const sourcePath = requireNonOptionValue(options.worktreePath, "worktree 原路径");
+    const destinationPath = requireNonOptionValue(options.destinationPath, "worktree 新路径");
+    if (sourcePath === destinationPath) {
+      throw new Error("worktree 新路径不能与原路径相同。");
+    }
+    return this.run(repositoryPath, ["worktree", "move", sourcePath, destinationPath]);
+  }
+
+  async repairLinkedWorktrees(repositoryPath: RepositoryLocation, worktreePaths: string[] = []): Promise<GitOperationResult> {
+    const paths = worktreePaths.map((item) => requireNonOptionValue(item, "worktree 路径"));
+    return this.run(repositoryPath, ["worktree", "repair", ...(paths.length > 0 ? ["--", ...paths] : [])]);
+  }
+
+  async getSubmodules(repositoryPath: RepositoryLocation): Promise<GitSubmoduleInfo[]> {
+    const result = await this.run(repositoryPath, ["submodule", "status", "--recursive"]);
+    if (!result.ok) {
+      throw new Error(result.messageZh ?? "无法读取子模块状态。");
+    }
+    const modules = parseSubmoduleStatus(result.stdout);
+    if (modules.length === 0) {
+      return [];
+    }
+
+    const metadata = await this.readSubmoduleMetadata(repositoryPath, ".", "");
+    const orderedModules = [...modules].sort((left, right) => left.path.split("/").length - right.path.split("/").length);
+    for (const module of orderedModules) {
+      const descendantPrefix = `${module.path}/`;
+      if (!modules.some((candidate) => candidate.path.startsWith(descendantPrefix))) {
+        continue;
+      }
+      const nested = await this.readSubmoduleMetadata(repositoryPath, module.path, descendantPrefix);
+      for (const [modulePath, item] of nested) {
+        metadata.set(modulePath, item);
+      }
+    }
+    return modules.map((module) => {
+      const item = metadata.get(module.path);
+      if (!item?.url) {
+        throw new Error(`子模块 ${module.path} 缺少 URL 配置。`);
+      }
+      return { ...module, url: item.url, branch: item.branch };
+    });
+  }
+
+  private async readSubmoduleMetadata(
+    repositoryPath: RepositoryLocation,
+    workingDirectory: string,
+    pathPrefix: string
+  ): Promise<Map<string, { url: string; branch?: string }>> {
+    const result = await this.run(repositoryPath, [
+      ...(workingDirectory === "." ? [] : ["-C", workingDirectory]),
+      "config",
+      "--file",
+      ".gitmodules",
+      "--get-regexp",
+      "^submodule\\..*\\.(path|url|branch)$"
+    ]);
+    if (!result.ok) {
+      throw new Error(result.messageZh ?? `无法读取 ${pathPrefix || "根仓库"} 的 .gitmodules 配置。`);
+    }
+    return new Map(Array.from(parseSubmoduleConfig(result.stdout), ([modulePath, item]) => [`${pathPrefix}${modulePath}`, item]));
+  }
+
+  async initializeSubmodules(repositoryPath: RepositoryLocation, paths: string[] = []): Promise<GitOperationResult> {
+    const normalizedPaths = paths.map((item) => requireNonOptionValue(item, "子模块路径"));
+    return this.run(repositoryPath, ["submodule", "init", ...(normalizedPaths.length > 0 ? ["--", ...normalizedPaths] : [])]);
+  }
+
+  async updateSubmodules(repositoryPath: RepositoryLocation, options: GitSubmoduleUpdateOptions = {}): Promise<GitOperationResult> {
+    const args = ["submodule", "update"];
+    if (options.initialize) {
+      args.push("--init");
+    }
+    if (options.recursive) {
+      args.push("--recursive");
+    }
+    if (options.remote) {
+      args.push("--remote");
+    }
+    const paths = (options.paths ?? []).map((item) => requireNonOptionValue(item, "子模块路径"));
+    if (paths.length > 0) {
+      args.push("--", ...paths);
+    }
+    return this.run(repositoryPath, args, { timeoutMs: 10 * 60_000 });
+  }
+
+  async syncSubmodules(repositoryPath: RepositoryLocation, recursive = true): Promise<GitOperationResult> {
+    return this.run(repositoryPath, ["submodule", "sync", ...(recursive ? ["--recursive"] : [])]);
+  }
+
+  async addSubmodule(repositoryPath: RepositoryLocation, options: GitSubmoduleAddOptions): Promise<GitOperationResult> {
+    const url = requireNonOptionValue(options.url, "子模块地址");
+    const modulePath = requireNonOptionValue(options.path, "子模块路径");
+    const args = ["submodule", "add"];
+    if (options.force) {
+      args.push("--force");
+    }
+    if (options.name) {
+      args.push("--name", requireNonOptionValue(options.name, "子模块名称"));
+    }
+    if (options.branch) {
+      args.push("--branch", requireNonOptionValue(options.branch, "子模块分支"));
+    }
+    args.push("--", url, modulePath);
+    return this.run(repositoryPath, args, { timeoutMs: 10 * 60_000 });
+  }
+
+  async setSubmoduleBranch(repositoryPath: RepositoryLocation, modulePath: string, branch?: string): Promise<GitOperationResult> {
+    const targetPath = requireNonOptionValue(modulePath, "子模块路径");
+    return this.run(repositoryPath, [
+      "submodule",
+      "set-branch",
+      ...(branch?.trim() ? ["--branch", requireNonOptionValue(branch, "子模块分支")] : ["--default"]),
+      "--",
+      targetPath
+    ]);
+  }
+
+  async deinitializeSubmodule(repositoryPath: RepositoryLocation, modulePath: string, force = false): Promise<GitOperationResult> {
+    return this.run(repositoryPath, [
+      "submodule",
+      "deinit",
+      ...(force ? ["--force"] : []),
+      "--",
+      requireNonOptionValue(modulePath, "子模块路径")
+    ]);
+  }
+
+  async removeSubmodule(repositoryPath: RepositoryLocation, modulePath: string, force = false): Promise<GitOperationResult> {
+    const targetPath = requireNonOptionValue(modulePath, "子模块路径");
+    const deinitResult = await this.deinitializeSubmodule(repositoryPath, targetPath, force);
+    if (!deinitResult.ok) {
+      return deinitResult;
+    }
+    const removeResult = await this.run(repositoryPath, ["rm", ...(force ? ["--force"] : []), "--", targetPath]);
+    return combineGitResults([deinitResult, removeResult], removeResult.ok);
+  }
+
+  async getLfsStatus(repositoryPath: RepositoryLocation): Promise<GitLfsStatus> {
+    const versionResult = await this.run(repositoryPath, ["lfs", "version"]);
+    if (!versionResult.ok) {
+      const diagnostic = `${versionResult.stderr}\n${versionResult.stdout}\n${versionResult.messageZh ?? ""}`;
+      if (/lfs is not a git command|git: 'lfs' is not a git command/i.test(diagnostic)) {
+        return {
+          installed: false,
+          initialized: false,
+          version: "",
+          files: []
+        };
+      }
+      throw new Error(versionResult.messageZh ?? "无法读取 Git LFS 版本。");
+    }
+
+    const configurationResult = await this.run(repositoryPath, ["config", "--local", "--get", "filter.lfs.process"]);
+    if (!configurationResult.ok && configurationResult.exitCode !== 1) {
+      throw new Error(configurationResult.messageZh ?? "无法读取 Git LFS 仓库配置。");
+    }
+    const hookPathResult = await this.run(repositoryPath, ["rev-parse", "--git-path", "hooks/pre-push"]);
+    if (!hookPathResult.ok || !hookPathResult.stdout.trim()) {
+      throw new Error(hookPathResult.messageZh ?? "无法定位当前仓库的 pre-push hook。");
+    }
+    const hookPath = resolveGitReportedPath(repositoryPath, hookPathResult.stdout.trim());
+    const hookContent = await this.readOptionalRegularTargetFile(repositoryPath, hookPath);
+    const hookExecutable = hookContent !== null && await this.isExecutableTargetFile(repositoryPath, hookPath);
+    const localFilterConfigured = configurationResult.ok
+      && /^git-lfs\s+filter-process(?:\s|$)/.test(configurationResult.stdout.trim());
+    const hookInstallsLfs = hookContent !== null && hookExecutable
+      && decodeGitOutput(hookContent)
+        .split(/\r?\n/)
+        .some((line) => !/^\s*#/.test(line) && /\bgit(?:\s+|-)lfs\s+pre-push\b/.test(line));
+    const statusResult = await this.run(repositoryPath, ["lfs", "status", "--json"]);
+    if (!statusResult.ok) {
+      throw new Error(statusResult.messageZh ?? "无法读取 Git LFS 状态。");
+    }
+
+    return {
+      installed: true,
+      initialized: localFilterConfigured && hookInstallsLfs,
+      version: versionResult.stdout.trim(),
+      files: parseLfsStatus(statusResult.stdout)
+    };
+  }
+
+  async installLfs(repositoryPath: RepositoryLocation, scope: "local" | "global"): Promise<GitOperationResult> {
+    if (scope !== "local" && scope !== "global") {
+      throw new Error("Git LFS 安装范围必须是 local 或 global。");
+    }
+    return this.run(repositoryPath, ["lfs", "install", ...(scope === "local" ? ["--local"] : [])]);
+  }
+
+  async pullLfs(
+    repositoryPath: RepositoryLocation,
+    remoteName?: string,
+    refs: string[] = [],
+    operation?: GitLongOperationContext
+  ): Promise<GitOperationResult> {
+    const args = ["lfs", "pull"];
+    if (remoteName !== undefined) {
+      args.push(requireRemoteName(remoteName));
+      args.push(...refs.map((ref) => requireNonOptionValue(ref, "LFS 引用")));
+    } else if (refs.length > 0) {
+      throw new Error("指定 LFS 引用时必须同时指定远程仓库名。");
+    }
+    return this.run(repositoryPath, args, { timeoutMs: 10 * 60_000, operation });
+  }
+
+  async pruneLfs(repositoryPath: RepositoryLocation, dryRun = false): Promise<GitOperationResult> {
+    return this.run(repositoryPath, ["lfs", "prune", ...(dryRun ? ["--dry-run"] : [])], { timeoutMs: 10 * 60_000 });
+  }
+
+  async trackLfsPatterns(repositoryPath: RepositoryLocation, patterns: string[]): Promise<GitOperationResult> {
+    const values = requireLfsPatterns(patterns);
+    return this.run(repositoryPath, ["lfs", "track", "--", ...values]);
+  }
+
+  async untrackLfsPatterns(repositoryPath: RepositoryLocation, patterns: string[]): Promise<GitOperationResult> {
+    const values = requireLfsPatterns(patterns);
+    return this.run(repositoryPath, ["lfs", "untrack", "--", ...values]);
+  }
+
+  async getLfsLocks(repositoryPath: RepositoryLocation): Promise<GitLfsLock[]> {
+    const result = await this.run(repositoryPath, ["lfs", "locks", "--json"]);
+    if (!result.ok) {
+      throw new Error(result.messageZh ?? "无法读取 Git LFS 锁定记录。");
+    }
+    let payload: unknown;
+    try {
+      payload = JSON.parse(result.stdout);
+    } catch {
+      throw new Error("Git LFS 返回了无法解析的锁定记录。");
+    }
+    const locks = Array.isArray(payload) ? payload : (payload as { locks?: unknown[] } | null)?.locks;
+    if (!Array.isArray(locks)) {
+      return [];
+    }
+    return locks.map((entry): GitLfsLock => {
+      const item = entry as { id?: unknown; path?: unknown; locked_at?: unknown; owner?: { name?: unknown } };
+      return {
+        id: String(item.id ?? ""),
+        path: String(item.path ?? ""),
+        owner: String(item.owner?.name ?? ""),
+        ...(typeof item.locked_at === "string" ? { lockedAt: item.locked_at } : {})
+      };
+    }).filter((item) => item.id !== "" && item.path !== "");
+  }
+
+  async lockLfsFile(repositoryPath: RepositoryLocation, filePath: string): Promise<GitOperationResult> {
+    return this.run(repositoryPath, ["lfs", "lock", "--", requireNonOptionValue(filePath, "LFS 文件路径")]);
+  }
+
+  async unlockLfsFile(repositoryPath: RepositoryLocation, lockId: string, force = false): Promise<GitOperationResult> {
+    const id = requireNonOptionValue(lockId, "LFS 锁编号");
+    return this.run(repositoryPath, ["lfs", "unlock", "--id", ...(force ? ["--force"] : []), id]);
+  }
+
+  async migrateLfs(
+    repositoryPath: RepositoryLocation,
+    options: GitLfsMigrateOptions,
+    operation?: GitLongOperationContext
+  ): Promise<GitOperationResult> {
+    if (options.rewriteHistory !== true) {
+      throw new Error("LFS 迁移会改写提交历史，必须明确确认后才能执行。");
+    }
+    const include = requireLfsPatterns(options.include);
+    const exclude = options.exclude?.length ? requireLfsPatterns(options.exclude) : [];
+    const status = await this.getStatus(repositoryPath);
+    if (status.stagedCount + status.unstagedCount + status.untrackedCount > 0 || status.hasConflicts) {
+      throw new Error("LFS 历史迁移前必须提交或暂存当前工作区修改。");
+    }
+    const args = ["lfs", "migrate", "import", "--yes", `--include=${include.join(",")}`];
+    if (exclude.length > 0) {
+      args.push(`--exclude=${exclude.join(",")}`);
+    }
+    if (options.everything) {
+      args.push("--everything");
+    }
+    return this.run(repositoryPath, args, { timeoutMs: 30 * 60_000, operation });
+  }
+
+  async readGitIgnore(repositoryPath: RepositoryLocation): Promise<GitIgnoreDocument> {
+    const gitIgnorePath = resolveRepositoryFilePath(repositoryPath, ".gitignore");
+    const content = await this.readOptionalRegularTargetFile(repositoryPath, gitIgnorePath);
+    if (content === null) {
+      return { exists: false, content: "", revision: "missing" };
+    }
+    return {
+      exists: true,
+      content: decodeGitOutput(content),
+      revision: await this.repositoryContentRevision(repositoryPath, content)
+    };
+  }
+
+  async writeGitIgnore(repositoryPath: RepositoryLocation, content: string, expectedRevision: string): Promise<void> {
+    const revision = requireContentRevision(expectedRevision);
+    const target = normalizeRepositoryTarget(repositoryPath);
+    const gitIgnorePath = resolveRepositoryFilePath(repositoryPath, ".gitignore");
+    const nextContent = Buffer.from(content, "utf8");
+    if (!target.remote) {
+      const lockPath = `${gitIgnorePath}.git-ui-pro.lock`;
+      try {
+        await mkdir(lockPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+          throw new Error(".gitignore 正在被另一个操作修改，请稍后重试。");
+        }
+        throw error;
+      }
+
+      const temporaryPath = `${gitIgnorePath}.git-ui-pro-${randomUUID()}.tmp`;
+      try {
+        const current = await this.readOptionalRegularTargetFile(repositoryPath, gitIgnorePath);
+        const currentRevision = current === null ? "missing" : await this.repositoryContentRevision(repositoryPath, current);
+        if (currentRevision !== revision) {
+          throw new Error(".gitignore 已在外部发生变化，保存已停止。请刷新后重新编辑。");
+        }
+        await writeFile(temporaryPath, nextContent, { flag: "wx" });
+        await rename(temporaryPath, gitIgnorePath);
+      } finally {
+        try {
+          await unlink(temporaryPath);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+            throw error;
+          }
+        } finally {
+          await rmdir(lockPath);
+        }
+      }
+      return;
+    }
+
+    const quotedPath = shellQuote(gitIgnorePath);
+    const quotedRepository = shellQuote(target.path);
+    const lockPath = shellQuote(`${gitIgnorePath}.git-ui-pro.lock`);
+    const temporaryPath = shellQuote(`${gitIgnorePath}.git-ui-pro-${randomUUID()}.tmp`);
+    const command = [
+      `if ! mkdir -- ${lockPath} 2>/dev/null; then exit 5; fi`,
+      `cleanup() { rm -f -- ${temporaryPath}; rmdir -- ${lockPath}; }`,
+      "trap cleanup EXIT HUP INT TERM",
+      `if [ -e ${quotedPath} ]; then`,
+      `  if [ ! -f ${quotedPath} ]; then exit 4; fi`,
+      `  current_hash=$(git -C ${quotedRepository} hash-object --stdin < ${quotedPath}) || exit 7`,
+      "  current_revision=git:$current_hash",
+      "else",
+      "  current_revision=missing",
+      "fi",
+      `if [ "$current_revision" != ${shellQuote(revision)} ]; then exit 6; fi`,
+      "umask 022",
+      `cat > ${temporaryPath} || exit 7`,
+      `mv -f -- ${temporaryPath} ${quotedPath} || exit 7`
+    ].join("\n");
+    const result = await runSshShell(target.remote, command, { timeoutMs: 20_000, stdin: nextContent });
+    if (result.exitCode === 5) {
+      throw new Error("远程 .gitignore 正在被另一个操作修改，请稍后重试。");
+    }
+    if (result.exitCode === 6) {
+      throw new Error("远程 .gitignore 已在外部发生变化，保存已停止。请刷新后重新编辑。");
+    }
+    if (result.exitCode === 4) {
+      throw new Error("仓库根目录的 .gitignore 不是普通文件。");
+    }
+    if (!result.ok) {
+      throw new Error(result.messageZh ?? "无法写入远程仓库的 .gitignore。");
+    }
+  }
+
+  async createGitIgnoreIfMissing(repositoryPath: RepositoryLocation): Promise<boolean> {
+    const target = normalizeRepositoryTarget(repositoryPath);
+    const gitIgnorePath = resolveRepositoryFilePath(repositoryPath, ".gitignore");
+    if (!target.remote) {
+      try {
+        await writeFile(gitIgnorePath, Buffer.alloc(0), { flag: "wx" });
+        return true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+          return false;
+        }
+        throw error;
+      }
+    }
+
+    const quotedPath = shellQuote(gitIgnorePath);
+    const result = await runSshShell(
+      target.remote,
+      `umask 022; if (set -C; : > ${quotedPath}) 2>/dev/null; then exit 0; fi; if [ -e ${quotedPath} ]; then exit 3; fi; exit 4`,
+      { timeoutMs: 20_000 }
+    );
+    if (result.ok) {
+      return true;
+    }
+    if (result.exitCode === 3) {
+      return false;
+    }
+    throw new Error(result.messageZh ?? "无法在远程仓库中创建 .gitignore。");
+  }
+
+  async getSigningConfig(repositoryPath: RepositoryLocation): Promise<GitSigningConfig> {
+    const [commitGpgSign, tagGpgSign, signingKey, format] = await Promise.all([
+      this.getLocalGitConfigValue(repositoryPath, "commit.gpgSign"),
+      this.getLocalGitConfigValue(repositoryPath, "tag.gpgSign"),
+      this.getLocalGitConfigValue(repositoryPath, "user.signingKey"),
+      this.getLocalGitConfigValue(repositoryPath, "gpg.format")
+    ]);
+    if (format && !isGitSigningFormat(format)) {
+      throw new Error(`仓库配置中的 gpg.format 值不受支持：${format}`);
+    }
+    return {
+      ...(commitGpgSign === undefined ? {} : { commitGpgSign: parseGitBoolean(commitGpgSign, "commit.gpgSign") }),
+      ...(tagGpgSign === undefined ? {} : { tagGpgSign: parseGitBoolean(tagGpgSign, "tag.gpgSign") }),
+      ...(signingKey === undefined ? {} : { signingKey }),
+      ...(format === undefined ? {} : { format: format as GitSigningFormat })
+    };
+  }
+
+  async setSigningConfig(repositoryPath: RepositoryLocation, input: GitSigningConfigUpdate): Promise<GitOperationResult> {
+    const updates: Array<[string, string | null]> = [];
+    if (input.commitGpgSign !== undefined) {
+      if (input.commitGpgSign !== null && typeof input.commitGpgSign !== "boolean") {
+        throw new Error("提交签名开关必须是布尔值或 null。");
+      }
+      updates.push(["commit.gpgSign", input.commitGpgSign === null ? null : String(input.commitGpgSign)]);
+    }
+    if (input.tagGpgSign !== undefined) {
+      if (input.tagGpgSign !== null && typeof input.tagGpgSign !== "boolean") {
+        throw new Error("标签签名开关必须是布尔值或 null。");
+      }
+      updates.push(["tag.gpgSign", input.tagGpgSign === null ? null : String(input.tagGpgSign)]);
+    }
+    if (input.signingKey !== undefined) {
+      if (input.signingKey !== null && typeof input.signingKey !== "string") {
+        throw new Error("签名密钥必须是字符串或 null。");
+      }
+      updates.push(["user.signingKey", input.signingKey === null ? null : requireValue(input.signingKey, "签名密钥")]);
+    }
+    if (input.format !== undefined) {
+      if (input.format !== null && !isGitSigningFormat(input.format)) {
+        throw new Error("签名格式必须是 openpgp、ssh 或 x509。");
+      }
+      updates.push(["gpg.format", input.format]);
+    }
+    if (updates.length === 0) {
+      throw new Error("没有需要更新的签名配置。");
+    }
+
+    const snapshots = new Map<string, string[]>();
+    for (const [key] of updates) {
+      snapshots.set(key, await this.getLocalGitConfigValues(repositoryPath, key));
+    }
+
+    const results: GitOperationResult[] = [];
+    const mutatedKeys: string[] = [];
+    for (const [key, value] of updates) {
+      const rawResult = await this.run(
+        repositoryPath,
+        value === null ? ["config", "--local", "--unset-all", key] : ["config", "--local", "--replace-all", key, value]
+      );
+      const result = value === null ? acceptAbsentConfigResult(rawResult) : rawResult;
+      results.push(result);
+      if (!result.ok) {
+        const rollbackResults: GitOperationResult[] = [];
+        for (const mutatedKey of [...mutatedKeys].reverse()) {
+          rollbackResults.push(...await this.restoreLocalGitConfigValues(
+            repositoryPath,
+            mutatedKey,
+            snapshots.get(mutatedKey) ?? []
+          ));
+        }
+        return gitTransactionFailure("签名配置更新", results, rollbackResults);
+      }
+      mutatedKeys.push(key);
+    }
+    return combineGitResults(results, true);
+  }
+
+  async getGitIdentity(repositoryPath: RepositoryLocation): Promise<GitIdentityConfig> {
+    const [localName, localEmail, effectiveName, effectiveEmail] = await Promise.all([
+      this.getLocalGitConfigValue(repositoryPath, "user.name"),
+      this.getLocalGitConfigValue(repositoryPath, "user.email"),
+      this.getGitConfigValue(repositoryPath, "user.name"),
+      this.getGitConfigValue(repositoryPath, "user.email")
+    ]);
+    const name = localName ?? effectiveName;
+    const email = localEmail ?? effectiveEmail;
+    const issues = validateGitIdentity(name, email);
+    return {
+      ...(name === undefined ? {} : { name }),
+      ...(email === undefined ? {} : { email }),
+      ...(localName === undefined ? {} : { localName }),
+      ...(localEmail === undefined ? {} : { localEmail }),
+      valid: issues.length === 0,
+      issues
+    };
+  }
+
+  async setGitIdentity(repositoryPath: RepositoryLocation, input: GitIdentityUpdate): Promise<GitOperationResult> {
+    if (!input || typeof input.name !== "string" || typeof input.email !== "string") {
+      throw new Error("Git 提交身份必须包含姓名和邮箱。");
+    }
+    const name = input.name.trim();
+    const email = input.email.trim();
+    const issues = validateGitIdentity(name, email);
+    if (issues.length > 0) {
+      throw new Error(issues.map((issue) => issue.messageZh).join(" "));
+    }
+
+    const updates: Array<["user.name" | "user.email", string]> = [
+      ["user.name", name],
+      ["user.email", email]
+    ];
+    const snapshots = new Map<string, string[]>();
+    for (const [key] of updates) {
+      snapshots.set(key, await this.getLocalGitConfigValues(repositoryPath, key));
+    }
+
+    const results: GitOperationResult[] = [];
+    const mutatedKeys: string[] = [];
+    for (const [key, value] of updates) {
+      const result = await this.run(repositoryPath, ["config", "--local", "--replace-all", key, value]);
+      results.push(result);
+      if (!result.ok) {
+        const rollbackResults: GitOperationResult[] = [];
+        for (const mutatedKey of [...mutatedKeys].reverse()) {
+          rollbackResults.push(...await this.restoreLocalGitConfigValues(
+            repositoryPath,
+            mutatedKey,
+            snapshots.get(mutatedKey) ?? []
+          ));
+        }
+        return gitTransactionFailure("Git 提交身份更新", results, rollbackResults);
+      }
+      mutatedKeys.push(key);
+    }
+    return combineGitResults(results, true);
+  }
+
+  async getHostingLinks(
+    repositoryPath: RepositoryLocation,
+    commitHash?: string,
+    branchName?: string,
+    remoteName = "origin"
+  ): Promise<GitHostingLinks> {
+    const remote = requireRemoteName(remoteName);
+    const urlResult = await this.run(repositoryPath, ["remote", "get-url", remote]);
+    if (!urlResult.ok) {
+      throw new Error(urlResult.messageZh ?? `无法读取远程仓库 ${remote} 的地址。`);
+    }
+
+    const links = parseHostedRemoteUrl(urlResult.stdout.trim(), commitHash, branchName);
+    if (!links) {
+      throw new Error("当前远程地址不是受支持的 GitHub、GitLab 或 Gitee 仓库。");
+    }
+    return links;
   }
 
   async scanRepositories(rootPath: string, maxDepth = 4): Promise<string[]> {
@@ -1170,18 +2910,90 @@ export class GitService {
     return found;
   }
 
-  private async runWithFallbacks(repositoryPath: RepositoryLocation, commands: string[][]): Promise<GitOperationResult> {
-    let lastResult: GitOperationResult | undefined;
+  private async repositoryHasHead(repositoryPath: RepositoryLocation): Promise<boolean> {
+    const result = await this.run(repositoryPath, ["rev-parse", "--verify", "--quiet", "HEAD"]);
+    if (result.ok) {
+      return true;
+    }
+    if (result.exitCode === 1) {
+      return false;
+    }
+    throw new Error(result.messageZh ?? "无法确认仓库是否已有提交。");
+  }
 
-    for (const args of commands) {
-      const result = await this.run(repositoryPath, args);
-      if (result.ok) {
-        return result;
-      }
-      lastResult = result;
+  private async resetRootCommit(
+    repositoryPath: RepositoryLocation,
+    headHash: string,
+    mode: GitResetMode,
+    headResult: GitOperationResult
+  ): Promise<GitOperationResult> {
+    const branchResult = await this.run(repositoryPath, ["symbolic-ref", "--quiet", "HEAD"]);
+    const branchRef = branchResult.stdout.trim();
+    if (!branchResult.ok || !branchRef.startsWith("refs/heads/")) {
+      return {
+        ...combineGitResults([
+          headResult,
+          branchResult,
+          gitFailure(
+            branchResult.command,
+            "当前根提交处于 detached HEAD，无法安全撤销；请先切换到本地分支。",
+            branchResult.stderr
+          )
+        ], false),
+        messageZh: "当前根提交处于 detached HEAD，无法安全撤销；请先切换到本地分支。"
+      };
     }
 
-    return lastResult!;
+    const results: GitOperationResult[] = [headResult, branchResult];
+    const origHeadResult = await this.run(repositoryPath, ["update-ref", "ORIG_HEAD", headHash]);
+    results.push(origHeadResult);
+    if (!origHeadResult.ok) {
+      return combineGitResults(results, false);
+    }
+
+    if (mode === "mixed") {
+      const clearIndexResult = await this.run(repositoryPath, ["read-tree", "--empty"]);
+      results.push(clearIndexResult);
+      if (!clearIndexResult.ok) {
+        return combineGitResults(results, false);
+      }
+    } else if (mode === "hard") {
+      const removeTrackedResult = await this.run(repositoryPath, ["rm", "--force", "-r", "--", "."]);
+      results.push(removeTrackedResult);
+      if (!removeTrackedResult.ok) {
+        return combineGitResults(results, false);
+      }
+    }
+
+    const deleteRefResult = await this.run(repositoryPath, ["update-ref", "-d", branchRef, headHash]);
+    results.push(deleteRefResult);
+    if (deleteRefResult.ok) {
+      return {
+        ...combineGitResults(results, true),
+        messageZh: mode === "soft"
+          ? "已撤销根提交，原提交保存在 ORIG_HEAD，更改仍保持暂存。"
+          : mode === "mixed"
+            ? "已撤销根提交，原提交保存在 ORIG_HEAD，更改已取消暂存。"
+            : "已撤销根提交，原提交保存在 ORIG_HEAD，根提交中的文件已从工作区移除。"
+      };
+    }
+
+    if (mode === "mixed" || mode === "hard") {
+      const restoreResult = mode === "hard"
+        ? await this.run(repositoryPath, ["reset", "--hard", headHash])
+        : await this.run(repositoryPath, ["read-tree", headHash]);
+      results.push(restoreResult);
+      if (!restoreResult.ok) {
+        return {
+          ...combineGitResults(results, false),
+          messageZh: "撤销根提交失败，且恢复仓库状态失败；请勿继续提交，先在终端检查 Git 状态。"
+        };
+      }
+    }
+    return {
+      ...combineGitResults(results, false),
+      messageZh: "撤销根提交失败，仓库分支未移动，工作区文件已保留。"
+    };
   }
 
   private async loadConflictSnapshot(repositoryPath: RepositoryLocation, filePath: string): Promise<ConflictSnapshot> {
@@ -1192,14 +3004,19 @@ export class GitService {
     resolveRepositoryFilePath(repositoryPath, normalizedPath);
 
     const unmergedResult = await this.run(repositoryPath, ["ls-files", "--unmerged", "--", normalizedPath]);
-    if (!unmergedResult.ok || !unmergedResult.stdout.trim()) {
+    if (!unmergedResult.ok) {
+      throw new Error(unmergedResult.messageZh ?? "无法读取冲突文件的索引状态。");
+    }
+    if (!unmergedResult.stdout.trim()) {
       throw new Error("该文件已不在冲突状态，请刷新工作区。");
     }
 
+    const conflictStages = parseConflictStages(unmergedResult.stdout);
+
     const [base, current, incoming, result] = await Promise.all([
-      this.readConflictStage(repositoryPath, normalizedPath, 1),
-      this.readConflictStage(repositoryPath, normalizedPath, 2),
-      this.readConflictStage(repositoryPath, normalizedPath, 3),
+      conflictStages.has(1) ? this.readConflictStage(repositoryPath, normalizedPath, 1) : null,
+      conflictStages.has(2) ? this.readConflictStage(repositoryPath, normalizedPath, 2) : null,
+      conflictStages.has(3) ? this.readConflictStage(repositoryPath, normalizedPath, 3) : null,
       this.readRepositoryFile(repositoryPath, normalizedPath)
     ]);
     const token = createHash("sha256")
@@ -1222,13 +3039,16 @@ export class GitService {
 
   private async readConflictStage(repositoryPath: RepositoryLocation, filePath: string, stage: 1 | 2 | 3): Promise<Buffer | null> {
     const result = await this.runBinary(repositoryPath, ["show", `:${stage}:${filePath}`], { timeoutMs: 10_000 });
-    return result.ok ? result.stdout : null;
+    if (!result.ok) {
+      throw new Error(result.messageZh ?? `无法读取冲突文件的索引阶段 ${stage}。`);
+    }
+    return result.stdout;
   }
 
   private async getMergeHeadLabel(repositoryPath: RepositoryLocation): Promise<string | undefined> {
     const result = await this.run(repositoryPath, ["for-each-ref", "--points-at", "MERGE_HEAD", "--format=%(refname:short)"]);
     if (!result.ok) {
-      return undefined;
+      throw new Error(result.messageZh ?? "无法读取合并来源分支。");
     }
 
     const refs = result.stdout.split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
@@ -1265,34 +3085,50 @@ export class GitService {
 
     const localBranchResult = await this.run(repositoryPath, ["show-ref", "--verify", "--quiet", `refs/heads/${target}`]);
     if (!localBranchResult.ok) {
+      if (localBranchResult.exitCode !== 1) {
+        throw new Error(localBranchResult.messageZh ?? `无法验证目标分支 ${target}。`);
+      }
       throw new Error(`目标分支 ${target} 不是本地分支，请先创建或检出本地分支。`);
     }
 
     const mergeBaseResult = await this.run(repositoryPath, ["merge-base", sourceBranch, target]);
-    if (!mergeBaseResult.ok || !mergeBaseResult.stdout.trim()) {
+    if (!mergeBaseResult.ok) {
+      if (mergeBaseResult.exitCode !== 1) {
+        throw new Error(mergeBaseResult.messageZh ?? `无法计算分支 ${sourceBranch} 与 ${target} 的共同历史。`);
+      }
       throw new Error(`分支 ${sourceBranch} 与 ${target} 没有共同历史，已取消合并。`);
+    }
+    if (!mergeBaseResult.stdout.trim()) {
+      throw new Error("Git 没有返回合并基点，已取消合并。");
     }
 
     const sourceIsAncestor = await this.run(repositoryPath, ["merge-base", "--is-ancestor", sourceBranch, target]);
     let mode: GitMergeMode;
-    if (sourceIsAncestor.ok) {
+    if (requireAncestorResult(sourceIsAncestor, sourceBranch, target)) {
       mode = "up-to-date";
     } else {
       const targetIsAncestor = await this.run(repositoryPath, ["merge-base", "--is-ancestor", target, sourceBranch]);
-      mode = targetIsAncestor.ok ? "fast-forward" : "merge-commit";
+      mode = requireAncestorResult(targetIsAncestor, target, sourceBranch) ? "fast-forward" : "merge-commit";
     }
 
     const upstreamResult = await this.run(repositoryPath, ["for-each-ref", `refs/heads/${target}`, "--format=%(upstream:short)"]);
-    const targetUpstream = upstreamResult.ok ? upstreamResult.stdout.trim() || undefined : undefined;
+    if (!upstreamResult.ok) {
+      throw new Error(upstreamResult.messageZh ?? `无法读取目标分支 ${target} 的上游配置。`);
+    }
+    const targetUpstream = upstreamResult.stdout.trim() || undefined;
     let targetAhead = 0;
     let targetBehind = 0;
     if (targetUpstream) {
       const divergenceResult = await this.run(repositoryPath, ["rev-list", "--left-right", "--count", `${target}...${targetUpstream}`]);
-      if (divergenceResult.ok) {
-        const [aheadText, behindText] = divergenceResult.stdout.trim().split(/\s+/);
-        targetAhead = Number(aheadText) || 0;
-        targetBehind = Number(behindText) || 0;
+      if (!divergenceResult.ok) {
+        throw new Error(divergenceResult.messageZh ?? `无法计算目标分支 ${target} 与上游的领先落后数量。`);
       }
+      const divergenceMatch = divergenceResult.stdout.trim().match(/^(\d+)\s+(\d+)$/);
+      if (!divergenceMatch) {
+        throw new Error("Git 返回的目标分支领先落后数量格式不正确。");
+      }
+      targetAhead = Number(divergenceMatch[1]);
+      targetBehind = Number(divergenceMatch[2]);
     }
 
     return {
@@ -1315,86 +3151,205 @@ export class GitService {
   }
 
   private async switchToLocalBranch(repositoryPath: RepositoryLocation, branchName: string): Promise<GitOperationResult> {
-    return this.runWithFallbacks(repositoryPath, [
-      ["switch", branchName],
-      ["checkout", branchName]
-    ]);
+    return this.run(repositoryPath, ["switch", branchName]);
   }
 
-  private async managedMergeStatePath(repositoryPath: RepositoryLocation): Promise<string | undefined> {
+  private async managedMergeStatePath(repositoryPath: RepositoryLocation): Promise<string> {
     const result = await this.run(repositoryPath, ["rev-parse", "--git-path", managedMergeStateFile]);
     if (!result.ok) {
-      return undefined;
+      throw new Error(result.messageZh ?? "无法定位 Git 合并状态目录。");
     }
 
     const statePath = result.stdout.trim();
     if (!statePath) {
-      return undefined;
+      throw new Error("Git 没有返回合并状态文件路径。");
     }
     return resolveGitReportedPath(repositoryPath, statePath);
   }
 
   private async readManagedMergeState(repositoryPath: RepositoryLocation): Promise<ManagedMergeState | undefined> {
     const statePath = await this.managedMergeStatePath(repositoryPath);
-    if (!statePath) {
+    const content = await this.readOptionalRegularTargetFile(repositoryPath, statePath);
+    if (!content) {
       return undefined;
     }
 
+    let parsed: Partial<ManagedMergeState>;
     try {
-      const content = await this.readTargetFile(repositoryPath, statePath);
-      if (!content) {
-        return undefined;
-      }
-      const parsed = JSON.parse(decodeGitOutput(content)) as Partial<ManagedMergeState>;
-      if (typeof parsed.sourceBranch !== "string" || typeof parsed.targetBranch !== "string" || typeof parsed.startedAt !== "string") {
-        return undefined;
-      }
-      return {
-        sourceBranch: parsed.sourceBranch,
-        targetBranch: parsed.targetBranch,
-        startedAt: parsed.startedAt
-      };
-    } catch {
+      parsed = JSON.parse(decodeGitOutput(content)) as Partial<ManagedMergeState>;
+    } catch (error) {
+      throw new Error(`合并恢复状态文件无法解析：${errorMessage(error, "JSON 格式错误。")}`);
+    }
+    if (
+      typeof parsed.sourceBranch !== "string" ||
+      typeof parsed.targetBranch !== "string" ||
+      typeof parsed.startedAt !== "string" ||
+      typeof parsed.mergeHead !== "string" ||
+      typeof parsed.originalHead !== "string" ||
+      typeof parsed.mergeMarkerToken !== "string" ||
+      !parsed.mergeMarkerToken.trim() ||
+      parsed.mergeMarkerToken.length > 512 ||
+      !isCommitHash(parsed.mergeHead) ||
+      !isCommitHash(parsed.originalHead)
+    ) {
+      throw new Error("合并恢复状态文件内容不完整或格式不正确。");
+    }
+    return {
+      sourceBranch: parsed.sourceBranch,
+      targetBranch: parsed.targetBranch,
+      startedAt: parsed.startedAt,
+      mergeHead: parsed.mergeHead.toLowerCase(),
+      originalHead: parsed.originalHead.toLowerCase(),
+      mergeMarkerToken: parsed.mergeMarkerToken
+    };
+  }
+
+  private async readCurrentManagedMergeState(
+    repositoryPath: RepositoryLocation,
+    currentBranch: string | null
+  ): Promise<ManagedMergeState | undefined> {
+    const state = await this.readManagedMergeState(repositoryPath);
+    if (!state) {
       return undefined;
     }
+    const [identity, mergeMarkerToken] = await Promise.all([
+      this.readMergeIdentity(repositoryPath),
+      this.readMergeMarkerToken(repositoryPath)
+    ]);
+    if (
+      state.targetBranch !== currentBranch ||
+      state.mergeHead !== identity.mergeHead ||
+      state.originalHead !== identity.originalHead ||
+      state.mergeMarkerToken !== mergeMarkerToken
+    ) {
+      return undefined;
+    }
+    return state;
+  }
+
+  private async readMergeIdentity(
+    repositoryPath: RepositoryLocation
+  ): Promise<Pick<ManagedMergeState, "mergeHead" | "originalHead">> {
+    const result = await this.run(repositoryPath, ["rev-parse", "MERGE_HEAD^{commit}", "ORIG_HEAD^{commit}"]);
+    if (!result.ok) {
+      throw new Error(result.messageZh ?? "无法读取当前合并提交身份。");
+    }
+    const [mergeHead, originalHead] = result.stdout.trim().split(/\r?\n/);
+    if (!isCommitHash(mergeHead) || !isCommitHash(originalHead)) {
+      throw new Error("Git 返回的当前合并提交身份格式不正确。");
+    }
+    return { mergeHead: mergeHead.toLowerCase(), originalHead: originalHead.toLowerCase() };
+  }
+
+  private async readMergeMarkerToken(repositoryPath: RepositoryLocation): Promise<string> {
+    const markerResult = await this.run(repositoryPath, ["rev-parse", "--git-path", "MERGE_HEAD"]);
+    if (!markerResult.ok) {
+      throw new Error(markerResult.messageZh ?? "无法定位当前合并标记文件。");
+    }
+    if (!markerResult.stdout.trim()) {
+      throw new Error("Git 没有返回当前合并标记文件路径。");
+    }
+    const markerPath = resolveGitReportedPath(repositoryPath, markerResult.stdout.trim());
+    const target = normalizeRepositoryTarget(repositoryPath);
+    if (!target.remote) {
+      const info = await stat(markerPath);
+      if (!info.isFile()) {
+        throw new Error("当前合并标记不是普通文件。");
+      }
+      return [info.dev, info.ino, info.size, info.birthtimeMs, info.ctimeMs, info.mtimeMs].join(":");
+    }
+
+    const marker = shellQuote(markerPath);
+    const command = `stat -c ${shellQuote("%d:%i:%s:%y")} -- ${marker}`;
+    const result = await runSshShell(target.remote, command, { timeoutMs: 10_000 });
+    if (!result.ok) {
+      throw new Error(result.messageZh ?? "无法读取远程合并标记元数据。");
+    }
+    const token = result.stdout.toString("utf8").trim();
+    if (!token || token.length > 512) {
+      throw new Error("远程合并标记元数据格式不正确。");
+    }
+    return token;
   }
 
   private async writeManagedMergeState(repositoryPath: RepositoryLocation, state: ManagedMergeState): Promise<void> {
     const statePath = await this.managedMergeStatePath(repositoryPath);
-    if (!statePath) {
-      throw new Error("无法定位 Git 合并状态目录。");
-    }
     await this.writeTargetFile(repositoryPath, statePath, Buffer.from(`${JSON.stringify(state, null, 2)}\n`, "utf8"));
+    this.cleanManagedMergeRepositories.delete(this.mergeRepositoryKey(repositoryPath));
   }
 
   private async clearManagedMergeState(repositoryPath: RepositoryLocation): Promise<void> {
     const statePath = await this.managedMergeStatePath(repositoryPath);
-    if (!statePath) {
-      return;
-    }
-
-    try {
-      await this.removeTargetFile(repositoryPath, statePath);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        return;
-      }
-    }
+    await this.removeTargetFile(repositoryPath, statePath);
+    this.cleanManagedMergeRepositories.add(this.mergeRepositoryKey(repositoryPath));
   }
 
-  private async readTargetFile(repositoryPath: RepositoryLocation, targetPath: string): Promise<Buffer | null> {
+  private async readOptionalRegularTargetFile(repositoryPath: RepositoryLocation, targetPath: string): Promise<Buffer | null> {
     const target = normalizeRepositoryTarget(repositoryPath);
     if (!target.remote) {
       try {
         const info = await stat(targetPath);
-        return info.isFile() ? readFile(targetPath) : null;
-      } catch {
-        return null;
+        if (!info.isFile()) {
+          throw new Error(`${targetPath} 不是普通文件。`);
+        }
+        return await readFile(targetPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          return null;
+        }
+        throw error;
       }
     }
 
-    const result = await runSshShell(target.remote, `test -f ${shellQuote(targetPath)} && cat -- ${shellQuote(targetPath)}`, { timeoutMs: 20_000 });
-    return result.ok ? result.stdout : null;
+    const quotedPath = shellQuote(targetPath);
+    const result = await runSshShell(
+      target.remote,
+      `if [ ! -e ${quotedPath} ]; then exit 3; fi; if [ ! -f ${quotedPath} ]; then exit 4; fi; cat -- ${quotedPath}`,
+      { timeoutMs: 20_000 }
+    );
+    if (result.exitCode === 3) {
+      return null;
+    }
+    if (result.exitCode === 4) {
+      throw new Error(`${targetPath} 不是普通文件。`);
+    }
+    if (!result.ok) {
+      throw new Error(result.messageZh ?? `无法读取远程文件 ${targetPath}。`);
+    }
+    return result.stdout;
+  }
+
+  private async isExecutableTargetFile(repositoryPath: RepositoryLocation, targetPath: string): Promise<boolean> {
+    const target = normalizeRepositoryTarget(repositoryPath);
+    if (!target.remote) {
+      try {
+        await access(targetPath, fsConstants.X_OK);
+        return true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EACCES" || (error as NodeJS.ErrnoException).code === "EPERM") {
+          return false;
+        }
+        throw error;
+      }
+    }
+
+    const result = await runSshShell(target.remote, `test -x ${shellQuote(targetPath)}`, { timeoutMs: 10_000 });
+    if (result.ok) {
+      return true;
+    }
+    if (result.exitCode === 1) {
+      return false;
+    }
+    throw new Error(result.messageZh ?? `无法检查远程文件 ${targetPath} 的执行权限。`);
+  }
+
+  private async repositoryContentRevision(repositoryPath: RepositoryLocation, content: Buffer): Promise<string> {
+    const result = await this.run(repositoryPath, ["hash-object", "--stdin"], { stdin: content, timeoutMs: 20_000 });
+    const hash = result.stdout.trim();
+    if (!result.ok || !/^[0-9a-f]{40,64}$/i.test(hash)) {
+      throw new Error(result.messageZh ?? "无法计算仓库文件内容版本。");
+    }
+    return `git:${hash.toLowerCase()}`;
   }
 
   private async writeTargetFile(repositoryPath: RepositoryLocation, targetPath: string, content: Buffer): Promise<void> {
@@ -1436,7 +3391,7 @@ export class GitService {
   }
 
   private async readRepositoryFile(repositoryPath: RepositoryLocation, filePath: string): Promise<Buffer | null> {
-    return this.readTargetFile(repositoryPath, resolveRepositoryFilePath(repositoryPath, filePath));
+    return this.readOptionalRegularTargetFile(repositoryPath, resolveRepositoryFilePath(repositoryPath, filePath));
   }
 
   private async writeRepositoryFile(repositoryPath: RepositoryLocation, filePath: string, content: Buffer): Promise<void> {
@@ -1445,7 +3400,10 @@ export class GitService {
 
   private async isUntrackedFile(repositoryPath: RepositoryLocation, filePath: string): Promise<boolean> {
     const result = await this.run(repositoryPath, ["ls-files", "--others", "--exclude-standard", "--", filePath]);
-    return result.ok && result.stdout.split(/\r?\n/).filter(Boolean).includes(filePath);
+    if (!result.ok) {
+      throw new Error(result.messageZh ?? `无法检查未跟踪文件 ${filePath}。`);
+    }
+    return result.stdout.split(/\r?\n/).filter(Boolean).includes(filePath);
   }
 
   private async readFileAsAddedDiff(repositoryPath: RepositoryLocation, filePath: string): Promise<DiffLine[]> {
@@ -1469,7 +3427,7 @@ export class GitService {
 
     const remotesResult = await this.run(repositoryPath, ["remote"]);
     if (!remotesResult.ok) {
-      return undefined;
+      throw new Error(remotesResult.messageZh ?? "无法读取远程仓库列表。");
     }
 
     const remotes = Array.from(new Set(remotesResult.stdout.split(/\r?\n/).map((remote) => remote.trim()).filter(Boolean)));
@@ -1494,16 +3452,79 @@ export class GitService {
 
   private async getGitConfigValue(repositoryPath: RepositoryLocation, key: string): Promise<string | undefined> {
     const result = await this.run(repositoryPath, ["config", "--get", key]);
-    if (!result.ok) {
+    if (result.exitCode === 1) {
       return undefined;
+    }
+    if (!result.ok) {
+      throw new Error(result.messageZh ?? `无法读取 Git 配置 ${key}。`);
     }
 
     return result.stdout.trim() || undefined;
   }
 
+  private async getLocalGitConfigValue(repositoryPath: RepositoryLocation, key: string): Promise<string | undefined> {
+    const result = await this.run(repositoryPath, ["config", "--local", "--get", key]);
+    if (result.ok) {
+      return result.stdout.trim() || undefined;
+    }
+    if (result.exitCode === 1) {
+      return undefined;
+    }
+    throw new Error(result.messageZh ?? `无法读取仓库配置 ${key}。`);
+  }
+
+  private async getLocalGitConfigValues(repositoryPath: RepositoryLocation, key: string): Promise<string[]> {
+    const result = await this.run(repositoryPath, ["config", "--local", "--null", "--get-all", key]);
+    if (result.ok) {
+      const values = result.stdout.split("\0");
+      if (values.at(-1) === "") {
+        values.pop();
+      }
+      return values;
+    }
+    if (result.exitCode === 1) {
+      return [];
+    }
+    throw new Error(result.messageZh ?? `无法读取仓库配置 ${key}。`);
+  }
+
+  private async restoreLocalGitConfigValues(
+    repositoryPath: RepositoryLocation,
+    key: string,
+    values: string[]
+  ): Promise<GitOperationResult[]> {
+    const results: GitOperationResult[] = [];
+    const unsetResult = acceptAbsentConfigResult(await this.run(repositoryPath, ["config", "--local", "--unset-all", key]));
+    results.push(unsetResult);
+    if (!unsetResult.ok) {
+      return results;
+    }
+    for (const value of values) {
+      const addResult = await this.run(repositoryPath, ["config", "--local", "--add", key, value]);
+      results.push(addResult);
+      if (!addResult.ok) {
+        break;
+      }
+    }
+    return results;
+  }
+
+  private async resolveStashSelector(repositoryPath: RepositoryLocation, selectorOrHash: string): Promise<string> {
+    const identifier = requireStashIdentifier(selectorOrHash);
+    if (identifier.startsWith("stash@{")) {
+      return identifier;
+    }
+
+    const matches = (await this.getStashes(repositoryPath)).filter((stash) => stash.hash.toLowerCase() === identifier.toLowerCase());
+    if (matches.length !== 1) {
+      throw new Error(matches.length === 0 ? "所选 stash 已不存在，请刷新列表。" : "stash hash 不唯一，操作已停止。");
+    }
+    return matches[0].selector;
+  }
+
   private async getHistoryRevisions(repositoryPath: RepositoryLocation, status?: GitStatusSummary, filter: GitHistoryFilter = { mode: "auto" }): Promise<string[]> {
     if (filter.mode === "all") {
-      const refs = await this.getHistoryRefs(repositoryPath).catch(() => []);
+      const refs = await this.getHistoryRefs(repositoryPath);
       return refs.length > 0 ? refs.map((ref) => ref.id) : ["HEAD"];
     }
 
@@ -1563,6 +3584,371 @@ export class GitService {
 
     return result.stdout;
   }
+}
+
+function changedFilePathspecs(repositoryPath: RepositoryLocation, file: ChangedFile): string[] {
+  const currentPath = toGitPath(requireValue(file.path, "文件路径"));
+  const oldPath = file.oldPath ? toGitPath(requireValue(file.oldPath, "文件原路径")) : undefined;
+  const filePaths = oldPath && oldPath !== currentPath ? [oldPath, currentPath] : [currentPath];
+  for (const filePath of filePaths) {
+    resolveRepositoryFilePath(repositoryPath, filePath);
+  }
+  return filePaths;
+}
+
+function parseConflictStages(output: string): Set<1 | 2 | 3> {
+  const stages = new Set<1 | 2 | 3>();
+  for (const line of output.split(/\r?\n/).filter(Boolean)) {
+    const match = line.match(/^\d{6}\s+[0-9a-f]{40,64}\s+([123])\t/);
+    if (!match) {
+      throw new Error("Git 返回的冲突索引记录格式不正确。");
+    }
+    stages.add(Number(match[1]) as 1 | 2 | 3);
+  }
+  return stages;
+}
+
+function requireAncestorResult(result: GitOperationResult, ancestor: string, descendant: string): boolean {
+  if (result.ok) {
+    return true;
+  }
+  if (result.exitCode === 1) {
+    return false;
+  }
+  throw new Error(result.messageZh ?? `无法判断分支 ${ancestor} 是否为 ${descendant} 的祖先。`);
+}
+
+function isIsoDate(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)
+    && Number.isFinite(Date.parse(value));
+}
+
+function requireValue(value: string, label: string): string {
+  const normalized = value.trim();
+  if (!normalized) {
+    throw new Error(`${label}不能为空。`);
+  }
+  if (normalized.includes("\0")) {
+    throw new Error(`${label}包含无效字符。`);
+  }
+  return normalized;
+}
+
+function requireNonOptionValue(value: string, label: string): string {
+  const normalized = requireValue(value, label);
+  if (normalized.startsWith("-")) {
+    throw new Error(`${label}不能以连字符开头。`);
+  }
+  return normalized;
+}
+
+function requireAbsoluteLocalPath(value: string, label: string): string {
+  const normalized = requireValue(value, label);
+  if (!path.isAbsolute(normalized)) {
+    throw new Error(`${label}必须是绝对路径。`);
+  }
+  return path.normalize(normalized);
+}
+
+function requirePositiveInteger(value: number, label: string): number {
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`${label}必须是大于 0 的整数。`);
+  }
+  return value;
+}
+
+function requireDateQuery(value: string, label: string, boundary: "start" | "end"): string {
+  const normalized = requireValue(value, label);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    throw new Error(`${label}必须使用 YYYY-MM-DD 格式。`);
+  }
+  const parsed = new Date(`${normalized}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== normalized) {
+    throw new Error(`${label}不是有效日期。`);
+  }
+  return `${normalized} ${boundary === "start" ? "00:00:00.000" : "23:59:59.999"}`;
+}
+
+function isGitRebaseAction(value: string): value is GitRebaseAction {
+  return value === "pick" || value === "edit" || value === "squash" || value === "fixup" || value === "drop";
+}
+
+function buildRebaseSequenceEditor(plan: GitRebasePlanItem[]): string {
+  const lines = plan.map((item) => `"${item.action} ${item.hash}"`).join(" ");
+  return `sh -c 'printf "%s\\n" ${lines} > "$1"' --`;
+}
+
+function parseBlamePorcelain(output: string): GitBlameLine[] {
+  const lines = output.split(/\r?\n/);
+  const result: GitBlameLine[] = [];
+  let current: Omit<GitBlameLine, "content"> | undefined;
+
+  for (const line of lines) {
+    const header = line.match(/^([0-9a-f]{40,64})\s+\d+\s+(\d+)(?:\s+\d+)?$/i);
+    if (header) {
+      current = {
+        lineNumber: Number(header[2]),
+        hash: header[1],
+        shortHash: header[1].slice(0, 10),
+        authorName: "",
+        authorEmail: "",
+        authorDate: ""
+      };
+      continue;
+    }
+    if (!current) {
+      continue;
+    }
+    if (line.startsWith("author ")) {
+      current.authorName = line.slice(7);
+    } else if (line.startsWith("author-mail ")) {
+      current.authorEmail = line.slice(12).replace(/^<|>$/g, "");
+    } else if (line.startsWith("author-time ")) {
+      const seconds = Number(line.slice(12));
+      current.authorDate = Number.isFinite(seconds) ? new Date(seconds * 1000).toISOString() : "";
+    } else if (line.startsWith("\t")) {
+      result.push({ ...current, content: line.slice(1) });
+      current = undefined;
+    }
+  }
+  return result;
+}
+
+function requireRemoteName(value: string): string {
+  const normalized = requireValue(value, "远程仓库名");
+  if (!/^[a-z0-9][a-z0-9._-]*$/i.test(normalized)) {
+    throw new Error("远程仓库名只能包含字母、数字、点、下划线和连字符，且必须以字母或数字开头。");
+  }
+  return normalized;
+}
+
+function requireTagName(value: string): string {
+  const normalized = requireNonOptionValue(value, "标签名");
+  if (/\s|\.\.|[~^:?*\[\\]/.test(normalized) || normalized.endsWith(".") || normalized.endsWith("/")) {
+    throw new Error("标签名不合法，请检查是否包含空格、连续点号或 Git 不允许的字符。");
+  }
+  return normalized;
+}
+
+function requireLfsPatterns(values: string[]): string[] {
+  if (!Array.isArray(values) || values.length === 0 || values.length > 100) {
+    throw new Error("LFS 文件模式必须包含 1 到 100 项。");
+  }
+  const patterns = values.map((value) => requireNonOptionValue(value, "LFS 文件模式"));
+  if (patterns.some((value) => value.includes(",") || /[\r\n]/.test(value))) {
+    throw new Error("LFS 文件模式不能包含逗号或换行。");
+  }
+  return [...new Set(patterns)];
+}
+
+function requireStashIdentifier(value: string): string {
+  const identifier = requireValue(value, "stash 标识");
+  if (!/^stash@\{\d+\}$/.test(identifier) && !/^[0-9a-f]{40,64}$/i.test(identifier)) {
+    throw new Error("stash 标识格式不正确。");
+  }
+  return identifier;
+}
+
+function requireReflogTarget(value: string): string {
+  const target = requireNonOptionValue(value, "reflog 恢复目标");
+  if (!/^[^\s\0]+@\{\d+\}$/.test(target) && !/^[0-9a-f]{40,64}$/i.test(target)) {
+    throw new Error("reflog 标识格式不正确。");
+  }
+  return target;
+}
+
+function splitNonEmptyLines(value: string): string[] {
+  return value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+}
+
+function parseLinkedWorktrees(output: string): GitLinkedWorktree[] {
+  return output
+    .split("\0\0")
+    .filter(Boolean)
+    .map((record): GitLinkedWorktree => {
+      const fields = record.split("\0").filter(Boolean);
+      const values = new Map<string, string>();
+      const flags = new Set<string>();
+      for (const field of fields) {
+        const separatorIndex = field.indexOf(" ");
+        if (separatorIndex < 0) {
+          flags.add(field);
+        } else {
+          values.set(field.slice(0, separatorIndex), field.slice(separatorIndex + 1));
+        }
+      }
+
+      const worktreePath = values.get("worktree");
+      if (!worktreePath) {
+        throw new Error("Git 返回的 worktree 记录缺少路径。");
+      }
+      const branch = values.get("branch");
+      return {
+        path: worktreePath,
+        head: values.get("HEAD") ?? "",
+        branch: branch?.replace(/^refs\/heads\//, ""),
+        bare: flags.has("bare"),
+        detached: flags.has("detached"),
+        lockedReason: values.get("locked") || (flags.has("locked") ? "已锁定" : undefined),
+        prunableReason: values.get("prunable") || (flags.has("prunable") ? "可清理" : undefined)
+      };
+    });
+}
+
+function parseSubmoduleStatus(output: string): Array<Omit<GitSubmoduleInfo, "url" | "branch">> {
+  return output
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line): Omit<GitSubmoduleInfo, "url" | "branch"> => {
+      const match = line.match(/^([ +\-U])([0-9a-f]+)\s+(.+?)(?:\s+\((.*)\))?$/i);
+      if (!match) {
+        throw new Error(`无法解析子模块状态：${line}`);
+      }
+      const [, marker, hash, submodulePath, description] = match;
+      const state: GitSubmoduleState =
+        marker === "-" ? "uninitialized" : marker === "+" ? "modified" : marker === "U" ? "conflicted" : "initialized";
+      return {
+        path: submodulePath,
+        hash,
+        state,
+        description: description || undefined
+      };
+    });
+}
+
+function parseSubmoduleConfig(output: string): Map<string, { url: string; branch?: string }> {
+  const byName = new Map<string, { path?: string; url?: string; branch?: string }>();
+  for (const line of output.split(/\r?\n/).filter(Boolean)) {
+    const match = line.match(/^submodule\.(.+)\.(path|url|branch)\s+(.+)$/);
+    if (!match) {
+      throw new Error(`无法解析 .gitmodules 配置：${line}`);
+    }
+    const [, name, key, value] = match;
+    byName.set(name, { ...byName.get(name), [key]: value });
+  }
+
+  const byPath = new Map<string, { url: string; branch?: string }>();
+  for (const [name, item] of byName) {
+    if (!item.path || !item.url) {
+      throw new Error(`子模块 ${name} 的 path 或 url 配置不完整。`);
+    }
+    byPath.set(item.path, { url: item.url, branch: item.branch });
+  }
+  return byPath;
+}
+
+function parseLfsStatus(output: string): GitLfsFileStatus[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output);
+  } catch {
+    throw new Error("Git LFS 返回了无法解析的状态数据。");
+  }
+  if (!parsed || typeof parsed !== "object" || !("files" in parsed)) {
+    throw new Error("Git LFS 状态数据缺少 files 字段。");
+  }
+  const files = (parsed as { files: unknown }).files;
+  if (!files || typeof files !== "object" || Array.isArray(files)) {
+    throw new Error("Git LFS 状态数据中的 files 字段格式不正确。");
+  }
+
+  return Object.entries(files).map(([filePath, value]): GitLfsFileStatus => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error(`Git LFS 文件状态格式不正确：${filePath}`);
+    }
+    const record = value as Record<string, unknown>;
+    return {
+      path: filePath,
+      status: typeof record.status === "string" ? record.status : undefined,
+      staged: record.staged === true
+    };
+  });
+}
+
+function parseGitBoolean(value: string, key: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  if (["true", "yes", "on", "1"].includes(normalized)) {
+    return true;
+  }
+  if (["false", "no", "off", "0"].includes(normalized)) {
+    return false;
+  }
+  throw new Error(`仓库配置 ${key} 不是有效的布尔值。`);
+}
+
+function isGitSigningFormat(value: string): value is GitSigningFormat {
+  return value === "openpgp" || value === "ssh" || value === "x509";
+}
+
+export function parseHostedRemoteUrl(remoteUrl: string, commitHash?: string, branchName?: string): GitHostingLinks | null {
+  const source = remoteUrl.trim();
+  if (!source) {
+    return null;
+  }
+
+  let host = "";
+  let repositoryPath = "";
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(source)) {
+    try {
+      const url = new URL(source);
+      host = url.hostname.toLowerCase();
+      repositoryPath = decodeURIComponent(url.pathname);
+    } catch {
+      return null;
+    }
+  } else {
+    const scpMatch = source.match(/^(?:[^@/:]+@)?([^/:]+):(.+)$/);
+    if (!scpMatch) {
+      return null;
+    }
+    host = scpMatch[1].toLowerCase();
+    repositoryPath = scpMatch[2];
+  }
+
+  if (host.startsWith("www.")) {
+    host = host.slice(4);
+  }
+  const provider: GitHostingProvider | undefined =
+    host === "github.com" ? "github" : host === "gitlab.com" ? "gitlab" : host === "gitee.com" ? "gitee" : undefined;
+  if (!provider) {
+    return null;
+  }
+
+  const segments = repositoryPath
+    .replace(/^\/+|\/+$/g, "")
+    .replace(/\.git$/i, "")
+    .split("/")
+    .filter(Boolean);
+  if (segments.length < 2) {
+    return null;
+  }
+
+  const repositoryName = segments.at(-1)!;
+  const ownerSegments = segments.slice(0, -1);
+  const encodedRepositoryPath = segments.map(encodeURIComponent).join("/");
+  const repositoryUrl = `https://${host}/${encodedRepositoryPath}`;
+  const commit = commitHash?.trim();
+  const branch = branchName?.trim();
+  const commitPrefix = provider === "gitlab" ? "-/commit" : "commit";
+  const branchPrefix = provider === "gitlab" ? "-/tree" : "tree";
+  const encodedBranch = branch ? branch.split("/").map(encodeURIComponent).join("/") : undefined;
+  const commitsPrefix = provider === "gitlab" ? "-/commits" : "commits";
+  const branchesPrefix = provider === "gitlab" ? "-/branches" : "branches";
+  const pullRequestsPrefix = provider === "gitlab" ? "-/merge_requests" : "pulls";
+  const issuesPrefix = provider === "gitlab" ? "-/issues" : "issues";
+
+  return {
+    provider,
+    ownerPath: ownerSegments.join("/"),
+    repositoryName,
+    repositoryUrl,
+    commitsUrl: `${repositoryUrl}/${commitsPrefix}${encodedBranch ? `/${encodedBranch}` : ""}`,
+    branchesUrl: `${repositoryUrl}/${branchesPrefix}`,
+    pullRequestsUrl: `${repositoryUrl}/${pullRequestsPrefix}`,
+    issuesUrl: `${repositoryUrl}/${issuesPrefix}`,
+    commitUrl: commit ? `${repositoryUrl}/${commitPrefix}/${encodeURIComponent(commit)}` : undefined,
+    branchUrl: encodedBranch ? `${repositoryUrl}/${branchPrefix}/${encodedBranch}` : undefined
+  };
 }
 
 function gitFailure(command: string, messageZh: string, stderr = ""): GitOperationResult {
@@ -1633,7 +4019,7 @@ export function buildSshArgs(connection: SshConnection, batchMode = false): stri
     args.push("-p", String(connection.port));
   }
   if (connection.identityFile) {
-    args.push("-i", connection.identityFile);
+    args.push("-o", "IdentitiesOnly=yes", "-i", connection.identityFile);
   }
   args.push(sshDestination(connection));
   return args;
@@ -1659,6 +4045,44 @@ function buildRemoteGitCommand(repositoryPath: string, args: string[]): string {
   ]
     .map(shellQuote)
     .join(" ");
+}
+
+function isReadOnlyGitCommand(args: string[]): boolean {
+  let index = 0;
+  while (args[index] === "-c" && typeof args[index + 1] === "string") {
+    index += 2;
+  }
+  const command = args[index];
+  if (!command) {
+    return false;
+  }
+  if (readOnlyGitCommands.has(command)) {
+    return true;
+  }
+  if (command === "config") {
+    const configArgs = args.slice(index + 1);
+    return configArgs.includes("--get") || configArgs.includes("--get-all");
+  }
+  if (command === "remote") {
+    return args.length === index + 1 || args[index + 1] === "-v" || args[index + 1] === "get-url";
+  }
+  if (command === "stash") {
+    return args[index + 1] === "list";
+  }
+  if (command === "worktree") {
+    return args[index + 1] === "list";
+  }
+  if (command === "submodule") {
+    return args[index + 1] === "status";
+  }
+  if (command === "lfs") {
+    return args[index + 1] === "version" || args[index + 1] === "status";
+  }
+  return false;
+}
+
+function isCommitHash(value: unknown): value is string {
+  return typeof value === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(value);
 }
 
 export function shellQuote(value: string): string {
@@ -1796,6 +4220,62 @@ function combineGitResults(results: GitOperationResult[], ok: boolean): GitOpera
   };
 }
 
+function acceptAbsentConfigResult(result: GitOperationResult): GitOperationResult {
+  if (result.ok || result.exitCode !== 5) {
+    return result;
+  }
+  return {
+    ...result,
+    ok: true,
+    stderr: "",
+    messageZh: undefined
+  };
+}
+
+function gitTransactionFailure(
+  operationLabel: string,
+  mutationResults: GitOperationResult[],
+  rollbackResults: GitOperationResult[]
+): GitOperationResult {
+  const combined = combineGitResults([...mutationResults, ...rollbackResults], false);
+  const mutationFailure = mutationResults.find((result) => !result.ok);
+  const rollbackFailure = rollbackResults.find((result) => !result.ok);
+  const failureMessage = mutationFailure?.messageZh || mutationFailure?.stderr.trim() || "Git 命令执行失败。";
+  return {
+    ...combined,
+    messageZh: rollbackFailure
+      ? `${operationLabel}失败，且恢复原配置失败；仓库配置可能处于部分修改状态。原错误：${failureMessage}；恢复错误：${rollbackFailure.messageZh || rollbackFailure.stderr.trim() || "Git 命令执行失败。"}`
+      : rollbackResults.length > 0
+        ? `${operationLabel}失败，已恢复原配置。原错误：${failureMessage}`
+        : failureMessage
+  };
+}
+
+export function validateGitIdentity(name?: string, email?: string): GitIdentityValidationIssue[] {
+  const issues: GitIdentityValidationIssue[] = [];
+  const normalizedName = name?.trim() ?? "";
+  const normalizedEmail = email?.trim() ?? "";
+  if (!normalizedName) {
+    issues.push({ field: "name", messageZh: "Git 提交姓名不能为空。" });
+  } else if (/[\u0000-\u001f\u007f]/.test(normalizedName)) {
+    issues.push({ field: "name", messageZh: "Git 提交姓名不能包含控制字符或换行。" });
+  }
+  if (!normalizedEmail) {
+    issues.push({ field: "email", messageZh: "Git 提交邮箱不能为空。" });
+  } else if (!/^[^\s<>@]+@[^\s<>@]+$/.test(normalizedEmail) || /[\u0000-\u001f\u007f]/.test(normalizedEmail)) {
+    issues.push({ field: "email", messageZh: "Git 提交邮箱格式不正确。" });
+  }
+  return issues;
+}
+
+function requireContentRevision(value: string): string {
+  const revision = requireValue(value, "文件内容版本");
+  if (revision !== "missing" && !/^git:[0-9a-f]{40,64}$/i.test(revision)) {
+    throw new Error("文件内容版本格式不正确，请刷新后重试。");
+  }
+  return revision.toLowerCase();
+}
+
 function conflictBufferToken(buffer: Buffer | null): Buffer {
   if (!buffer) {
     return Buffer.from("missing\0");
@@ -1846,7 +4326,8 @@ function parseStatus(output: string): GitStatusSummary {
     stagedCount: 0,
     unstagedCount: 0,
     untrackedCount: 0,
-    hasConflicts: false
+    hasConflicts: false,
+    conflictedCount: 0
   };
 
   for (const line of output.split(/\r?\n/)) {
@@ -1857,6 +4338,11 @@ function parseStatus(output: string): GitStatusSummary {
     if (line.startsWith("# branch.head ")) {
       const branch = line.replace("# branch.head ", "").trim();
       summary.currentBranch = branch === "(detached)" ? null : branch;
+      continue;
+    }
+
+    if (line === "# branch.oid (initial)") {
+      summary.unborn = true;
       continue;
     }
 
@@ -1879,8 +4365,13 @@ function parseStatus(output: string): GitStatusSummary {
       continue;
     }
 
+    if (line.startsWith("! ")) {
+      continue;
+    }
+
     if (line.startsWith("u ")) {
       summary.hasConflicts = true;
+      summary.conflictedCount += 1;
       continue;
     }
 
@@ -1902,8 +4393,12 @@ async function pathExists(filePath: string): Promise<boolean> {
   try {
     await access(filePath);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      return false;
+    }
+    throw error;
   }
 }
 
@@ -1948,40 +4443,47 @@ function parseRefs(refText: string): CommitRef[] {
   return refText
     .split(",")
     .map((part) => part.trim())
-    .map((part): CommitRef | null => {
+    .flatMap((part): CommitRef[] => {
       if (part === "HEAD") {
-        return { type: "head", name: "HEAD" };
+        return [{ type: "head", name: "HEAD" }];
       }
 
+      const pointsFromHead = part.startsWith("HEAD -> ");
       const normalized = part.replace(/^HEAD -> /, "");
+      const refs: CommitRef[] = pointsFromHead ? [{ type: "head", name: "HEAD" }] : [];
 
       if (normalized === "HEAD" || normalized === "origin/HEAD" || normalized.endsWith("/HEAD")) {
-        return null;
+        return refs;
       }
 
       if (normalized.startsWith("tag: refs/tags/")) {
-        return { type: "tag", name: normalized.replace("tag: refs/tags/", "") };
+        refs.push({ type: "tag", name: normalized.replace("tag: refs/tags/", "") });
+        return refs;
       }
 
       if (normalized.startsWith("tag: ")) {
-        return { type: "tag", name: normalized.replace("tag: ", "") };
+        refs.push({ type: "tag", name: normalized.replace("tag: ", "") });
+        return refs;
       }
 
       if (normalized.startsWith("refs/heads/")) {
-        return { type: "localBranch", name: normalized.replace("refs/heads/", "") };
+        refs.push({ type: "localBranch", name: normalized.replace("refs/heads/", "") });
+        return refs;
       }
 
       if (normalized.startsWith("refs/remotes/")) {
-        return { type: "remoteBranch", name: normalized.replace("refs/remotes/", "") };
+        refs.push({ type: "remoteBranch", name: normalized.replace("refs/remotes/", "") });
+        return refs;
       }
 
       if (normalized.startsWith("origin/") || normalized.includes("/")) {
-        return { type: "remoteBranch", name: normalized };
+        refs.push({ type: "remoteBranch", name: normalized });
+        return refs;
       }
 
-      return { type: "localBranch", name: normalized };
-    })
-    .filter((ref): ref is CommitRef => Boolean(ref));
+      refs.push({ type: "localBranch", name: normalized });
+      return refs;
+    });
 }
 
 function getLane(laneByKey: Map<string, number>, laneKey: string): number {
@@ -2022,7 +4524,6 @@ function parseWorktree(output: string): WorktreeState {
     }
 
     if (line.startsWith("! ")) {
-      unstagedFiles.push({ path: line.slice(2), status: "ignored", staged: false });
       continue;
     }
 
@@ -2246,6 +4747,58 @@ function parseUnifiedDiff(output: string): DiffLine[] {
   return lines;
 }
 
+function emitOperationChunk(context: GitLongOperationContext, chunk: Buffer): void {
+  const text = decodeGitOutput(chunk)
+    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "")
+    .split(/[\r\n]+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .at(-1);
+  if (!text) {
+    return;
+  }
+  const percentMatch = text.match(/(?:^|\s)(\d{1,3})%/);
+  const objectMatch = text.match(/\((\d+)\/(\d+)\)/);
+  context.onProgress(operationProgress(
+    context,
+    "running",
+    sanitizeOperationMessage(text),
+    percentMatch ? Math.max(0, Math.min(100, Number(percentMatch[1]))) : undefined,
+    objectMatch ? Number(objectMatch[1]) : undefined,
+    objectMatch ? Number(objectMatch[2]) : undefined
+  ));
+}
+
+function operationProgress(
+  context: GitLongOperationContext,
+  phase: GitLongOperationPhase,
+  message: string,
+  percent?: number,
+  receivedObjects?: number,
+  totalObjects?: number
+): GitLongOperationProgress {
+  return {
+    id: context.id,
+    kind: context.kind,
+    phase,
+    label: context.label,
+    ...(context.repositoryPath ? { repositoryPath: context.repositoryPath } : {}),
+    message,
+    ...(percent === undefined ? {} : { percent }),
+    ...(receivedObjects === undefined ? {} : { receivedObjects }),
+    ...(totalObjects === undefined ? {} : { totalObjects }),
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function sanitizeOperationMessage(value: string): string {
+  return value
+    .replace(/(https?:\/\/)[^@\s/]+@/gi, "$1")
+    .replace(/([?&](?:access_token|auth|password|private_token|token)=)[^&\s]+/gi, "$1***")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
+    .slice(0, 320);
+}
+
 function statusFromCode(code: string): ChangedFile["status"] {
   switch (code) {
     case "A":
@@ -2327,7 +4880,7 @@ function isEmptyRepositoryError(stderr: string): boolean {
 function toChineseSshError(stderr: string): string {
   const text = stderr.toLowerCase();
   if (text.includes("host key verification failed")) {
-    return "SSH 主机指纹尚未确认或已发生变化，请先在系统终端连接该主机并核对指纹。";
+    return "SSH 主机指纹尚未确认或已发生变化，请在“连接远程仓库”面板核对并确认指纹。";
   }
   if (text.includes("permission denied")) {
     return "SSH 认证失败，请检查用户名、SSH Agent、私钥和服务器授权。";
@@ -2362,7 +4915,7 @@ function toChineseGitError(stdout: string, stderr: string): string {
   }
 
   if (text.includes("non-fast-forward")) {
-    return "远程分支包含本地没有的提交，请先 pull 或 fetch 后处理差异。";
+    return "远程分支包含本地没有的提交。请先 fetch 后合并或 rebase；仅在确认本地已改写历史且远程分支未被他人更新时，使用安全强制推送（--force-with-lease）。";
   }
 
   if (text.includes("not possible because you have unmerged files") || text.includes("unmerged files")) {

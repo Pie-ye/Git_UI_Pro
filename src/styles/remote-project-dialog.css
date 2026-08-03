@@ -1,0 +1,153 @@
+.remote-inline-tooltip {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.remote-host-trust {
+  display: grid;
+  gap: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  border-radius: 8px;
+  padding: 14px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--glass-fill-strong) 78%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 30%, transparent), 0 12px 28px color-mix(in srgb, var(--text) 10%, transparent);
+  backdrop-filter: blur(18px) saturate(1.25);
+}
+
+.remote-host-trust.changed {
+  border-color: color-mix(in srgb, var(--warning) 54%, var(--border));
+}
+
+.remote-host-trust > header {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.remote-host-trust > header > span:last-child {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.remote-host-trust > header strong {
+  color: var(--text-strong);
+  font-size: 14px;
+}
+
+.remote-host-trust > header small,
+.remote-host-fingerprint-group > small {
+  color: var(--muted-strong);
+  font-size: 11px;
+}
+
+.remote-host-trust-icon {
+  display: grid;
+  flex: 0 0 34px;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+  border-radius: 8px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+}
+
+.remote-host-trust.changed .remote-host-trust-icon {
+  border-color: color-mix(in srgb, var(--warning) 38%, var(--border));
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 10%, var(--surface));
+}
+
+.remote-host-fingerprint-group {
+  display: grid;
+  gap: 6px;
+}
+
+.remote-host-fingerprint-group > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.remote-host-fingerprint {
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 9px 10px;
+  background: color-mix(in srgb, var(--surface-2) 86%, transparent);
+}
+
+.remote-host-fingerprint span {
+  color: var(--muted-strong);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.remote-host-fingerprint code {
+  overflow-wrap: anywhere;
+  color: var(--text-strong);
+  font-size: 12px;
+  line-height: 1.5;
+  user-select: text;
+}
+
+.remote-host-trust-check {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  min-height: 36px;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.remote-host-trust-check input {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+
+.remote-host-trust-action {
+  display: inline-flex;
+  justify-self: end;
+  gap: 8px;
+  align-items: center;
+  min-height: 40px;
+  border: 1px solid color-mix(in srgb, var(--accent) 48%, var(--border));
+  border-radius: 8px;
+  padding: 0 16px;
+  color: var(--accent-contrast);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  background: var(--accent);
+  cursor: pointer;
+}
+
+.remote-host-trust-action.replace {
+  border-color: color-mix(in srgb, var(--warning) 60%, var(--border));
+  color: #fff;
+  background: color-mix(in srgb, var(--warning) 82%, #7d3c00);
+}
+
+.remote-host-trust-action:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+
+.remote-host-trust-action:focus-visible,
+.remote-host-trust-check:has(input:focus-visible) {
+  outline: 2px solid color-mix(in srgb, var(--accent) 72%, transparent);
+  outline-offset: 2px;
+}
+
+@media (max-width: 560px) {
+  .remote-host-trust-action {
+    width: 100%;
+    justify-content: center;
+  }
+}

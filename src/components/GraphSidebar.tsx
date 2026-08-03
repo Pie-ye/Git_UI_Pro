@@ -18,15 +18,16 @@ import {
   RefreshCw,
   RotateCcw,
   Search,
+  SlidersHorizontal,
   Tag,
   Undo2,
   X
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type RefObject, type UIEvent as ReactUIEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type RefObject, type UIEvent as ReactUIEvent } from "react";
 import { createPortal } from "react-dom";
 import { apiClient } from "../api/client";
 import { PathTooltip } from "./PathTooltip";
-import type { ChangedFile, CommitGraphAction, CommitNode, CommitRef, GitHistoryFilter, GitHistoryRef, GitOperationState, GitProject } from "../types/domain";
+import type { ChangedFile, CommitGraphAction, CommitNode, CommitRef, GitBlameLine, GitHistoryFilter, GitHistoryQuery, GitHistoryRef, GitOperationState, GitProject } from "../types/domain";
 import { fileIconInfo } from "../utils/fileIcon";
 import { absoluteFilePath } from "../utils/filePath";
 
@@ -37,6 +38,11 @@ interface GraphSidebarProps {
   historyFilter: GitHistoryFilter;
   loading: boolean;
   onHistoryFilterChange: (filter: GitHistoryFilter) => void;
+  advancedQuery: Pick<GitHistoryQuery, "search" | "author" | "after" | "before" | "path">;
+  onAdvancedQueryChange: (query: Pick<GitHistoryQuery, "search" | "author" | "after" | "before" | "path">) => void;
+  hasMore: boolean;
+  loadingMore: boolean;
+  onLoadMore: () => void;
   selectedHash: string;
   onSelectCommit: (hash: string) => void;
   onSelectCommitFile: (commit: CommitNode, file: ChangedFile) => void;
@@ -144,6 +150,11 @@ export function GraphSidebar({
   historyFilter,
   loading,
   onHistoryFilterChange,
+  advancedQuery,
+  onAdvancedQueryChange,
+  hasMore,
+  loadingMore,
+  onLoadMore,
   selectedHash,
   onSelectCommit,
   onSelectCommitFile,
@@ -160,6 +171,13 @@ export function GraphSidebar({
 }: GraphSidebarProps) {
   const [commitQuery, setCommitQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const advancedDialogRef = useRef<HTMLElement>(null);
+  const advancedOpenerRef = useRef<HTMLElement | null>(null);
+  const [advancedDraft, setAdvancedDraft] = useState(advancedQuery);
+  const [blameLines, setBlameLines] = useState<GitBlameLine[]>([]);
+  const [blameLoading, setBlameLoading] = useState(false);
+  const [blameError, setBlameError] = useState("");
   const [fileViewMode, setFileViewMode] = useState<GraphFileViewMode>("list");
   const [refsMenuOpen, setRefsMenuOpen] = useState(false);
   const [refsQuery, setRefsQuery] = useState("");
@@ -183,6 +201,7 @@ export function GraphSidebar({
   const viewMenuButtonRef = useRef<HTMLButtonElement>(null);
   const viewMenuRef = useRef<HTMLDivElement>(null);
   const commitContextMenuRef = useRef<HTMLDivElement>(null);
+  const commitContextMenuOpenerRef = useRef<HTMLButtonElement | null>(null);
   const hoverTimerRef = useRef<number | undefined>();
   const closeTimerRef = useRef<number | undefined>();
   const graphScrollFrameRef = useRef<number | undefined>();
@@ -196,6 +215,7 @@ export function GraphSidebar({
 
     return commits.filter((commit) => `${commit.hash} ${commit.subject} ${commit.authorName} ${commit.authorEmail}`.toLowerCase().includes(keyword));
   }, [commits, commitQuery]);
+  const advancedActive = hasAdvancedQuery(advancedQuery);
   const graphContext = useMemo(() => buildGraphBranchContext(project, historyRefs, historyFilter), [project, historyRefs, historyFilter]);
   const historyFilterLabel = graphHistoryFilterLabel(historyFilter, historyRefs);
   const rowTones = useMemo(() => buildGraphTones(filteredCommits, graphContext), [filteredCommits, graphContext]);
@@ -209,7 +229,6 @@ export function GraphSidebar({
       ? { label: "合并远程更改", title: `合并 ${project?.status?.upstream ?? "远程分支"} 的新提交`, icon: GitPullRequest }
       : operation
   );
-  const localOnlyCount = project?.status?.upstream ? project.status.ahead : commits.length;
   const virtualGraphEnabled = filteredCommits.length > GRAPH_VIRTUAL_THRESHOLD && !expandedHash;
   const graphVirtualRange = useMemo(() => {
     if (!virtualGraphEnabled) {
@@ -244,6 +263,49 @@ export function GraphSidebar({
     },
     []
   );
+
+  useEffect(() => {
+    if (advancedOpen) {
+      setAdvancedDraft(advancedQuery);
+      setBlameLines([]);
+      setBlameError("");
+    }
+  }, [advancedOpen, advancedQuery]);
+
+  useEffect(() => {
+    if (!advancedOpen) {
+      return;
+    }
+    advancedOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const focusFrame = window.requestAnimationFrame(() => advancedDialogRef.current?.querySelector<HTMLInputElement>("input")?.focus());
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setAdvancedOpen(false);
+        return;
+      }
+      if (event.key !== "Tab" || !advancedDialogRef.current) {
+        return;
+      }
+      const focusable = Array.from(advancedDialogRef.current.querySelectorAll<HTMLElement>("button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])"))
+        .filter((element) => element.getClientRects().length > 0);
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      document.removeEventListener("keydown", handleKeyDown);
+      advancedOpenerRef.current?.focus();
+    };
+  }, [advancedOpen]);
 
   useLayoutEffect(() => {
     const list = graphListRef.current;
@@ -355,6 +417,10 @@ export function GraphSidebar({
       return;
     }
 
+    const focusFrame = window.requestAnimationFrame(() => {
+      commitContextMenuRef.current?.querySelector<HTMLButtonElement>("button[role='menuitem']:not(:disabled)")?.focus();
+    });
+
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target as Node;
       if (commitContextMenuRef.current?.contains(target)) {
@@ -365,13 +431,14 @@ export function GraphSidebar({
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setCommitContextMenu(null);
+        closeCommitContextMenu(true);
       }
     };
 
     document.addEventListener("pointerdown", onPointerDown);
     document.addEventListener("keydown", onKeyDown);
     return () => {
+      window.cancelAnimationFrame(focusFrame);
       document.removeEventListener("pointerdown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown);
     };
@@ -501,31 +568,72 @@ export function GraphSidebar({
     setViewMenuOpen((value) => !value);
   }
 
-  function openCommitContextMenu(event: ReactMouseEvent, commit: CommitNode) {
+  function closeCommitContextMenu(restoreFocus = false) {
+    setCommitContextMenu(null);
+    setHoveredDotHash(null);
+    if (restoreFocus) {
+      window.requestAnimationFrame(() => commitContextMenuOpenerRef.current?.focus());
+    }
+  }
+
+  function openCommitContextMenu(event: ReactMouseEvent<HTMLButtonElement>, commit: CommitNode) {
     event.preventDefault();
     event.stopPropagation();
+    openCommitContextMenuAt(commit, event.clientX, event.clientY, event.currentTarget);
+  }
+
+  function openCommitContextMenuAt(commit: CommitNode, x: number, y: number, opener: HTMLButtonElement) {
     window.clearTimeout(hoverTimerRef.current);
     window.clearTimeout(closeTimerRef.current);
     setHoveredCommit(undefined);
     setHoveredDotHash(commit.hash);
+    commitContextMenuOpenerRef.current = opener;
 
-    const commitIndex = commits.findIndex((item) => item.hash === commit.hash);
-    const currentBranch = project?.status?.currentBranch;
-    const isHead = currentBranch ? commit.refs.some((ref) => ref.type === "localBranch" && ref.name === currentBranch) : commitIndex === 0;
-    const isLocalOnly = commitIndex >= 0 && commitIndex < localOnlyCount;
+    const headCommits = commits.filter((item) => item.refs.some((ref) => ref.type === "head"));
+    const identifiedHead = headCommits.length === 1 ? headCommits[0] : undefined;
+    const isHead = identifiedHead?.hash === commit.hash;
+    const isLocalOnly = Boolean(project?.status) && isHead && (!project?.status?.upstream || (project.status.ahead ?? 0) > 0);
     setCommitContextMenu({
       commit,
-      x: Math.min(event.clientX, window.innerWidth - 246),
-      y: Math.min(event.clientY, window.innerHeight - 330),
+      x: Math.max(8, Math.min(x, window.innerWidth - 246)),
+      y: Math.max(8, Math.min(y, window.innerHeight - 330)),
       isHead,
       isLocalOnly,
-      canUndoHead: !isHead || commit.parents.length > 0
+      canUndoHead: Boolean(identifiedHead) && (!isHead || commit.parents.length > 0)
     });
   }
 
   function runCommitContextAction(action: CommitGraphAction, commit: CommitNode) {
-    setCommitContextMenu(null);
+    closeCommitContextMenu(true);
     onCommitAction(action, commit);
+  }
+
+  function handleCommitContextMenuKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeCommitContextMenu(true);
+      return;
+    }
+
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      return;
+    }
+
+    const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button[role='menuitem']:not(:disabled)"));
+    if (items.length === 0) {
+      return;
+    }
+
+    event.preventDefault();
+    const currentIndex = items.findIndex((item) => item === document.activeElement);
+    const nextIndex = event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? items.length - 1
+        : event.key === "ArrowDown"
+          ? (currentIndex + 1 + items.length) % items.length
+          : (currentIndex - 1 + items.length) % items.length;
+    items[nextIndex].focus();
   }
 
   async function handleCommitClick(commit: CommitNode) {
@@ -593,6 +701,24 @@ export function GraphSidebar({
     }
   }
 
+  async function loadBlame() {
+    const filePath = advancedDraft.path?.trim();
+    if (!project || !filePath) {
+      setBlameError("请先填写仓库内文件路径。");
+      return;
+    }
+    setBlameLoading(true);
+    setBlameError("");
+    try {
+      setBlameLines(await apiClient.getBlame(project, filePath));
+    } catch (error) {
+      setBlameLines([]);
+      setBlameError(error instanceof Error ? error.message : "无法读取文件 Blame。");
+    } finally {
+      setBlameLoading(false);
+    }
+  }
+
   return (
     <section className={`graph-sidebar graph-panel ${panelOpen ? "" : "panel-collapsed"}`}>
       <div className="graph-section-title">
@@ -633,6 +759,16 @@ export function GraphSidebar({
                 }}
               >
                 <Search size={GRAPH_TOOLBAR_ICON_SIZE} />
+              </button>
+            </PathTooltip>
+            <PathTooltip content="高级历史筛选与 Blame" className="graph-toolbar-tooltip">
+              <button
+                type="button"
+                className={`icon-button compact-icon ${advancedOpen || advancedActive ? "active" : ""}`}
+                aria-label="高级历史筛选与 Blame"
+                onClick={() => setAdvancedOpen(true)}
+              >
+                <SlidersHorizontal size={GRAPH_TOOLBAR_ICON_SIZE} />
               </button>
             </PathTooltip>
             {visibleGraphOperations.map((operation) => {
@@ -737,7 +873,7 @@ export function GraphSidebar({
 
           <div className="graph-commit-list" role="list" aria-label="提交图" ref={graphListRef} onScroll={handleGraphListScroll}>
             {filteredCommits.length === 0 && loading ? (
-              <div className="graph-loading-state" aria-label="正在加载提交图">
+              <div className="graph-loading-state" role="status" aria-live="polite" aria-label="正在加载提交图">
                 <span aria-hidden="true" />
               </div>
             ) : null}
@@ -764,7 +900,7 @@ export function GraphSidebar({
                   graphContext={graphContext}
                   graphLayout={graphLayout}
                   tone={tone}
-                  selected={commit.hash === selectedHash || commit.hash === hoveredDotHash || commit.hash === expandedHash}
+                  selected={commit.hash === selectedHash || commit.hash === hoveredDotHash || commit.hash === expandedHash || commit.hash === commitContextMenu?.commit.hash}
                   expanded={commit.hash === expandedHash}
                   details={commitDetailsByHash[commit.hash]}
                   loadingDetails={loadingDetailsHash === commit.hash}
@@ -776,6 +912,11 @@ export function GraphSidebar({
                   isLast={index === filteredCommits.length - 1}
                   onSelect={() => void handleCommitClick(commit)}
                   onContextMenu={(event) => openCommitContextMenu(event, commit)}
+                  onContextMenuKey={(event) => {
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    openCommitContextMenuAt(commit, rect.left + 20, rect.top + rect.height / 2, event.currentTarget);
+                  }}
+                  onRetryDetails={() => void ensureCommitDetails(commit)}
                   onSelectFile={(file) => onSelectCommitFile(commit, file)}
                   onPinFile={(file) => onPinCommitFile(commit, file)}
                   onHoverStart={(row) => scheduleHover(commit, row)}
@@ -784,6 +925,12 @@ export function GraphSidebar({
               );
             })}
             {virtualGraphEnabled && graphVirtualRange.bottomPadding > 0 ? <div className="graph-virtual-spacer" style={{ height: graphVirtualRange.bottomPadding }} aria-hidden="true" /> : null}
+            {hasMore ? (
+              <button type="button" className="graph-load-more" disabled={loadingMore} onClick={onLoadMore}>
+                <RefreshCw size={14} className={loadingMore ? "spin" : ""} />
+                {loadingMore ? "正在加载" : "加载更多提交"}
+              </button>
+            ) : commits.length > 0 ? <div className="graph-history-end">已加载到当前筛选范围末尾</div> : null}
           </div>
         </>
       ) : null}
@@ -801,6 +948,7 @@ export function GraphSidebar({
               style={{ left: commitContextMenu.x, top: commitContextMenu.y }}
               ref={commitContextMenuRef}
               onPointerDown={(event) => event.stopPropagation()}
+              onKeyDown={handleCommitContextMenuKeyDown}
             >
               <button type="button" role="menuitem" onClick={() => runCommitContextAction("copyHash", commitContextMenu.commit)}>
                 <Copy size={14} />
@@ -845,6 +993,46 @@ export function GraphSidebar({
                 <AlertTriangle size={14} />
                 {commitContextMenu.isHead ? "撤销此提交，丢弃更改" : "重置到此提交，丢弃更改"}
               </button>
+            </div>,
+            document.querySelector(".app-shell") ?? document.body
+          )
+        : null}
+      {advancedOpen && typeof document !== "undefined"
+        ? createPortal(
+            <div className="graph-advanced-backdrop" role="presentation">
+              <section ref={advancedDialogRef} className="graph-advanced-dialog" role="dialog" aria-modal="true" aria-labelledby="graph-advanced-title">
+                <header>
+                  <span><SlidersHorizontal size={18} /><strong id="graph-advanced-title">历史筛选与文件追溯</strong></span>
+                  <button type="button" className="icon-button compact-icon" aria-label="关闭" onClick={() => setAdvancedOpen(false)}><X size={17} /></button>
+                </header>
+                <form className="graph-advanced-form" onSubmit={(event) => {
+                  event.preventDefault();
+                  onAdvancedQueryChange(normalizeAdvancedQuery(advancedDraft));
+                  setAdvancedOpen(false);
+                }}>
+                  <label><span>提交内容</span><input value={advancedDraft.search ?? ""} onChange={(event) => setAdvancedDraft((current) => ({ ...current, search: event.target.value }))} placeholder="提交标题或正文" /></label>
+                  <label><span>作者</span><input value={advancedDraft.author ?? ""} onChange={(event) => setAdvancedDraft((current) => ({ ...current, author: event.target.value }))} placeholder="姓名或邮箱" /></label>
+                  <label><span>开始日期</span><input type="date" value={advancedDraft.after ?? ""} onChange={(event) => setAdvancedDraft((current) => ({ ...current, after: event.target.value }))} /></label>
+                  <label><span>结束日期</span><input type="date" value={advancedDraft.before ?? ""} onChange={(event) => setAdvancedDraft((current) => ({ ...current, before: event.target.value }))} /></label>
+                  <label className="wide"><span>仓库内文件路径</span><input value={advancedDraft.path ?? ""} onChange={(event) => { setAdvancedDraft((current) => ({ ...current, path: event.target.value })); setBlameLines([]); setBlameError(""); }} placeholder="src/components/App.tsx" /></label>
+                  <div className="graph-advanced-actions wide">
+                    <button type="button" className="secondary" onClick={() => { setAdvancedDraft({}); setBlameLines([]); setBlameError(""); onAdvancedQueryChange({}); }}>清除筛选</button>
+                    <button type="button" className="secondary" disabled={!advancedDraft.path?.trim() || blameLoading} onClick={() => void loadBlame()}>{blameLoading ? "正在读取" : "查看 Blame"}</button>
+                    <button type="submit" className="primary">应用筛选</button>
+                  </div>
+                </form>
+                {blameError ? <div className="graph-blame-error">{blameError}</div> : null}
+                {blameLines.length > 0 ? (
+                  <div className="graph-blame-panel" role="table" aria-label="文件 Blame">
+                    <div className="graph-blame-header" role="row"><span>行</span><span>提交</span><span>作者</span><span>时间</span><span>内容</span></div>
+                    {blameLines.map((line) => (
+                      <div className="graph-blame-row" role="row" key={`${line.hash}-${line.lineNumber}`}>
+                        <span>{line.lineNumber}</span><code>{line.shortHash}</code><PathTooltip content={line.authorEmail} className="graph-blame-author-tooltip"><span>{line.authorName}</span></PathTooltip><time>{formatBlameDate(line.authorDate)}</time><code>{line.content || " "}</code>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </section>
             </div>,
             document.querySelector(".app-shell") ?? document.body
           )
@@ -894,9 +1082,11 @@ function GraphHistoryRefsMenu({
             选择图表引用
             <small>已选 {selectedCount} 项</small>
           </span>
-          <button type="button" className="icon-button compact-icon" title="关闭" onClick={onClose}>
-            <X size={14} />
-          </button>
+          <PathTooltip content="关闭引用选择" className="graph-toolbar-tooltip">
+            <button type="button" className="icon-button compact-icon" aria-label="关闭引用选择" onClick={onClose}>
+              <X size={14} />
+            </button>
+          </PathTooltip>
         </header>
 
         <div className="branch-switch-panel graph-refs-switch-panel">
@@ -988,6 +1178,8 @@ function GraphCommitRow({
   isLast,
   onSelect,
   onContextMenu,
+  onContextMenuKey,
+  onRetryDetails,
   onSelectFile,
   onPinFile,
   onHoverStart,
@@ -1008,7 +1200,9 @@ function GraphCommitRow({
   isFirst: boolean;
   isLast: boolean;
   onSelect: () => void;
-  onContextMenu: (event: ReactMouseEvent) => void;
+  onContextMenu: (event: ReactMouseEvent<HTMLButtonElement>) => void;
+  onContextMenuKey: (event: ReactKeyboardEvent<HTMLButtonElement>) => void;
+  onRetryDetails: () => void;
   onSelectFile: (file: ChangedFile) => void;
   onPinFile: (file: ChangedFile) => void;
   onHoverStart: (row: HTMLElement) => void;
@@ -1026,8 +1220,17 @@ function GraphCommitRow({
         className={`graph-commit-row graph-tone-${tone} ${selected ? "active" : ""}`}
         style={rowStyle}
         aria-expanded={expanded}
+        aria-haspopup="menu"
+        aria-keyshortcuts="Shift+F10"
         onClick={onSelect}
         onContextMenu={onContextMenu}
+        onKeyDown={(event) => {
+          if ((event.shiftKey && event.key === "F10") || event.key === "ContextMenu") {
+            event.preventDefault();
+            event.stopPropagation();
+            onContextMenuKey(event);
+          }
+        }}
         onMouseEnter={(event) => onHoverStart(event.currentTarget)}
         onMouseLeave={onHoverEnd}
         onFocus={(event) => onHoverStart(event.currentTarget)}
@@ -1065,6 +1268,7 @@ function GraphCommitRow({
           graphLayout={graphLayout}
           loading={loadingDetails}
           error={detailsError}
+          onRetry={onRetryDetails}
           viewMode={fileViewMode}
           repositoryPath={repositoryPath}
           selectedFilePath={selectedFilePath}
@@ -1081,6 +1285,7 @@ function GraphCommitExpansion({
   graphLayout,
   loading,
   error,
+  onRetry,
   viewMode,
   repositoryPath,
   selectedFilePath,
@@ -1091,6 +1296,7 @@ function GraphCommitExpansion({
   graphLayout: GraphRowLayout;
   loading: boolean;
   error?: string;
+  onRetry: () => void;
   viewMode: GraphFileViewMode;
   repositoryPath?: string;
   selectedFilePath?: string;
@@ -1107,7 +1313,7 @@ function GraphCommitExpansion({
 
   if (loading) {
     return (
-      <div className="graph-commit-expansion graph-commit-expansion-loading" style={expansionStyle} aria-label="正在读取变更文件">
+      <div className="graph-commit-expansion graph-commit-expansion-loading" style={expansionStyle} role="status" aria-live="polite" aria-label="正在读取变更文件">
         <GraphExpansionLines lines={expansionLines} />
       </div>
     );
@@ -1115,9 +1321,10 @@ function GraphCommitExpansion({
 
   if (error) {
     return (
-      <div className="graph-commit-expansion graph-commit-expansion-state error" style={expansionStyle}>
+      <div className="graph-commit-expansion graph-commit-expansion-state error" style={expansionStyle} role="alert">
         <GraphExpansionLines lines={expansionLines} />
-        {error}
+        <span>{error}</span>
+        <button type="button" onClick={onRetry}><RefreshCw size={13} />重新读取</button>
       </div>
     );
   }
@@ -1554,6 +1761,24 @@ function graphHistoryFilterLabel(filter: GitHistoryFilter, refs: GitHistoryRef[]
   }
 
   return `${refIds.length} 项`;
+}
+
+function hasAdvancedQuery(query: Pick<GitHistoryQuery, "search" | "author" | "after" | "before" | "path">): boolean {
+  return Boolean(query.search?.trim() || query.author?.trim() || query.after?.trim() || query.before?.trim() || query.path?.trim());
+}
+
+function normalizeAdvancedQuery(
+  query: Pick<GitHistoryQuery, "search" | "author" | "after" | "before" | "path">
+): Pick<GitHistoryQuery, "search" | "author" | "after" | "before" | "path"> {
+  return Object.fromEntries(
+    Object.entries(query).map(([key, value]) => [key, value?.trim() || undefined]).filter(([, value]) => Boolean(value))
+  );
+}
+
+function formatBlameDate(value: string): string {
+  if (!value) return "-";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString("zh-CN");
 }
 
 function cloneHistoryFilter(filter: GitHistoryFilter): GitHistoryFilter {
