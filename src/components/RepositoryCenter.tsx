@@ -440,6 +440,8 @@ export interface RepositoryCenterProps {
   data: RepositoryCenterData;
   actions: RepositoryCenterActions;
   initialTab?: RepositoryCenterTab;
+  activeTab?: RepositoryCenterTab;
+  onTabChange?: (tab: RepositoryCenterTab) => void;
 }
 
 interface TabDefinition {
@@ -498,8 +500,16 @@ const SECTION_LABELS: Record<RepositoryCenterSection, string> = {
 
 const DestructiveConfirmationContext = createContext(true);
 
-export function RepositoryCenter({ open, repository, data, actions, initialTab = "recovery" }: RepositoryCenterProps) {
-  const [activeTab, setActiveTab] = useState<RepositoryCenterTab>(initialTab);
+export function RepositoryCenter({
+  open,
+  repository,
+  data,
+  actions,
+  initialTab = "recovery",
+  activeTab: controlledActiveTab,
+  onTabChange
+}: RepositoryCenterProps) {
+  const [internalActiveTab, setInternalActiveTab] = useState<RepositoryCenterTab>(initialTab);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [actionError, setActionError] = useState("");
   const [actionNotice, setActionNotice] = useState("");
@@ -507,6 +517,7 @@ export function RepositoryCenter({ open, repository, data, actions, initialTab =
   const openerRef = useRef<HTMLElement | null>(null);
   const closeActionRef = useRef(actions.onClose);
   const pendingActionRef = useRef<string | null>(null);
+  const activeTab = controlledActiveTab ?? internalActiveTab;
 
   useEffect(() => {
     closeActionRef.current = actions.onClose;
@@ -520,9 +531,11 @@ export function RepositoryCenter({ open, repository, data, actions, initialTab =
     if (open) {
       setActionError("");
       setActionNotice("");
-      setActiveTab(initialTab);
+      if (controlledActiveTab === undefined) {
+        setInternalActiveTab(initialTab);
+      }
     }
-  }, [initialTab, open]);
+  }, [controlledActiveTab, initialTab, open]);
 
   useEffect(() => {
     if (!open) {
@@ -594,6 +607,13 @@ export function RepositoryCenter({ open, repository, data, actions, initialTab =
     void runAction(`reload:${section}`, () => actions.onReload(section));
   }
 
+  function selectTab(tab: RepositoryCenterTab) {
+    if (controlledActiveTab === undefined) {
+      setInternalActiveTab(tab);
+    }
+    onTabChange?.(tab);
+  }
+
   const activeDefinition = TABS.find((tab) => tab.id === activeTab)!;
 
   return (
@@ -649,8 +669,7 @@ export function RepositoryCenter({ open, repository, data, actions, initialTab =
                   type="button"
                   className={activeTab === tab.id ? "active" : ""}
                   aria-current={activeTab === tab.id ? "page" : undefined}
-                  disabled={pendingAction !== null}
-                  onClick={() => setActiveTab(tab.id)}
+                  onClick={() => selectTab(tab.id)}
                 >
                   <Icon size={17} />
                   <span><strong>{tab.label}</strong><small>{tab.description}</small></span>

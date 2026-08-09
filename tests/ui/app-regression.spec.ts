@@ -118,6 +118,106 @@ test("桌面宽度打开仓库中心不会产生横向溢出", async ({ page }) 
   await expect(repositoryTooltip).toBeHidden();
 });
 
+test("仓库中心按标签页加载并复用已读取的数据", async ({ page }) => {
+  await openApp(page);
+  await expect(page.locator(".scm-file-row").first()).toBeVisible();
+  await page.evaluate(() => {
+    const methodNames = [
+      "getStashes",
+      "getReflog",
+      "getBranches",
+      "getTags",
+      "getRemotes",
+      "getLinkedWorktrees",
+      "getSubmodules",
+      "getLfsStatus",
+      "readGitIgnore",
+      "getSigningConfig",
+      "getGitIdentity",
+      "listHostingAccounts"
+    ] as const;
+    const calls = Object.fromEntries(methodNames.map((name) => [name, 0])) as Record<(typeof methodNames)[number], number>;
+    const tracked = <T,>(name: (typeof methodNames)[number], value: T) => async () => {
+      calls[name] += 1;
+      return value;
+    };
+    window.gitUI = {
+      ...window.gitUI,
+      getUiPreferences: async () => ({
+        theme: "system", language: "zh-CN", bottomConsoleVisible: true, sidebarWidth: 240, rightPanelWidth: 420,
+        consoleHeight: 240, fontSize: 14, fontFamily: "system-ui", diffViewMode: "split", diffWrap: false,
+        pullStrategy: "ff-only", density: "comfortable", sidebarPosition: "left", confirmDestructiveActions: true, shortcuts: {}
+      }),
+      getProjectStatus: async () => ({
+        currentBranch: "master", upstream: "origin/master", ahead: 0, behind: 0, stagedCount: 0,
+        unstagedCount: 0, untrackedCount: 0, conflictedCount: 0, hasConflicts: false
+      }),
+      onGitOperationProgress: () => () => undefined,
+      getWindowState: async () => ({ isMaximized: false, isFullScreen: false }),
+      onWindowStateChange: () => () => undefined,
+      onTerminalData: () => () => undefined,
+      onTerminalExit: () => () => undefined,
+      setNativeTheme: async () => undefined,
+      getStashes: tracked("getStashes", []),
+      getReflog: tracked("getReflog", []),
+      getBranches: tracked("getBranches", []),
+      getTags: tracked("getTags", []),
+      getRemotes: tracked("getRemotes", []),
+      getLinkedWorktrees: tracked("getLinkedWorktrees", []),
+      getSubmodules: tracked("getSubmodules", []),
+      getLfsStatus: tracked("getLfsStatus", { installed: false, initialized: false, version: "", files: [] }),
+      readGitIgnore: tracked("readGitIgnore", { content: "", revision: "missing" }),
+      getSigningConfig: tracked("getSigningConfig", { commitGpgSign: false, tagGpgSign: false, format: "openpgp", signingKey: null }),
+      getGitIdentity: tracked("getGitIdentity", { valid: true, issues: [] }),
+      listHostingAccounts: tracked("listHostingAccounts", [])
+    } as typeof window.gitUI;
+    (window as unknown as { __repositoryCenterLoadCalls: typeof calls }).__repositoryCenterLoadCalls = calls;
+  });
+
+  await page.getByRole("button", { name: "打开仓库中心" }).evaluate((button: HTMLButtonElement) => button.click());
+  const dialog = page.getByRole("dialog", { name: /git ui pro/i });
+  await expect(dialog).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __repositoryCenterLoadCalls: Record<string, number> }
+  ).__repositoryCenterLoadCalls.getStashes)).toBeGreaterThan(0);
+
+  const recoveryCalls = await page.evaluate(() => (
+    window as unknown as { __repositoryCenterLoadCalls: Record<string, number> }
+  ).__repositoryCenterLoadCalls);
+  expect(recoveryCalls.getReflog).toBeGreaterThan(0);
+  expect(recoveryCalls.getLinkedWorktrees).toBe(0);
+  expect(recoveryCalls.getSubmodules).toBe(0);
+  expect(recoveryCalls.getLfsStatus).toBe(0);
+  expect(recoveryCalls.getRemotes).toBe(0);
+  expect(recoveryCalls.listHostingAccounts).toBe(0);
+
+  await dialog.getByRole("button", { name: /仓库工具/ }).click();
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __repositoryCenterLoadCalls: Record<string, number> }
+  ).__repositoryCenterLoadCalls.getLinkedWorktrees)).toBeGreaterThan(0);
+  const toolCalls = await page.evaluate(() => (
+    window as unknown as { __repositoryCenterLoadCalls: Record<string, number> }
+  ).__repositoryCenterLoadCalls);
+  expect(toolCalls.getSubmodules).toBeGreaterThan(0);
+  expect(toolCalls.getLfsStatus).toBeGreaterThan(0);
+  expect(toolCalls.getRemotes).toBe(0);
+
+  await dialog.getByRole("button", { name: /远程与托管/ }).click();
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __repositoryCenterLoadCalls: Record<string, number> }
+  ).__repositoryCenterLoadCalls.getRemotes)).toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __repositoryCenterLoadCalls: Record<string, number> }
+  ).__repositoryCenterLoadCalls.listHostingAccounts)).toBeGreaterThan(0);
+
+  const toolLoadCount = toolCalls.getLinkedWorktrees;
+  await dialog.getByRole("button", { name: /仓库工具/ }).click();
+  await page.waitForTimeout(50);
+  expect(await page.evaluate(() => (
+    window as unknown as { __repositoryCenterLoadCalls: Record<string, number> }
+  ).__repositoryCenterLoadCalls.getLinkedWorktrees)).toBe(toolLoadCount);
+});
+
 test("切换项目分组使用局部更新并快速完成", async ({ page }) => {
   await openApp(page);
   await page.getByRole("button", { name: "打开仓库中心" }).click();
@@ -156,6 +256,60 @@ test("切换项目分组使用局部更新并快速完成", async ({ page }) => 
   await expect(dialog).toHaveAttribute("aria-busy", "false");
   const calls = await page.evaluate(() => (window as unknown as { __projectGroupCalls: { setProjectGroup: number; getProjects: number } }).__projectGroupCalls);
   expect(calls).toEqual({ setProjectGroup: 1, getProjects: 0 });
+});
+
+test("批量刷新项目状态不会重载仓库中心的无关资源", async ({ page }) => {
+  await openApp(page);
+  await page.getByRole("button", { name: "打开仓库中心" }).click();
+  const dialog = page.getByRole("dialog", { name: /git ui pro/i });
+  await dialog.getByRole("button", { name: /项目管理/ }).click();
+  const projectCheckbox = dialog.getByRole("checkbox", { name: "选择 Git UI Pro" });
+  await expect(projectCheckbox).toBeVisible();
+
+  await page.evaluate(() => {
+    const methodNames = ["getStashes", "getReflog", "getBranches", "getTags", "getRemotes", "getLinkedWorktrees", "getSubmodules", "getLfsStatus"] as const;
+    const calls = Object.fromEntries(methodNames.map((name) => [name, 0])) as Record<(typeof methodNames)[number], number>;
+    let statusCalls = 0;
+    const trackedEmpty = (name: (typeof methodNames)[number]) => async () => {
+      calls[name] += 1;
+      return [];
+    };
+    window.gitUI = {
+      ...window.gitUI,
+      getProjectStatus: async () => {
+        statusCalls += 1;
+        return {
+          currentBranch: "master", upstream: "origin/master", ahead: 0, behind: 0, stagedCount: 0,
+          unstagedCount: 0, untrackedCount: 0, conflictedCount: 0, hasConflicts: false
+        };
+      },
+      getHistoryPage: async () => ({ commits: [], hasMore: false, nextSkip: 0 }),
+      getHistoryRefs: async () => [],
+      getWorktree: async () => ({ stagedFiles: [], unstagedFiles: [] }),
+      getStashes: trackedEmpty("getStashes"),
+      getReflog: trackedEmpty("getReflog"),
+      getBranches: trackedEmpty("getBranches"),
+      getTags: trackedEmpty("getTags"),
+      getRemotes: trackedEmpty("getRemotes"),
+      getLinkedWorktrees: trackedEmpty("getLinkedWorktrees"),
+      getSubmodules: trackedEmpty("getSubmodules"),
+      getLfsStatus: async () => {
+        calls.getLfsStatus += 1;
+        return { installed: false, initialized: false, version: "", files: [] };
+      }
+    } as typeof window.gitUI;
+    (window as unknown as { __batchRefreshCenterCalls: typeof calls }).__batchRefreshCenterCalls = calls;
+    Object.defineProperty(window, "__batchRefreshStatusCalls", { get: () => statusCalls, configurable: true });
+  });
+
+  await projectCheckbox.check();
+  await dialog.getByRole("button", { name: "执行（1）" }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __batchRefreshStatusCalls: number }).__batchRefreshStatusCalls)).toBeGreaterThan(0);
+  await expect(dialog).toHaveAttribute("aria-busy", "false");
+  const calls = await page.evaluate(() => (
+    window as unknown as { __batchRefreshCenterCalls: Record<string, number> }
+  ).__batchRefreshCenterCalls);
+  expect(Object.values(calls)).toEqual(Object.values(calls).map(() => 0));
 });
 
 test("项目栏头部使用单行等尺寸图标且搜索可展开", async ({ page }) => {

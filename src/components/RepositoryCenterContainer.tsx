@@ -51,6 +51,32 @@ const shortcutLabels: Record<string, string> = {
   "terminal.toggle": "显示或隐藏控制台"
 };
 
+const TAB_SECTIONS: Record<RepositoryCenterTab, readonly RepositoryCenterSection[]> = {
+  recovery: ["stashes", "operation", "reflog"],
+  refs: ["rebaseTargets", "branches", "tags"],
+  remotes: ["remotes", "hosting", "hostingAccounts"],
+  tools: ["worktrees", "submodules", "lfs", "gitignore", "signing", "identity"],
+  projects: ["projects", "groups", "recent"],
+  preferences: ["preferences"]
+};
+
+const TAB_DEFERRED_SECTIONS: Partial<Record<RepositoryCenterTab, readonly RepositoryCenterSection[]>> = {
+  remotes: ["hostingChanges"],
+  tools: ["lfsLocks"]
+};
+
+const STASH_REFRESH_SECTIONS = ["stashes", "operation"] as const satisfies readonly RepositoryCenterSection[];
+const OPERATION_REFRESH_SECTIONS = ["operation", "rebaseTargets", "branches", "reflog"] as const satisfies readonly RepositoryCenterSection[];
+const REMOTE_REFRESH_SECTIONS = ["operation", "remotes", "branches", "hosting", "hostingChanges"] as const satisfies readonly RepositoryCenterSection[];
+const REF_REFRESH_SECTIONS = ["operation", "rebaseTargets", "branches", "tags", "reflog"] as const satisfies readonly RepositoryCenterSection[];
+const WORKTREE_REFRESH_SECTIONS = ["worktrees", "rebaseTargets", "branches"] as const satisfies readonly RepositoryCenterSection[];
+const SUBMODULE_REFRESH_SECTIONS = ["operation", "submodules"] as const satisfies readonly RepositoryCenterSection[];
+const LFS_REFRESH_SECTIONS = ["operation", "lfs", "lfsLocks"] as const satisfies readonly RepositoryCenterSection[];
+const REPOSITORY_DATA_SECTIONS = [
+  "stashes", "operation", "rebaseTargets", "remotes", "branches", "tags", "reflog", "worktrees",
+  "submodules", "lfs", "lfsLocks", "gitignore", "signing", "identity", "hosting", "hostingAccounts", "hostingChanges"
+] as const satisfies readonly RepositoryCenterSection[];
+
 export function RepositoryCenterContainer({
   open,
   project,
@@ -65,8 +91,9 @@ export function RepositoryCenterContainer({
 }: RepositoryCenterContainerProps) {
   const [data, setData] = useState<RepositoryCenterData>(() => emptyCenterData());
   const [repositoryStatus, setRepositoryStatus] = useState<GitStatusSummary | undefined>(project?.status);
+  const [activeTab, setActiveTab] = useState<RepositoryCenterTab>(initialTab ?? "recovery");
   const loadTokenRef = useRef(0);
-  const loadedProjectIdRef = useRef<string | null>(null);
+  const loadedSectionsRef = useRef(new Set<RepositoryCenterSection>());
   const projectRef = useRef(project);
   const projectsRef = useRef(projects);
 
@@ -79,19 +106,25 @@ export function RepositoryCenterContainer({
 
   const loadAll = useCallback(async (
     projectSource: GitProject[] = projectsRef.current,
-    options: { showLoading?: boolean } = {}
-  ) => {
+    options: { sections?: readonly RepositoryCenterSection[] } = {}
+  ): Promise<boolean> => {
     const loadToken = ++loadTokenRef.current;
     const selectedProject = projectRef.current;
-    if (options.showLoading) {
-      setData((current) => loadingCenterData(current));
-    }
+    const requestedSections = new Set(options.sections ?? Object.keys(emptyCenterData()) as RepositoryCenterSection[]);
+    const shouldLoad = (section: RepositoryCenterSection) => requestedSections.has(section);
+    const needsLibrary = shouldLoad("projects") || shouldLoad("groups") || shouldLoad("recent");
+    const needsStatus = shouldLoad("operation") || shouldLoad("hosting");
+    const needsBranches = shouldLoad("branches") || shouldLoad("rebaseTargets");
+    const needsTags = shouldLoad("tags") || shouldLoad("rebaseTargets");
+    const needsRemotes = shouldLoad("remotes") || shouldLoad("hosting") || shouldLoad("hostingChanges");
+    const needsLfs = shouldLoad("lfs") || shouldLoad("lfsLocks");
+    const needsHostingAccounts = shouldLoad("hostingAccounts") || shouldLoad("hostingChanges");
 
-    const libraryPromise = asResource(() => apiClient.getProjectLibrary());
-    const preferencesPromise = asResource(() => apiClient.getUiPreferences());
-    const statusPromise = selectedProject ? asResource(() => apiClient.getProjectStatus(selectedProject)) : Promise.resolve(readyResource<GitStatusSummary | undefined>(undefined));
-    const branchesPromise = selectedProject ? asResource(() => apiClient.getBranches(selectedProject)) : Promise.resolve(readyResource<BranchInfo[]>([]));
-    const remotesPromise = selectedProject ? asResource(() => apiClient.getRemotes(selectedProject)) : Promise.resolve(readyResource([]));
+    const libraryPromise = needsLibrary ? asResource(() => apiClient.getProjectLibrary()) : Promise.resolve(readyResource<ProjectLibraryState>({ groups: [], recentProjectIds: [] }));
+    const preferencesPromise = shouldLoad("preferences") ? asResource(() => apiClient.getUiPreferences()) : Promise.resolve(readyResource(defaultPreferences()));
+    const statusPromise = selectedProject && needsStatus ? asResource(() => apiClient.getProjectStatus(selectedProject)) : Promise.resolve(readyResource<GitStatusSummary | undefined>(undefined));
+    const branchesPromise = selectedProject && needsBranches ? asResource(() => apiClient.getBranches(selectedProject)) : Promise.resolve(readyResource<BranchInfo[]>([]));
+    const remotesPromise = selectedProject && needsRemotes ? asResource(() => apiClient.getRemotes(selectedProject)) : Promise.resolve(readyResource<GitRemoteInfo[]>([]));
 
     const [library, preferences, status, branches, remotes, stashes, tags, reflog, worktrees, submodules, lfs, gitignore, signing, identity, hostingAccounts] = await Promise.all([
       libraryPromise,
@@ -99,29 +132,29 @@ export function RepositoryCenterContainer({
       statusPromise,
       branchesPromise,
       remotesPromise,
-      selectedProject ? asResource(() => apiClient.getStashes(selectedProject)) : Promise.resolve(readyResource([])),
-      selectedProject ? asResource(() => apiClient.getTags(selectedProject)) : Promise.resolve(readyResource([])),
-      selectedProject ? asResource(() => apiClient.getReflog(selectedProject, 150)) : Promise.resolve(readyResource([])),
-      selectedProject ? asResource(() => apiClient.getLinkedWorktrees(selectedProject)) : Promise.resolve(readyResource([])),
-      selectedProject ? asResource(() => apiClient.getSubmodules(selectedProject)) : Promise.resolve(readyResource([])),
-      selectedProject ? asResource(() => apiClient.getLfsStatus(selectedProject)) : Promise.resolve(readyResource(undefined)),
-      selectedProject ? asResource(() => apiClient.readGitIgnore(selectedProject)) : Promise.resolve(readyResource(undefined)),
-      selectedProject ? asResource(() => apiClient.getSigningConfig(selectedProject)) : Promise.resolve(readyResource(undefined)),
-      selectedProject ? asResource(() => apiClient.getGitIdentity(selectedProject)) : Promise.resolve(readyResource(undefined)),
-      asResource(() => apiClient.listHostingAccounts())
+      selectedProject && shouldLoad("stashes") ? asResource(() => apiClient.getStashes(selectedProject)) : Promise.resolve(readyResource([])),
+      selectedProject && needsTags ? asResource(() => apiClient.getTags(selectedProject)) : Promise.resolve(readyResource([])),
+      selectedProject && shouldLoad("reflog") ? asResource(() => apiClient.getReflog(selectedProject, 150)) : Promise.resolve(readyResource([])),
+      selectedProject && shouldLoad("worktrees") ? asResource(() => apiClient.getLinkedWorktrees(selectedProject)) : Promise.resolve(readyResource([])),
+      selectedProject && shouldLoad("submodules") ? asResource(() => apiClient.getSubmodules(selectedProject)) : Promise.resolve(readyResource([])),
+      selectedProject && needsLfs ? asResource(() => apiClient.getLfsStatus(selectedProject)) : Promise.resolve(readyResource(undefined)),
+      selectedProject && shouldLoad("gitignore") ? asResource(() => apiClient.readGitIgnore(selectedProject)) : Promise.resolve(readyResource(undefined)),
+      selectedProject && shouldLoad("signing") ? asResource(() => apiClient.getSigningConfig(selectedProject)) : Promise.resolve(readyResource(undefined)),
+      selectedProject && shouldLoad("identity") ? asResource(() => apiClient.getGitIdentity(selectedProject)) : Promise.resolve(readyResource(undefined)),
+      needsHostingAccounts ? asResource(() => apiClient.listHostingAccounts()) : Promise.resolve(readyResource<GitHostingAccountSummary[]>([]))
     ]);
 
-    const lfsLocks = !selectedProject || lfs.status !== "ready" || !lfs.data?.installed
+    const lfsLocks = !shouldLoad("lfsLocks") || !selectedProject || lfs.status !== "ready" || !lfs.data?.installed
       ? readyResource([])
       : await asResource(() => apiClient.getLfsLocks(selectedProject));
 
     const resolvedStatus = status.status === "ready" ? status.data : undefined;
-    const hosting = !selectedProject
+    const hosting = !shouldLoad("hosting") || !selectedProject
       ? readyResource<RepositoryHostingLink[]>([])
       : remotes.status === "error"
         ? errorResource<RepositoryHostingLink[]>(remotes.error, [])
         : await loadHostingResources(selectedProject, remotes.data, resolvedStatus?.currentBranch ?? undefined);
-    const hostingChanges = !selectedProject
+    const hostingChanges = !shouldLoad("hostingChanges") || !selectedProject
       ? readyResource<RepositoryHostingChange[]>([])
       : remotes.status === "error"
         ? errorResource<RepositoryHostingChange[]>(remotes.error, [])
@@ -130,30 +163,32 @@ export function RepositoryCenterContainer({
           : await loadConfiguredHostingChanges(remotes.data, hostingAccounts.data);
 
     if (loadToken !== loadTokenRef.current) {
-      return;
+      return false;
     }
 
-    if (library.status === "ready") {
+    if (needsLibrary && library.status === "ready") {
       onLibraryChange(library.data);
     }
-    setRepositoryStatus(resolvedStatus);
+    if (needsStatus) {
+      setRepositoryStatus(resolvedStatus);
+    }
 
     const libraryData = library.status === "ready" ? library.data : { groups: [], recentProjectIds: [] };
     const projectSummaries = projectSource.map(projectSummary);
     const recentById = new Map(projectSummaries.map((item) => [item.id, item]));
     const branchData = branches.status === "ready" ? branches.data : [];
 
-    setData({
-      stashes: mapResource(stashes, (entries) => entries.map((entry, index) => ({
+    setData((current) => ({
+      stashes: shouldLoad("stashes") ? mapResource(stashes, (entries) => entries.map((entry, index) => ({
         id: entry.selector,
         targetHash: entry.hash,
         index: stashIndex(entry.selector, index),
         subject: entry.subject,
         branch: stashBranch(entry.subject),
         createdAt: entry.createdAt
-      })), []),
-      operation: status.status === "error" ? errorResource(status.error, null) : readyResource(activeOperation(resolvedStatus)),
-      rebaseTargets: branches.status === "error"
+      })), []) : current.stashes,
+      operation: shouldLoad("operation") ? (status.status === "error" ? errorResource(status.error, null) : readyResource(activeOperation(resolvedStatus))) : current.operation,
+      rebaseTargets: shouldLoad("rebaseTargets") ? (branches.status === "error"
         ? errorResource(branches.error, [])
         : tags.status === "error"
           ? errorResource(tags.error, [])
@@ -165,8 +200,8 @@ export function RepositoryCenterContainer({
                 isCurrent: branch.current
               })),
               ...tags.data.map((tag) => ({ ref: `refs/tags/${tag.name}`, label: tag.name, kind: "tag" as const }))
-            ]),
-      remotes: mapResource(remotes, (entries) => entries.map((remote) => ({
+            ])) : current.rebaseTargets,
+      remotes: shouldLoad("remotes") ? mapResource(remotes, (entries) => entries.map((remote) => ({
         id: remote.name,
         name: remote.name,
         fetchUrl: remote.fetchUrls[0] ?? "",
@@ -176,8 +211,8 @@ export function RepositoryCenterContainer({
         hostingProvider: hostingProviderFromRemote(remote.fetchUrls[0] ?? ""),
         isDefaultFetch: remote.defaultFetch,
         isDefaultPush: remote.defaultPush
-      })), []),
-      branches: mapResource(branches, (entries) => entries.map((branch) => ({
+      })), []) : current.remotes,
+      branches: shouldLoad("branches") ? mapResource(branches, (entries) => entries.map((branch) => ({
         id: branch.fullName,
         name: branch.name,
         kind: branch.type,
@@ -187,16 +222,16 @@ export function RepositoryCenterContainer({
         ahead: branch.ahead,
         behind: branch.behind,
         merged: branch.merged
-      })), []),
-      tags: mapResource(tags, (entries) => entries.map((tag) => ({
+      })), []) : current.branches,
+      tags: shouldLoad("tags") ? mapResource(tags, (entries) => entries.map((tag) => ({
         id: tag.name,
         name: tag.name,
         targetHash: tag.targetHash.slice(0, 10),
         subject: tag.subject,
         annotated: tag.annotated,
         pushedRemotes: []
-      })), []),
-      reflog: mapResource(reflog, (entries) => entries.map((entry) => ({
+      })), []) : current.tags,
+      reflog: shouldLoad("reflog") ? mapResource(reflog, (entries) => entries.map((entry) => ({
         id: entry.selector,
         targetHash: entry.hash,
         selector: entry.selector,
@@ -204,8 +239,8 @@ export function RepositoryCenterContainer({
         action: entry.action,
         subject: entry.message || entry.action,
         createdAt: entry.authorDate
-      })), []),
-      worktrees: mapResource(worktrees, (entries) => entries.map((entry) => ({
+      })), []) : current.reflog,
+      worktrees: shouldLoad("worktrees") ? mapResource(worktrees, (entries) => entries.map((entry) => ({
         id: entry.path,
         path: entry.path,
         branch: entry.branch,
@@ -215,8 +250,8 @@ export function RepositoryCenterContainer({
         prunable: Boolean(entry.prunableReason),
         prunableReason: entry.prunableReason,
         isMain: Boolean(selectedProject && normalizePath(entry.path) === normalizePath(selectedProject.path))
-      })), []),
-      submodules: mapResource(submodules, (entries) => entries.map((entry) => ({
+      })), []) : current.worktrees,
+      submodules: shouldLoad("submodules") ? mapResource(submodules, (entries) => entries.map((entry) => ({
         id: entry.path,
         name: entry.path.split(/[\\/]/).filter(Boolean).at(-1) ?? entry.path,
         path: entry.path,
@@ -224,59 +259,108 @@ export function RepositoryCenterContainer({
         branch: entry.branch,
         status: entry.state === "initialized" ? "ready" as const : entry.state === "uninitialized" ? "uninitialized" as const : entry.state === "conflicted" ? "conflict" as const : "modified" as const,
         headHash: entry.hash.slice(0, 10)
-      })), []),
-      lfs: mapResource(lfs, (value) => ({
+      })), []) : current.submodules,
+      lfs: shouldLoad("lfs") ? mapResource(lfs, (value) => ({
         installed: value?.installed ?? false,
         initialized: value?.initialized ?? false,
         version: value?.version ?? "",
         changedFileCount: value?.files.length ?? 0,
         stagedFileCount: value?.files.filter((file) => file.staged).length ?? 0,
         files: value?.files ?? []
-      }), { installed: false, initialized: false, version: "", changedFileCount: 0, stagedFileCount: 0, files: [] }),
-      lfsLocks,
-      gitignore: mapResource(gitignore, (value) => ({ path: ".gitignore", content: value?.content ?? "", revision: value?.revision ?? "missing", modified: false }), { path: ".gitignore", content: "", revision: "missing", modified: false }),
-      signing: mapResource(signing, (value): RepositorySigningSettings => ({
+      }), { installed: false, initialized: false, version: "", changedFileCount: 0, stagedFileCount: 0, files: [] }) : current.lfs,
+      lfsLocks: shouldLoad("lfsLocks") ? lfsLocks : current.lfsLocks,
+      gitignore: shouldLoad("gitignore") ? mapResource(gitignore, (value) => ({ path: ".gitignore", content: value?.content ?? "", revision: value?.revision ?? "missing", modified: false }), { path: ".gitignore", content: "", revision: "missing", modified: false }) : current.gitignore,
+      signing: shouldLoad("signing") ? mapResource(signing, (value): RepositorySigningSettings => ({
         enabled: Boolean(value?.commitGpgSign),
         format: value?.format ?? "openpgp",
         key: value?.signingKey ?? "",
         signTags: Boolean(value?.tagGpgSign)
-      }), { enabled: false, format: "openpgp", key: "", signTags: false }),
-      identity: mapResource(identity, (value) => value ?? { valid: false, issues: [] }, { valid: false, issues: [] }),
-      hosting,
-      hostingAccounts,
-      hostingChanges,
-      projects: readyResource(projectSummaries),
-      groups: library.status === "error" ? errorResource(library.error, []) : readyResource(libraryData.groups.map((group) => ({
+      }), { enabled: false, format: "openpgp", key: "", signTags: false }) : current.signing,
+      identity: shouldLoad("identity") ? mapResource(identity, (value) => value ?? { valid: false, issues: [] }, { valid: false, issues: [] }) : current.identity,
+      hosting: shouldLoad("hosting") ? hosting : current.hosting,
+      hostingAccounts: shouldLoad("hostingAccounts") ? hostingAccounts : current.hostingAccounts,
+      hostingChanges: shouldLoad("hostingChanges") ? hostingChanges : current.hostingChanges,
+      projects: shouldLoad("projects") ? readyResource(projectSummaries) : current.projects,
+      groups: shouldLoad("groups") ? (library.status === "error" ? errorResource(library.error, []) : readyResource(libraryData.groups.map((group) => ({
         id: group.id,
         name: group.name,
         projectIds: projectSource.filter((item) => item.groupId === group.id).map((item) => item.id)
-      }))),
-      recent: library.status === "error" ? errorResource(library.error, []) : readyResource(
+      })))) : current.groups,
+      recent: shouldLoad("recent") ? (library.status === "error" ? errorResource(library.error, []) : readyResource(
         libraryData.recentProjectIds.map((id) => recentById.get(id)).filter((item): item is RepositoryProjectSummary => Boolean(item))
-      ),
-      preferences: mapResource(preferences, toRepositoryPreferences, toRepositoryPreferences(defaultPreferences()))
-    });
+      )) : current.recent,
+      preferences: shouldLoad("preferences") ? mapResource(preferences, toRepositoryPreferences, toRepositoryPreferences(defaultPreferences())) : current.preferences
+    }));
+    return true;
   }, [onLibraryChange]);
+
+  useEffect(() => {
+    loadedSectionsRef.current.clear();
+    loadTokenRef.current += 1;
+    setActiveTab(initialTab ?? "recovery");
+  }, [initialTab, open, project?.id]);
 
   useEffect(() => {
     if (!open) {
       return;
     }
-    const projectId = project?.id ?? "no-project";
-    const showLoading = loadedProjectIdRef.current !== projectId;
-    loadedProjectIdRef.current = projectId;
-    void loadAll(projectsRef.current, { showLoading });
-  }, [loadAll, open, project?.id]);
+    const tabSections = TAB_SECTIONS[activeTab];
+    const requestedSections = [...new Set<RepositoryCenterSection>([...tabSections, "preferences"])]
+      .filter((section) => !loadedSectionsRef.current.has(section));
+    const deferredSections = (TAB_DEFERRED_SECTIONS[activeTab] ?? [])
+      .filter((section) => !loadedSectionsRef.current.has(section));
+    if (requestedSections.length === 0 && deferredSections.length === 0) {
+      return;
+    }
 
-  async function completeGit(resultPromise: Promise<GitOperationResult>): Promise<void>;
-  async function completeGit(resultPromise: Promise<GitOperationResult>, includeFeedback: true): Promise<string>;
-  async function completeGit(resultPromise: Promise<GitOperationResult>, includeFeedback = false): Promise<void | string> {
+    setData((current) => loadingCenterData(current, new Set([...requestedSections, ...deferredSections])));
+    void (async () => {
+      if (requestedSections.length > 0) {
+        const loaded = await loadAll(projectsRef.current, { sections: requestedSections });
+        if (!loaded) {
+          return;
+        }
+        requestedSections.forEach((section) => loadedSectionsRef.current.add(section));
+      }
+      if (deferredSections.length > 0) {
+        const loaded = await loadAll(projectsRef.current, { sections: deferredSections });
+        if (loaded) {
+          deferredSections.forEach((section) => loadedSectionsRef.current.add(section));
+        }
+      }
+    })();
+  }, [activeTab, initialTab, loadAll, open, project?.id]);
+
+  const handleTabChange = useCallback((tab: RepositoryCenterTab) => {
+    setActiveTab(tab);
+  }, []);
+
+  async function refreshSections(
+    sections: readonly RepositoryCenterSection[],
+    projectSource: GitProject[] = projectsRef.current
+  ) {
+    sections.forEach((section) => loadedSectionsRef.current.delete(section));
+    const loaded = await loadAll(projectSource, { sections });
+    if (loaded) {
+      sections.forEach((section) => loadedSectionsRef.current.add(section));
+    }
+  }
+
+  async function completeGit(resultPromise: Promise<GitOperationResult>, sections?: readonly RepositoryCenterSection[]): Promise<void>;
+  async function completeGit(resultPromise: Promise<GitOperationResult>, sections: readonly RepositoryCenterSection[], includeFeedback: true): Promise<string>;
+  async function completeGit(
+    resultPromise: Promise<GitOperationResult>,
+    sections: readonly RepositoryCenterSection[] = OPERATION_REFRESH_SECTIONS,
+    includeFeedback = false
+  ): Promise<void | string> {
     const result = await resultPromise;
     ensureGitSuccess(result);
     const feedback = operationFeedback(result);
     try {
-      await onRepositoryChange();
-      await loadAll();
+      await Promise.all([
+        onRepositoryChange(),
+        refreshSections(sections)
+      ]);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       const notice = `${includeFeedback ? feedback : "Git 操作已完成"}；界面刷新失败：${detail}`;
@@ -291,10 +375,13 @@ export function RepositoryCenterContainer({
 
   async function reloadProjects() {
     const configuredProjects = await apiClient.getProjects();
-    const statusById = new Map(projects.map((item) => [item.id, item.status]));
-    const nextProjects = configuredProjects.map((item) => ({ ...item, status: statusById.get(item.id) }));
+    const currentProjects = projectsRef.current;
+    const statusById = new Map(currentProjects.map((item) => [item.id, { status: item.status, statusError: item.statusError }]));
+    const nextProjects = configuredProjects.map((item) => ({ ...item, ...statusById.get(item.id) }));
+    projectsRef.current = nextProjects;
     onProjectsChange(nextProjects);
-    await loadAll(nextProjects);
+    const sections = ["projects", "groups", "recent"] as const;
+    await refreshSections(sections, nextProjects);
   }
 
   function applyProjectGroupChange(updatedProject: GitProject, groupId?: string) {
@@ -401,120 +488,128 @@ export function RepositoryCenterContainer({
 
   const actions = useMemo<RepositoryCenterActions>(() => ({
     onClose,
-    onReload: (_section: RepositoryCenterSection) => loadAll(),
-    onCreateStash: (input) => completeGit(apiClient.createStash(requireProject(), input)),
+    onReload: (section: RepositoryCenterSection) => refreshSections([section]),
+    onCreateStash: (input) => completeGit(apiClient.createStash(requireProject(), input), STASH_REFRESH_SECTIONS),
     onLoadStashDetails: (stashId) => apiClient.getStashDetails(requireProject(), stashId),
-    onApplyStash: (stashId, restoreIndex) => completeGit(apiClient.applyStash(requireProject(), stashId, restoreIndex)),
-    onPopStash: (stashId, restoreIndex) => completeGit(apiClient.popStash(requireProject(), stashId, restoreIndex)),
-    onDeleteStash: (stashId) => completeGit(apiClient.dropStash(requireProject(), stashId)),
+    onApplyStash: (stashId, restoreIndex) => completeGit(apiClient.applyStash(requireProject(), stashId, restoreIndex), STASH_REFRESH_SECTIONS),
+    onPopStash: (stashId, restoreIndex) => completeGit(apiClient.popStash(requireProject(), stashId, restoreIndex), STASH_REFRESH_SECTIONS),
+    onDeleteStash: (stashId) => completeGit(apiClient.dropStash(requireProject(), stashId), STASH_REFRESH_SECTIONS),
     onContinueOperation: (kind) => {
       const selected = requireProject();
-      if (kind === "merge") return completeGit(apiClient.continueMerge(selected));
-      if (kind === "rebase") return completeGit(apiClient.continueRebase(selected));
-      if (kind === "cherry-pick") return completeGit(apiClient.continueCherryPick(selected));
-      if (kind === "revert") return completeGit(apiClient.continueRevert(selected));
+      if (kind === "merge") return completeGit(apiClient.continueMerge(selected), OPERATION_REFRESH_SECTIONS);
+      if (kind === "rebase") return completeGit(apiClient.continueRebase(selected), OPERATION_REFRESH_SECTIONS);
+      if (kind === "cherry-pick") return completeGit(apiClient.continueCherryPick(selected), OPERATION_REFRESH_SECTIONS);
+      if (kind === "revert") return completeGit(apiClient.continueRevert(selected), OPERATION_REFRESH_SECTIONS);
       throw new Error("二分定位请明确选择标记正常或标记异常。");
     },
     onSkipOperation: (kind) => {
       const selected = requireProject();
-      if (kind === "rebase") return completeGit(apiClient.skipRebase(selected));
-      if (kind === "cherry-pick") return completeGit(apiClient.skipCherryPick(selected));
-      if (kind === "revert") return completeGit(apiClient.skipRevert(selected));
-      if (kind === "bisect") return completeGit(apiClient.skipBisect(selected));
+      if (kind === "rebase") return completeGit(apiClient.skipRebase(selected), OPERATION_REFRESH_SECTIONS);
+      if (kind === "cherry-pick") return completeGit(apiClient.skipCherryPick(selected), OPERATION_REFRESH_SECTIONS);
+      if (kind === "revert") return completeGit(apiClient.skipRevert(selected), OPERATION_REFRESH_SECTIONS);
+      if (kind === "bisect") return completeGit(apiClient.skipBisect(selected), OPERATION_REFRESH_SECTIONS);
       throw new Error("合并操作不支持跳过。");
     },
     onAbortOperation: (kind) => {
       const selected = requireProject();
-      if (kind === "merge") return completeGit(apiClient.abortMerge(selected));
-      if (kind === "rebase") return completeGit(apiClient.abortRebase(selected));
-      if (kind === "cherry-pick") return completeGit(apiClient.abortCherryPick(selected));
-      if (kind === "revert") return completeGit(apiClient.abortRevert(selected));
-      return completeGit(apiClient.resetBisect(selected));
+      if (kind === "merge") return completeGit(apiClient.abortMerge(selected), OPERATION_REFRESH_SECTIONS);
+      if (kind === "rebase") return completeGit(apiClient.abortRebase(selected), OPERATION_REFRESH_SECTIONS);
+      if (kind === "cherry-pick") return completeGit(apiClient.abortCherryPick(selected), OPERATION_REFRESH_SECTIONS);
+      if (kind === "revert") return completeGit(apiClient.abortRevert(selected), OPERATION_REFRESH_SECTIONS);
+      return completeGit(apiClient.resetBisect(selected), OPERATION_REFRESH_SECTIONS);
     },
-    onMarkBisect: (result) => completeGit(result === "good" ? apiClient.markBisectGood(requireProject()) : apiClient.markBisectBad(requireProject()), true),
-    onStartBisect: ({ badRef, goodRef }) => completeGit(apiClient.startBisect(requireProject(), badRef, goodRef)),
+    onMarkBisect: (result) => completeGit(result === "good" ? apiClient.markBisectGood(requireProject()) : apiClient.markBisectBad(requireProject()), OPERATION_REFRESH_SECTIONS, true),
+    onStartBisect: ({ badRef, goodRef }) => completeGit(apiClient.startBisect(requireProject(), badRef, goodRef), OPERATION_REFRESH_SECTIONS),
     onLoadRebasePlan: async (target) => apiClient.getRebasePlan(requireProject(), target),
     onStartRebase: ({ target, interactive, onto, plan }) => interactive
-      ? completeGit(apiClient.startInteractiveRebase(requireProject(), target, plan ?? [], onto))
-      : completeGit(apiClient.startRebase(requireProject(), target, onto)),
-    onForcePushWithLease: () => completeGit(apiClient.push(requireProject(), { forceWithLease: true })),
+      ? completeGit(apiClient.startInteractiveRebase(requireProject(), target, plan ?? [], onto), OPERATION_REFRESH_SECTIONS)
+      : completeGit(apiClient.startRebase(requireProject(), target, onto), OPERATION_REFRESH_SECTIONS),
+    onForcePushWithLease: () => completeGit(apiClient.push(requireProject(), { forceWithLease: true }), REF_REFRESH_SECTIONS),
     onSaveRemote: async (input) => {
       const selected = requireProject();
       if (input.id) {
-        await completeGit(apiClient.updateRemote(selected, input.id, { name: input.name, fetchUrl: input.fetchUrl, pushUrl: input.pushUrl }));
+        await completeGit(apiClient.updateRemote(selected, input.id, { name: input.name, fetchUrl: input.fetchUrl, pushUrl: input.pushUrl }), REMOTE_REFRESH_SECTIONS);
         return;
       }
-      ensureGitSuccess(await apiClient.addRemote(selected, input.name, input.fetchUrl, input.pushUrl ?? undefined));
-      await onRepositoryChange();
-      await loadAll();
+      await completeGit(apiClient.addRemote(selected, input.name, input.fetchUrl, input.pushUrl ?? undefined), REMOTE_REFRESH_SECTIONS);
     },
-    onDeleteRemote: (remoteId) => completeGit(apiClient.removeRemote(requireProject(), remoteId)),
-    onFetchRemote: (remoteId) => completeGit(apiClient.fetchRemote(requireProject(), remoteId)),
-    onPruneRemote: (remoteId) => completeGit(apiClient.fetchRemote(requireProject(), remoteId, true)),
+    onDeleteRemote: (remoteId) => completeGit(apiClient.removeRemote(requireProject(), remoteId), REMOTE_REFRESH_SECTIONS),
+    onFetchRemote: (remoteId) => completeGit(apiClient.fetchRemote(requireProject(), remoteId), REMOTE_REFRESH_SECTIONS),
+    onPruneRemote: (remoteId) => completeGit(apiClient.fetchRemote(requireProject(), remoteId, true), REMOTE_REFRESH_SECTIONS),
     onSetDefaultRemote: async ({ remoteId, role }) => {
       const selected = requireProject();
       const latestStatus = await apiClient.getProjectStatus(selected);
       if (!latestStatus) {
         throw new Error("无法读取当前分支状态，未修改默认远程仓库。");
       }
-      await completeGit(apiClient.setDefaultRemote(selected, remoteId, role, latestStatus.currentBranch ?? undefined));
+      await completeGit(apiClient.setDefaultRemote(selected, remoteId, role, latestStatus.currentBranch ?? undefined), REMOTE_REFRESH_SECTIONS);
     },
-    onRenameBranch: ({ branchId, nextName }) => completeGit(apiClient.renameBranch(requireProject(), findBranch(branchId).name, nextName)),
-    onDeleteBranch: (branchId, force) => completeGit(apiClient.deleteBranch(requireProject(), findBranch(branchId).name, force)),
+    onRenameBranch: ({ branchId, nextName }) => completeGit(apiClient.renameBranch(requireProject(), findBranch(branchId).name, nextName), REF_REFRESH_SECTIONS),
+    onDeleteBranch: (branchId, force) => completeGit(apiClient.deleteBranch(requireProject(), findBranch(branchId).name, force), REF_REFRESH_SECTIONS),
     onDeleteRemoteBranch: (branchId) => {
       const branch = findBranch(branchId);
       const separator = branch.name.indexOf("/");
       if (branch.kind !== "remote" || separator <= 0 || separator === branch.name.length - 1) {
         throw new Error("远程分支引用无效，无法确定远程仓库与分支名。");
       }
-      return completeGit(apiClient.deleteRemoteBranch(requireProject(), branch.name.slice(0, separator), branch.name.slice(separator + 1)));
+      return completeGit(apiClient.deleteRemoteBranch(requireProject(), branch.name.slice(0, separator), branch.name.slice(separator + 1)), REF_REFRESH_SECTIONS);
     },
     onSetBranchUpstream: ({ branchId, upstream }) => {
       const branch = findBranch(branchId);
-      return completeGit(upstream ? apiClient.setBranchUpstream(requireProject(), branch.name, upstream) : apiClient.unsetBranchUpstream(requireProject(), branch.name));
+      return completeGit(upstream ? apiClient.setBranchUpstream(requireProject(), branch.name, upstream) : apiClient.unsetBranchUpstream(requireProject(), branch.name), REF_REFRESH_SECTIONS);
     },
-    onCreateTag: ({ name, target, message, annotated }) => completeGit(apiClient.createTag(requireProject(), name, target, annotated ? message : undefined)),
-    onDeleteTag: (tagId) => completeGit(apiClient.deleteTag(requireProject(), tagId)),
-    onDeleteRemoteTag: ({ tagId, remoteId }) => completeGit(apiClient.deleteRemoteTag(requireProject(), remoteId, tagId)),
-    onPushTag: ({ tagId, remoteId }) => completeGit(apiClient.pushTag(requireProject(), remoteId, tagId)),
+    onCreateTag: ({ name, target, message, annotated }) => completeGit(apiClient.createTag(requireProject(), name, target, annotated ? message : undefined), REF_REFRESH_SECTIONS),
+    onDeleteTag: (tagId) => completeGit(apiClient.deleteTag(requireProject(), tagId), REF_REFRESH_SECTIONS),
+    onDeleteRemoteTag: ({ tagId, remoteId }) => completeGit(apiClient.deleteRemoteTag(requireProject(), remoteId, tagId), REF_REFRESH_SECTIONS),
+    onPushTag: ({ tagId, remoteId }) => completeGit(apiClient.pushTag(requireProject(), remoteId, tagId), REF_REFRESH_SECTIONS),
     onRestoreReflog: ({ entryId, mode, branchName }) => mode === "branch"
-      ? completeGit(apiClient.createBranch(requireProject(), branchName ?? "", false, entryId))
-      : completeGit(apiClient.resetToReflogEntry(requireProject(), entryId, mode === "reset-hard" ? "hard" : "mixed")),
-    onAddWorktree: ({ path, branch, createBranch }) => completeGit(apiClient.addLinkedWorktree(requireProject(), createBranch ? { path, newBranch: branch } : { path, ref: branch || undefined })),
-    onRemoveWorktree: (worktreeId, force) => completeGit(apiClient.removeLinkedWorktree(requireProject(), worktreeId, force)),
-    onPruneWorktrees: () => completeGit(apiClient.pruneLinkedWorktrees(requireProject())),
-    onLockWorktree: ({ worktreeId, reason }) => completeGit(apiClient.lockLinkedWorktree(requireProject(), worktreeId, reason)),
-    onUnlockWorktree: (worktreeId) => completeGit(apiClient.unlockLinkedWorktree(requireProject(), worktreeId)),
-    onMoveWorktree: ({ worktreeId, destinationPath }) => completeGit(apiClient.moveLinkedWorktree(requireProject(), { worktreePath: worktreeId, destinationPath })),
-    onRepairWorktrees: (worktreeIds = []) => completeGit(apiClient.repairLinkedWorktrees(requireProject(), worktreeIds)),
-    onInitSubmodules: () => completeGit(apiClient.initializeSubmodules(requireProject())),
-    onUpdateSubmodules: (recursive) => completeGit(apiClient.updateSubmodules(requireProject(), { initialize: true, recursive })),
-    onSyncSubmodules: () => completeGit(apiClient.syncSubmodules(requireProject(), true)),
-    onAddSubmodule: (input) => completeGit(apiClient.addSubmodule(requireProject(), input)),
-    onSetSubmoduleBranch: ({ moduleId, branch }) => completeGit(apiClient.setSubmoduleBranch(requireProject(), moduleId, branch)),
-    onDeinitSubmodule: (moduleId, force) => completeGit(apiClient.deinitializeSubmodule(requireProject(), moduleId, force)),
-    onRemoveSubmodule: (moduleId, force) => completeGit(apiClient.removeSubmodule(requireProject(), moduleId, force)),
-    onInstallLfs: () => completeGit(apiClient.installLfs(requireProject(), "local")),
-    onPullLfs: () => completeGit(apiClient.pullLfs(requireProject())),
-    onPruneLfs: () => completeGit(apiClient.pruneLfs(requireProject())),
-    onTrackLfsPatterns: (patterns) => completeGit(apiClient.trackLfsPatterns(requireProject(), patterns)),
-    onUntrackLfsPatterns: (patterns) => completeGit(apiClient.untrackLfsPatterns(requireProject(), patterns)),
-    onLockLfsFile: (filePath) => completeGit(apiClient.lockLfsFile(requireProject(), filePath)),
-    onUnlockLfsFile: (lockId, force) => completeGit(apiClient.unlockLfsFile(requireProject(), lockId, force)),
-    onMigrateLfs: (input) => completeGit(apiClient.migrateLfs(requireProject(), input)),
+      ? completeGit(apiClient.createBranch(requireProject(), branchName ?? "", false, entryId), REF_REFRESH_SECTIONS)
+      : completeGit(apiClient.resetToReflogEntry(requireProject(), entryId, mode === "reset-hard" ? "hard" : "mixed"), REF_REFRESH_SECTIONS),
+    onAddWorktree: ({ path, branch, createBranch }) => completeGit(apiClient.addLinkedWorktree(requireProject(), createBranch ? { path, newBranch: branch } : { path, ref: branch || undefined }), WORKTREE_REFRESH_SECTIONS),
+    onRemoveWorktree: (worktreeId, force) => completeGit(apiClient.removeLinkedWorktree(requireProject(), worktreeId, force), WORKTREE_REFRESH_SECTIONS),
+    onPruneWorktrees: () => completeGit(apiClient.pruneLinkedWorktrees(requireProject()), WORKTREE_REFRESH_SECTIONS),
+    onLockWorktree: ({ worktreeId, reason }) => completeGit(apiClient.lockLinkedWorktree(requireProject(), worktreeId, reason), WORKTREE_REFRESH_SECTIONS),
+    onUnlockWorktree: (worktreeId) => completeGit(apiClient.unlockLinkedWorktree(requireProject(), worktreeId), WORKTREE_REFRESH_SECTIONS),
+    onMoveWorktree: ({ worktreeId, destinationPath }) => completeGit(apiClient.moveLinkedWorktree(requireProject(), { worktreePath: worktreeId, destinationPath }), WORKTREE_REFRESH_SECTIONS),
+    onRepairWorktrees: (worktreeIds = []) => completeGit(apiClient.repairLinkedWorktrees(requireProject(), worktreeIds), WORKTREE_REFRESH_SECTIONS),
+    onInitSubmodules: () => completeGit(apiClient.initializeSubmodules(requireProject()), SUBMODULE_REFRESH_SECTIONS),
+    onUpdateSubmodules: (recursive) => completeGit(apiClient.updateSubmodules(requireProject(), { initialize: true, recursive }), SUBMODULE_REFRESH_SECTIONS),
+    onSyncSubmodules: () => completeGit(apiClient.syncSubmodules(requireProject(), true), SUBMODULE_REFRESH_SECTIONS),
+    onAddSubmodule: (input) => completeGit(apiClient.addSubmodule(requireProject(), input), SUBMODULE_REFRESH_SECTIONS),
+    onSetSubmoduleBranch: ({ moduleId, branch }) => completeGit(apiClient.setSubmoduleBranch(requireProject(), moduleId, branch), SUBMODULE_REFRESH_SECTIONS),
+    onDeinitSubmodule: (moduleId, force) => completeGit(apiClient.deinitializeSubmodule(requireProject(), moduleId, force), SUBMODULE_REFRESH_SECTIONS),
+    onRemoveSubmodule: (moduleId, force) => completeGit(apiClient.removeSubmodule(requireProject(), moduleId, force), SUBMODULE_REFRESH_SECTIONS),
+    onInstallLfs: () => completeGit(apiClient.installLfs(requireProject(), "local"), LFS_REFRESH_SECTIONS),
+    onPullLfs: () => completeGit(apiClient.pullLfs(requireProject()), LFS_REFRESH_SECTIONS),
+    onPruneLfs: () => completeGit(apiClient.pruneLfs(requireProject()), LFS_REFRESH_SECTIONS),
+    onTrackLfsPatterns: (patterns) => completeGit(apiClient.trackLfsPatterns(requireProject(), patterns), LFS_REFRESH_SECTIONS),
+    onUntrackLfsPatterns: (patterns) => completeGit(apiClient.untrackLfsPatterns(requireProject(), patterns), LFS_REFRESH_SECTIONS),
+    onLockLfsFile: (filePath) => completeGit(apiClient.lockLfsFile(requireProject(), filePath), LFS_REFRESH_SECTIONS),
+    onUnlockLfsFile: (lockId, force) => completeGit(apiClient.unlockLfsFile(requireProject(), lockId, force), LFS_REFRESH_SECTIONS),
+    onMigrateLfs: (input) => completeGit(apiClient.migrateLfs(requireProject(), input), LFS_REFRESH_SECTIONS),
     onSaveGitignore: async (content, expectedRevision) => {
       await apiClient.writeGitIgnore(requireProject(), content, expectedRevision);
-      await onRepositoryChange();
-      await loadAll();
+      const sections = ["operation", "gitignore"] as const;
+      await Promise.all([onRepositoryChange(), refreshSections(sections)]);
     },
-    onSaveSigning: (settings) => completeGit(apiClient.setSigningConfig(requireProject(), {
-      commitGpgSign: settings.enabled,
-      tagGpgSign: settings.signTags,
-      format: settings.format,
-      signingKey: settings.key || null
-    })),
-    onTestSigning: () => completeGit(apiClient.verifyCommitSignature(requireProject(), "HEAD"), true),
-    onSaveIdentity: (input) => completeGit(apiClient.setGitIdentity(requireProject(), input)),
+    onSaveSigning: async (settings) => {
+      ensureGitSuccess(await apiClient.setSigningConfig(requireProject(), {
+        commitGpgSign: settings.enabled,
+        tagGpgSign: settings.signTags,
+        format: settings.format,
+        signingKey: settings.key || null
+      }));
+      await refreshSections(["signing"]);
+    },
+    onTestSigning: async () => {
+      const result = await apiClient.verifyCommitSignature(requireProject(), "HEAD");
+      ensureGitSuccess(result);
+      return operationFeedback(result);
+    },
+    onSaveIdentity: async (input) => {
+      ensureGitSuccess(await apiClient.setGitIdentity(requireProject(), input));
+      await refreshSections(["identity"]);
+    },
     onOpenHostingLink: async (linkId) => {
       const link = data.hosting.data.find((item) => item.id === linkId);
       if (!link) throw new Error("托管平台链接已变化，请刷新后重试。");
@@ -616,8 +711,14 @@ export function RepositoryCenterContainer({
       ensureGitSuccess(created.result);
       await reloadProjects();
     },
-    onCreateGroup: async (name) => { await apiClient.createProjectGroup(name); await loadAll(); },
-    onRenameGroup: async ({ groupId, name }) => { await apiClient.renameProjectGroup(groupId, name); await loadAll(); },
+    onCreateGroup: async (name) => {
+      await apiClient.createProjectGroup(name);
+      await refreshSections(["groups"]);
+    },
+    onRenameGroup: async ({ groupId, name }) => {
+      await apiClient.renameProjectGroup(groupId, name);
+      await refreshSections(["groups"]);
+    },
     onDeleteGroup: async (groupId) => { await apiClient.deleteProjectGroup(groupId); await reloadProjects(); },
     onAssignProjectGroup: async ({ projectId, groupId }) => {
       const updatedProject = await apiClient.setProjectGroup(projectId, groupId ?? undefined);
@@ -626,11 +727,14 @@ export function RepositoryCenterContainer({
     onOpenProject: async (projectId) => {
       const openedProject = await apiClient.markProjectOpened(projectId);
       const updatedProjects = projects.map((item) => item.id === openedProject.id ? { ...item, ...openedProject } : item);
+      projectsRef.current = updatedProjects;
       onProjectsChange(updatedProjects);
       onOpenProject(projectId, openedProject);
-      await loadAll(updatedProjects);
     },
-    onRemoveRecentProject: async (projectId) => { await apiClient.removeRecentProject(projectId); await loadAll(); },
+    onRemoveRecentProject: async (projectId) => {
+      await apiClient.removeRecentProject(projectId);
+      await refreshSections(["recent"]);
+    },
     onRunBatchAction: async ({ projectIds, action }) => {
       const results = await Promise.all(projectIds.map(async (projectId) => {
         const target = projects.find((item) => item.id === projectId);
@@ -665,9 +769,21 @@ export function RepositoryCenterContainer({
         }
         return { ...item, status: result.status, statusError: undefined };
       });
+      projectsRef.current = updatedProjects;
       onProjectsChange(updatedProjects);
-      await loadAll(updatedProjects);
-      await onRepositoryChange();
+      setData((current) => ({
+        ...current,
+        projects: readyResource(updatedProjects.map(projectSummary))
+      }));
+
+      const selectedResult = project ? resultById.get(project.id) : undefined;
+      if (selectedResult && !selectedResult.error) {
+        setRepositoryStatus(selectedResult.status);
+      }
+      if (selectedResult) {
+        REPOSITORY_DATA_SECTIONS.forEach((section) => loadedSectionsRef.current.delete(section));
+        await onRepositoryChange();
+      }
 
       const failures = results.filter((result) => result.error);
       if (failures.length > 0) {
@@ -702,6 +818,8 @@ export function RepositoryCenterContainer({
       }}
       data={data}
       actions={actions}
+      activeTab={activeTab}
+      onTabChange={handleTabChange}
     />
   );
 }
@@ -721,8 +839,11 @@ function emptyCenterData(): RepositoryCenterData {
   };
 }
 
-function loadingCenterData(data: RepositoryCenterData): RepositoryCenterData {
-  return Object.fromEntries(Object.entries(data).map(([key, resource]) => [key, { ...resource, status: "loading", error: undefined }])) as unknown as RepositoryCenterData;
+function loadingCenterData(data: RepositoryCenterData, sections: ReadonlySet<RepositoryCenterSection>): RepositoryCenterData {
+  return Object.fromEntries(Object.entries(data).map(([key, resource]) => [
+    key,
+    sections.has(key as RepositoryCenterSection) ? { ...resource, status: "loading", error: undefined } : resource
+  ])) as unknown as RepositoryCenterData;
 }
 
 async function asResource<T>(loader: () => Promise<T>): Promise<RepositoryResource<T>> {
