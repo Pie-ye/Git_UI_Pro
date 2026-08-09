@@ -2707,7 +2707,7 @@ button {
 
 .source-control-pane .graph-panel {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   min-height: 0;
   height: auto;
   border-right: 0;
@@ -6264,16 +6264,20 @@ button {
   color: currentColor;
 }
 
+.source-control-pane .graph-panel:has(> .graph-search-row) {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
 .source-control-pane .graph-search-row {
-  position: absolute;
-  z-index: 20;
-  top: 35px;
-  right: 10px;
-  left: 10px;
-  padding: 0;
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  background: var(--panel);
 }
 
 .source-control-pane .graph-search {
+  width: 100%;
   min-height: 30px;
   margin: 0;
   border-radius: 6px;

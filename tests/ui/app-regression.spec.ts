@@ -243,6 +243,26 @@ test("项目内搜索框统一使用无蓝色外圈的焦点状态", async ({ pa
 
   await page.getByRole("button", { name: "搜索提交" }).click();
   await expectNeutralSearchFocus(".graph-search");
+  const graphSearchLayout = await page.evaluate(() => {
+    const panelRect = document.querySelector<HTMLElement>(".graph-panel")!.getBoundingClientRect();
+    const rowRect = document.querySelector<HTMLElement>(".graph-search-row")!.getBoundingClientRect();
+    const searchRect = document.querySelector<HTMLElement>(".graph-search")!.getBoundingClientRect();
+    const inputRect = document.querySelector<HTMLElement>(".graph-search input")!.getBoundingClientRect();
+    const listRect = document.querySelector<HTMLElement>(".graph-commit-list")!.getBoundingClientRect();
+    return {
+      rowBottom: rowRect.bottom,
+      listTop: listRect.top,
+      searchLeft: searchRect.left,
+      searchRight: searchRect.right,
+      panelLeft: panelRect.left,
+      panelRight: panelRect.right,
+      inputWidth: inputRect.width
+    };
+  });
+  expect(graphSearchLayout.rowBottom).toBeLessThanOrEqual(graphSearchLayout.listTop + 1);
+  expect(graphSearchLayout.searchLeft).toBeGreaterThanOrEqual(graphSearchLayout.panelLeft);
+  expect(graphSearchLayout.searchRight).toBeLessThanOrEqual(graphSearchLayout.panelRight);
+  expect(graphSearchLayout.inputWidth).toBeGreaterThan(100);
 
   await page.getByRole("button", { name: "选择图表引用" }).click();
   const refsDialog = page.getByRole("dialog", { name: "选择图表引用" });
