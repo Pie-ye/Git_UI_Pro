@@ -93,6 +93,8 @@ export function ProjectRail({
   const [statusFilters, setStatusFilters] = useState<ProjectStatusFilterId[]>([]);
   const [collapsedGroupIds, setCollapsedGroupIds] = useState<string[]>([]);
   const [reorderAnnouncement, setReorderAnnouncement] = useState("");
+  const searchControlRef = useRef<HTMLLabelElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const filterMenuButtonRef = useRef<HTMLButtonElement>(null);
   const filterMenuRef = useRef<HTMLDivElement>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
@@ -135,6 +137,18 @@ export function ProjectRail({
   const visibleProjectIds = displayedProjects.map((project) => project.id);
   const visibleGroupByProjectId = new Map(groupedProjects.flatMap((group) => group.projects.map((project) => [project.id, group.id] as const)));
   const statusFilterSummary = statusFilters.length === 0 ? "全部状态" : `${statusFilters.length} 项状态`;
+
+  useEffect(() => {
+    const closeSearchOnPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && !searchControlRef.current?.contains(target)) {
+        searchInputRef.current?.blur();
+      }
+    };
+
+    document.addEventListener("pointerdown", closeSearchOnPointerDown, true);
+    return () => document.removeEventListener("pointerdown", closeSearchOnPointerDown, true);
+  }, []);
 
   useEffect(() => {
     if (!contextMenu) {
@@ -455,31 +469,34 @@ export function ProjectRail({
               <Server size={15} />
             </button>
           </PathTooltip>
-          <label className="project-rail-search icon-button compact-icon" data-active={query.trim() ? "true" : "false"} title="搜索项目">
-            <Search size={15} />
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索项目" aria-label="搜索项目" />
-          </label>
+          <PathTooltip content="搜索项目" className="project-action-tooltip project-search-tooltip">
+            <label ref={searchControlRef} className="project-rail-search icon-button compact-icon" data-active={query.trim() ? "true" : "false"}>
+              <Search size={15} />
+              <input ref={searchInputRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索项目" aria-label="搜索项目" />
+            </label>
+          </PathTooltip>
           <div className="project-status-filter">
-            <button
-              ref={filterMenuButtonRef}
-              type="button"
-              className={`icon-button compact-icon project-status-filter-button ${statusFilters.length > 0 ? "active" : ""}`}
-              aria-haspopup="menu"
-              aria-expanded={filterMenuOpen}
-              aria-label={`筛选项目：${statusFilterSummary}`}
-              title={`筛选项目：${statusFilterSummary}`}
-              onPointerDown={(event) => event.stopPropagation()}
-              onClick={(event) => {
-                event.stopPropagation();
-                setContextMenu(null);
-                if (!filterMenuOpen) {
-                  updateFilterMenuPosition();
-                }
-                setFilterMenuOpen((value) => !value);
-              }}
-            >
-              <Filter size={15} />
-            </button>
+            <PathTooltip content={`筛选项目：${statusFilterSummary}`} className="project-action-tooltip project-filter-tooltip">
+              <button
+                ref={filterMenuButtonRef}
+                type="button"
+                className={`icon-button compact-icon project-status-filter-button ${statusFilters.length > 0 ? "active" : ""}`}
+                aria-haspopup="menu"
+                aria-expanded={filterMenuOpen}
+                aria-label={`筛选项目：${statusFilterSummary}`}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setContextMenu(null);
+                  if (!filterMenuOpen) {
+                    updateFilterMenuPosition();
+                  }
+                  setFilterMenuOpen((value) => !value);
+                }}
+              >
+                <Filter size={15} />
+              </button>
+            </PathTooltip>
             {filterMenuOpen && typeof document !== "undefined"
               ? createPortal(
                 <div ref={filterMenuRef} className="floating-menu project-status-filter-menu" role="menu" style={filterMenuPosition} onPointerDown={(event) => event.stopPropagation()} onKeyDown={(event) => handleMenuKeyDown(event, () => { setFilterMenuOpen(false); window.requestAnimationFrame(() => filterMenuButtonRef.current?.focus()); })}>

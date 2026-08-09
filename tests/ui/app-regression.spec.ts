@@ -121,6 +121,19 @@ test("桌面宽度打开仓库中心不会产生横向溢出", async ({ page }) 
 test("项目栏头部使用单行等尺寸图标且搜索可展开", async ({ page }) => {
   await openApp(page);
 
+  const readTooltipVisual = (selector: ReturnType<Page["locator"]>) => selector.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      backgroundColor: style.backgroundColor,
+      border: style.border,
+      borderRadius: style.borderRadius,
+      boxShadow: style.boxShadow,
+      color: style.color,
+      fontSize: style.fontSize,
+      padding: style.padding
+    };
+  });
+
   const metrics = await page.evaluate(() => {
     const topBar = document.querySelector<HTMLElement>(".top-bar")!;
     const search = document.querySelector<HTMLElement>(".project-rail-search")!;
@@ -148,10 +161,53 @@ test("项目栏头部使用单行等尺寸图标且搜索可展开", async ({ pa
   expect(metrics.controlTopSpread).toBeLessThanOrEqual(1);
   expect(metrics.titleOverlapsControls).toBe(false);
 
-  await page.locator(".project-rail-search").click();
+  const searchControl = page.locator(".project-rail-search");
+  const filterButton = page.getByRole("button", { name: "筛选项目：全部状态" });
+  await expect(searchControl).toHaveCSS("cursor", "pointer");
+  expect(await searchControl.getAttribute("title")).toBeNull();
+  expect(await filterButton.getAttribute("title")).toBeNull();
+
+  const scanButton = page.getByRole("button", { name: "扫描父目录中的 Git 项目" });
+  const scanTooltip = page.locator('[role="tooltip"]').filter({ hasText: "扫描父目录中的 Git 项目" });
+  await scanButton.hover();
+  await expect(scanTooltip).toBeVisible();
+  const referenceTooltipVisual = await readTooltipVisual(scanTooltip);
+
+  await searchControl.hover();
+  const searchTooltip = page.locator('[role="tooltip"]').filter({ hasText: "搜索项目" });
+  await expect(searchTooltip).toBeVisible();
+  expect(await readTooltipVisual(searchTooltip)).toEqual(referenceTooltipVisual);
+
+  await filterButton.hover();
+  const filterTooltip = page.locator('[role="tooltip"]').filter({ hasText: "筛选项目：全部状态" });
+  await expect(filterTooltip).toBeVisible();
+  expect(await readTooltipVisual(filterTooltip)).toEqual(referenceTooltipVisual);
+
+  await searchControl.click();
   const searchInput = page.getByRole("textbox", { name: "搜索项目" });
   await expect(searchInput).toBeFocused();
   await expect.poll(async () => searchInput.evaluate((element) => element.getBoundingClientRect().width)).toBeGreaterThan(80);
+  const focusVisual = await searchControl.evaluate((element) => {
+    const controlStyle = getComputedStyle(element);
+    const inputStyle = getComputedStyle(element.querySelector("input")!);
+    return {
+      controlBoxShadow: controlStyle.boxShadow,
+      inputBoxShadow: inputStyle.boxShadow,
+      inputOutlineWidth: inputStyle.outlineWidth
+    };
+  });
+  expect(focusVisual.controlBoxShadow).not.toContain("0px 0px 0px 3px");
+  expect(focusVisual.inputBoxShadow).toBe("none");
+  expect(focusVisual.inputOutlineWidth).toBe("0px");
+
+  await page.locator(".top-bar").hover();
+  await searchInput.hover();
+  await expect(searchTooltip).toBeVisible();
+  expect(await readTooltipVisual(searchTooltip)).toEqual(referenceTooltipVisual);
+
+  await page.locator(".top-bar .project-heading").click();
+  await expect(searchInput).not.toBeFocused();
+  await expect.poll(async () => searchControl.evaluate((element) => element.getBoundingClientRect().width)).toBeLessThanOrEqual(44);
 });
 
 for (const viewport of [

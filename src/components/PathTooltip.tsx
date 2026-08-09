@@ -175,8 +175,8 @@ export function PathTooltip({ path, content, className, placement, showOnFocus =
       onMouseLeave={scheduleHideTooltip}
       onFocus={handleFocus}
       onBlur={scheduleHideTooltip}
-      onPointerDown={hideTooltip}
-      onClick={hideTooltip}
+      onPointerDownCapture={hideTooltip}
+      onClickCapture={hideTooltip}
     >
       {describedChildren}
       {tooltipContent && !visible ? <span id={tooltipId} className="sr-only">{tooltipContent}</span> : null}
