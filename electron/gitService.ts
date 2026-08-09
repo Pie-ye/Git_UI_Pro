@@ -24,6 +24,7 @@ export interface GitOperationResult {
 
 export interface GitStatusSummary {
   currentBranch: string | null;
+  headHash?: string;
   unborn?: boolean;
   upstream?: string;
   ahead: number;
@@ -4341,8 +4342,13 @@ function parseStatus(output: string): GitStatusSummary {
       continue;
     }
 
-    if (line === "# branch.oid (initial)") {
-      summary.unborn = true;
+    if (line.startsWith("# branch.oid ")) {
+      const headHash = line.replace("# branch.oid ", "").trim();
+      if (headHash === "(initial)") {
+        summary.unborn = true;
+      } else if (headHash) {
+        summary.headHash = headHash;
+      }
       continue;
     }
 

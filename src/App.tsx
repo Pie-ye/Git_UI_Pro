@@ -72,7 +72,7 @@ const DEFAULT_CONSOLE_HEIGHT = 240;
 const MIN_CONSOLE_HEIGHT = 80;
 const CONSOLE_TOP_SNAP_DISTANCE = 36;
 const SELECTED_PROJECT_REFRESH_INTERVAL_MS = 4000;
-const REMOTE_PROJECT_REFRESH_INTERVAL_MS = 30_000;
+const REMOTE_PROJECT_REFRESH_INTERVAL_MS = 10_000;
 const PROJECT_LIST_STATUS_REFRESH_INTERVAL_MS = 20000;
 const PROJECT_LIST_STATUS_BATCH_SIZE = 3;
 const REMOTE_PROJECT_LIST_INITIAL_DELAY_MS = 15_000;
@@ -198,6 +198,10 @@ export function App() {
   const autoRefreshBusyRef = useRef(false);
   const projectListRefreshBusyRef = useRef(false);
   const remoteProjectListRefreshBusyRef = useRef(false);
+  const graphLoadingRef = useRef(false);
+  const graphHistoryFilterRef = useRef<GitHistoryFilter>(graphHistoryFilter);
+  const graphHistoryQueryRef = useRef<AdvancedHistoryQuery>(graphHistoryQuery);
+  const graphHistoryRefsRef = useRef<GitHistoryRef[]>(graphHistoryRefs);
   const selectedProjectLoadTimerRef = useRef<number | undefined>();
   const projectLoadRequestRef = useRef(0);
   const projectDataCacheRef = useRef(new Map<string, ProjectDataSnapshot>());
@@ -413,6 +417,22 @@ export function App() {
   useEffect(() => {
     selectedProjectIdRef.current = selectedProjectId;
   }, [selectedProjectId]);
+
+  useEffect(() => {
+    graphLoadingRef.current = graphLoading;
+  }, [graphLoading]);
+
+  useEffect(() => {
+    graphHistoryFilterRef.current = graphHistoryFilter;
+  }, [graphHistoryFilter]);
+
+  useEffect(() => {
+    graphHistoryQueryRef.current = graphHistoryQuery;
+  }, [graphHistoryQuery]);
+
+  useEffect(() => {
+    graphHistoryRefsRef.current = graphHistoryRefs;
+  }, [graphHistoryRefs]);
 
   useEffect(
     () => () => {
@@ -912,9 +932,12 @@ export function App() {
   }
 
   async function refreshProjectChanges(project: GitProject) {
-    const [statusResult, worktreeResult] = await Promise.allSettled([
+    const previousStatus = projectsRef.current.find((item) => item.id === project.id)?.status;
+    const previousHistoryRefs = graphHistoryRefsRef.current;
+    const [statusResult, worktreeResult, historyRefsResult] = await Promise.allSettled([
       apiClient.getProjectStatus(project),
-      apiClient.getWorktree(project)
+      apiClient.getWorktree(project),
+      apiClient.getHistoryRefs(project)
     ]);
     if (selectedProjectIdRef.current !== project.id) {
       return;
@@ -935,12 +958,67 @@ export function App() {
       refreshErrors.push(`工作区：${errorText(worktreeResult.reason, "读取失败")}`);
     }
 
+    if (historyRefsResult.status === "rejected") {
+      refreshErrors.push(`提交引用：${errorText(historyRefsResult.reason, "读取失败")}`);
+    } else if (
+      !graphLoadingRef.current &&
+      (
+        historyStatusSignature(previousStatus) !== historyStatusSignature(statusResult.status === "fulfilled" ? statusResult.value : undefined) ||
+        historyRefsSignature(previousHistoryRefs) !== historyRefsSignature(historyRefsResult.value)
+      )
+    ) {
+      try {
+        await refreshProjectGraphHistory(project, historyRefsResult.value);
+      } catch (error) {
+        refreshErrors.push(`提交图：${errorText(error, "刷新失败")}`);
+      }
+    }
+
     const refreshToastId = `project-refresh:${project.id}`;
     if (refreshErrors.length > 0) {
       notifyError("项目后台刷新失败", refreshErrors.join("\n"), refreshToastId);
     } else {
       toast.dismiss(refreshToastId);
     }
+  }
+
+  async function refreshProjectGraphHistory(project: GitProject, historyRefs: GitHistoryRef[]) {
+    const historyFilter = graphHistoryFilterRef.current;
+    const historyQuery = graphHistoryQueryRef.current;
+    const filterKey = historyFilterCacheKey(historyFilter);
+    const queryKey = advancedHistoryQueryCacheKey(historyQuery);
+    const historyPage = await apiClient.getHistoryPage(project, {
+      filter: historyFilter,
+      ...historyQuery,
+      skip: 0,
+      limit: HISTORY_PAGE_SIZE
+    });
+
+    if (
+      selectedProjectIdRef.current !== project.id ||
+      historyFilterCacheKey(graphHistoryFilterRef.current) !== filterKey ||
+      advancedHistoryQueryCacheKey(graphHistoryQueryRef.current) !== queryKey
+    ) {
+      return;
+    }
+
+    const history = historyPage.commits;
+    invalidateProjectCaches(project.id);
+    if (!hasAdvancedHistoryQuery(historyQuery)) {
+      writeGraphHistoryCache(project, historyFilter, {
+        history,
+        historyRefs,
+        historyHasMore: historyPage.hasMore,
+        historyNextSkip: historyPage.nextSkip
+      });
+    }
+    graphHistoryRefsRef.current = historyRefs;
+    setCommits(history);
+    setGraphHistoryRefs(historyRefs);
+    setGraphHistoryHasMore(historyPage.hasMore);
+    setGraphHistoryNextSkip(historyPage.nextSkip);
+    setSelectedCommitHash((currentHash) => currentHash && history.some((commit) => commit.hash === currentHash) ? currentHash : "");
+    rememberStatus(history.length > 0 ? `检测到仓库更新，已刷新 ${history.length} 条提交。` : "检测到仓库更新，当前没有可显示的提交。");
   }
 
   async function reloadProjectWorktree(project: GitProject): Promise<WorktreeState> {
@@ -3393,6 +3471,7 @@ function statusSignature(status: GitProject["status"]): string {
 
   return [
     status.currentBranch ?? "",
+    status.headHash ?? "",
     status.upstream ?? "",
     status.ahead,
     status.behind,
@@ -3402,6 +3481,34 @@ function statusSignature(status: GitProject["status"]): string {
     status.hasConflicts ? "1" : "0",
     status.operationState ?? ""
   ].join(":");
+}
+
+function historyStatusSignature(status: GitProject["status"]): string {
+  if (!status) {
+    return "";
+  }
+
+  return [
+    status.headHash ?? "",
+    status.currentBranch ?? "",
+    status.upstream ?? "",
+    status.ahead,
+    status.behind,
+    status.unborn ? "1" : "0"
+  ].join(":");
+}
+
+function historyRefsSignature(refs: GitHistoryRef[]): string {
+  return refs
+    .map((ref) => `${ref.id}:${ref.revision}:${ref.current ? "1" : "0"}:${ref.upstream ? "1" : "0"}`)
+    .sort()
+    .join("|");
+}
+
+function advancedHistoryQueryCacheKey(query: AdvancedHistoryQuery): string {
+  return [query.search, query.author, query.after, query.before, query.path]
+    .map((value) => value?.trim() ?? "")
+    .join("\0");
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {

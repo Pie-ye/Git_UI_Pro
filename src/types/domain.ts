@@ -40,6 +40,7 @@ export interface RemoteProjectTestResult extends GitOperationResult {
 
 export interface GitStatusSummary {
   currentBranch: string | null;
+  headHash?: string;
   unborn?: boolean;
   upstream?: string;
   ahead: number;

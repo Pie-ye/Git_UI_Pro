@@ -582,6 +582,8 @@ test("branch divergence and conflict counts reflect each real ref and conflicted
   git(repositoryPath, "commit", "-m", "local commit");
   git(repositoryPath, "fetch", "origin");
   git(repositoryPath, "branch", "without-upstream");
+  const repositoryStatus = await service.getStatus(repositoryPath);
+  assert.equal(repositoryStatus.headHash, git(repositoryPath, "rev-parse", "HEAD"));
   const branches = await service.getBranches(repositoryPath);
   const main = branches.find((branch) => branch.name === "main" && branch.type === "local");
   assert.equal(main?.ahead, 1);
