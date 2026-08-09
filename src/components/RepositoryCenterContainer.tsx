@@ -297,6 +297,46 @@ export function RepositoryCenterContainer({
     await loadAll(nextProjects);
   }
 
+  function applyProjectGroupChange(updatedProject: GitProject, groupId?: string) {
+    const currentProjects = projectsRef.current;
+    const existingProject = currentProjects.find((item) => item.id === updatedProject.id);
+    if (!existingProject) {
+      return;
+    }
+
+    const nextProject: GitProject = {
+      ...existingProject,
+      ...updatedProject,
+      groupId,
+      status: existingProject.status,
+      statusError: existingProject.statusError
+    };
+    const nextProjects = currentProjects.map((item) => item.id === nextProject.id ? nextProject : item);
+    const nextSummary = projectSummary(nextProject);
+    projectsRef.current = nextProjects;
+    onProjectsChange(nextProjects);
+    setData((current) => ({
+      ...current,
+      projects: {
+        ...current.projects,
+        data: current.projects.data.map((item) => item.id === nextSummary.id ? nextSummary : item)
+      },
+      groups: {
+        ...current.groups,
+        data: current.groups.data.map((group) => ({
+          ...group,
+          projectIds: group.id === groupId
+            ? [...group.projectIds.filter((projectId) => projectId !== nextProject.id), nextProject.id]
+            : group.projectIds.filter((projectId) => projectId !== nextProject.id)
+        }))
+      },
+      recent: {
+        ...current.recent,
+        data: current.recent.data.map((item) => item.id === nextSummary.id ? nextSummary : item)
+      }
+    }));
+  }
+
   function requireProject(): GitProject {
     if (!project) {
       throw new Error("请先选择一个 Git 项目。");
@@ -579,7 +619,10 @@ export function RepositoryCenterContainer({
     onCreateGroup: async (name) => { await apiClient.createProjectGroup(name); await loadAll(); },
     onRenameGroup: async ({ groupId, name }) => { await apiClient.renameProjectGroup(groupId, name); await loadAll(); },
     onDeleteGroup: async (groupId) => { await apiClient.deleteProjectGroup(groupId); await reloadProjects(); },
-    onAssignProjectGroup: async ({ projectId, groupId }) => { await apiClient.setProjectGroup(projectId, groupId ?? undefined); await reloadProjects(); },
+    onAssignProjectGroup: async ({ projectId, groupId }) => {
+      const updatedProject = await apiClient.setProjectGroup(projectId, groupId ?? undefined);
+      applyProjectGroupChange(updatedProject, groupId ?? undefined);
+    },
     onOpenProject: async (projectId) => {
       const openedProject = await apiClient.markProjectOpened(projectId);
       const updatedProjects = projects.map((item) => item.id === openedProject.id ? { ...item, ...openedProject } : item);

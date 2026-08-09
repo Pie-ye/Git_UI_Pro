@@ -118,6 +118,46 @@ test("桌面宽度打开仓库中心不会产生横向溢出", async ({ page }) 
   await expect(repositoryTooltip).toBeHidden();
 });
 
+test("切换项目分组使用局部更新并快速完成", async ({ page }) => {
+  await openApp(page);
+  await page.getByRole("button", { name: "打开仓库中心" }).click();
+  const dialog = page.getByRole("dialog", { name: /git ui pro/i });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: /项目管理/ }).click();
+
+  const groupSelect = dialog.getByRole("combobox", { name: "设置 Git UI Pro 的分组" });
+  await expect(groupSelect).toBeVisible();
+  const currentGroup = await groupSelect.inputValue();
+  const nextGroup = await groupSelect.locator("option").evaluateAll((options, selected) => (
+    options.map((option) => (option as HTMLOptionElement).value).find((value) => value && value !== selected)
+  ), currentGroup);
+  expect(nextGroup).toBeTruthy();
+
+  await page.evaluate(() => {
+    const calls = { setProjectGroup: 0, getProjects: 0 };
+    (window as unknown as { __projectGroupCalls: typeof calls }).__projectGroupCalls = calls;
+    const currentBridge = window.gitUI;
+    window.gitUI = {
+      ...currentBridge,
+      setProjectGroup: async (projectId, groupId) => {
+        calls.setProjectGroup += 1;
+        return { id: projectId, name: "Git UI Pro", path: "E:/Projects/Git-UI-Pro", groupId };
+      },
+      getProjects: async () => {
+        calls.getProjects += 1;
+        throw new Error("切换项目分组不应重新读取全部项目");
+      }
+    } as typeof window.gitUI;
+  });
+
+  await groupSelect.selectOption(nextGroup!);
+  await page.waitForTimeout(50);
+  await expect(groupSelect).toHaveValue(nextGroup!);
+  await expect(dialog).toHaveAttribute("aria-busy", "false");
+  const calls = await page.evaluate(() => (window as unknown as { __projectGroupCalls: { setProjectGroup: number; getProjects: number } }).__projectGroupCalls);
+  expect(calls).toEqual({ setProjectGroup: 1, getProjects: 0 });
+});
+
 test("项目栏头部使用单行等尺寸图标且搜索可展开", async ({ page }) => {
   await openApp(page);
 
