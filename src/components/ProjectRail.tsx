@@ -459,7 +459,7 @@ export function ProjectRail({
       </div>
 
       <div className="project-rail-filterbar">
-        <label className="project-rail-search">
+        <label className="project-rail-search" data-active={query.trim() ? "true" : "false"} title="搜索项目">
           <Search size={14} />
           <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索项目" aria-label="搜索项目" />
         </label>
@@ -470,6 +470,7 @@ export function ProjectRail({
             className={`project-status-filter-button ${statusFilters.length > 0 ? "active" : ""}`}
             aria-haspopup="menu"
             aria-expanded={filterMenuOpen}
+            aria-label={`筛选项目：${statusFilterSummary}`}
             onPointerDown={(event) => event.stopPropagation()}
             onClick={(event) => {
               event.stopPropagation();

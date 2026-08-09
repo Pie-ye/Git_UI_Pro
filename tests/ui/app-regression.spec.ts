@@ -79,13 +79,17 @@ test("桌面宽度打开仓库中心不会产生横向溢出", async ({ page }) 
   const metrics = await dialog.evaluate((element) => {
     const content = element.querySelector<HTMLElement>(".repository-center-content")!;
     const layout = element.querySelector<HTMLElement>(".repository-center-layout")!;
+    const chrome = document.querySelector<HTMLElement>(".app-chrome")!;
     const rect = element.getBoundingClientRect();
+    const chromeRect = chrome.getBoundingClientRect();
     return {
       viewportWidth: window.innerWidth,
       documentClientWidth: document.documentElement.clientWidth,
       documentScrollWidth: document.documentElement.scrollWidth,
       dialogLeft: rect.left,
+      dialogTop: rect.top,
       dialogRight: rect.right,
+      chromeBottom: chromeRect.bottom,
       dialogClientWidth: element.clientWidth,
       dialogScrollWidth: element.scrollWidth,
       layoutClientWidth: layout.clientWidth,
@@ -96,11 +100,42 @@ test("桌面宽度打开仓库中心不会产生横向溢出", async ({ page }) 
   });
 
   expect(metrics.dialogLeft).toBeGreaterThanOrEqual(0);
+  expect(metrics.dialogTop).toBeGreaterThanOrEqual(metrics.chromeBottom);
   expect(metrics.dialogRight).toBeLessThanOrEqual(metrics.viewportWidth + 1);
   expect(metrics.documentScrollWidth).toBeLessThanOrEqual(metrics.documentClientWidth + 1);
   expect(metrics.dialogScrollWidth).toBeLessThanOrEqual(metrics.dialogClientWidth + 1);
   expect(metrics.layoutScrollWidth).toBeLessThanOrEqual(metrics.layoutClientWidth + 1);
   expect(metrics.contentScrollWidth).toBeLessThanOrEqual(metrics.contentClientWidth + 1);
+});
+
+test("窄项目栏使用纯图标控件且顶部项目行保持紧凑", async ({ page }) => {
+  await openApp(page);
+
+  const metrics = await page.evaluate(() => {
+    const topBar = document.querySelector<HTMLElement>(".top-bar")!;
+    const search = document.querySelector<HTMLElement>(".project-rail-search")!;
+    const searchInput = search.querySelector<HTMLInputElement>("input")!;
+    const filterButton = document.querySelector<HTMLButtonElement>(".project-status-filter-button")!;
+    const filterLabel = filterButton.querySelector<HTMLElement>("span")!;
+    return {
+      topBarHeight: topBar.getBoundingClientRect().height,
+      searchWidth: search.getBoundingClientRect().width,
+      searchInputOpacity: getComputedStyle(searchInput).opacity,
+      filterWidth: filterButton.getBoundingClientRect().width,
+      filterLabelDisplay: getComputedStyle(filterLabel).display
+    };
+  });
+
+  expect(metrics.topBarHeight).toBeLessThanOrEqual(54);
+  expect(metrics.searchWidth).toBeLessThanOrEqual(44);
+  expect(metrics.searchInputOpacity).toBe("0");
+  expect(metrics.filterWidth).toBeLessThanOrEqual(44);
+  expect(metrics.filterLabelDisplay).toBe("none");
+
+  await page.locator(".project-rail-search").click();
+  const searchInput = page.getByRole("textbox", { name: "搜索项目" });
+  await expect(searchInput).toBeFocused();
+  await expect.poll(async () => searchInput.evaluate((element) => element.getBoundingClientRect().width)).toBeGreaterThan(80);
 });
 
 for (const viewport of [
