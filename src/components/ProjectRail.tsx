@@ -455,38 +455,33 @@ export function ProjectRail({
               <Server size={15} />
             </button>
           </PathTooltip>
-        </div>
-      </div>
-
-      <div className="project-rail-filterbar">
-        <label className="project-rail-search" data-active={query.trim() ? "true" : "false"} title="搜索项目">
-          <Search size={14} />
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索项目" aria-label="搜索项目" />
-        </label>
-        <div className="project-status-filter">
-          <button
-            ref={filterMenuButtonRef}
-            type="button"
-            className={`project-status-filter-button ${statusFilters.length > 0 ? "active" : ""}`}
-            aria-haspopup="menu"
-            aria-expanded={filterMenuOpen}
-            aria-label={`筛选项目：${statusFilterSummary}`}
-            onPointerDown={(event) => event.stopPropagation()}
-            onClick={(event) => {
-              event.stopPropagation();
-              setContextMenu(null);
-              if (!filterMenuOpen) {
-                updateFilterMenuPosition();
-              }
-              setFilterMenuOpen((value) => !value);
-            }}
-          >
-            <Filter size={14} />
-            <span>{statusFilterSummary}</span>
-            <ChevronDown size={14} />
-          </button>
-          {filterMenuOpen && typeof document !== "undefined"
-            ? createPortal(
+          <label className="project-rail-search icon-button compact-icon" data-active={query.trim() ? "true" : "false"} title="搜索项目">
+            <Search size={15} />
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索项目" aria-label="搜索项目" />
+          </label>
+          <div className="project-status-filter">
+            <button
+              ref={filterMenuButtonRef}
+              type="button"
+              className={`icon-button compact-icon project-status-filter-button ${statusFilters.length > 0 ? "active" : ""}`}
+              aria-haspopup="menu"
+              aria-expanded={filterMenuOpen}
+              aria-label={`筛选项目：${statusFilterSummary}`}
+              title={`筛选项目：${statusFilterSummary}`}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                setContextMenu(null);
+                if (!filterMenuOpen) {
+                  updateFilterMenuPosition();
+                }
+                setFilterMenuOpen((value) => !value);
+              }}
+            >
+              <Filter size={15} />
+            </button>
+            {filterMenuOpen && typeof document !== "undefined"
+              ? createPortal(
                 <div ref={filterMenuRef} className="floating-menu project-status-filter-menu" role="menu" style={filterMenuPosition} onPointerDown={(event) => event.stopPropagation()} onKeyDown={(event) => handleMenuKeyDown(event, () => { setFilterMenuOpen(false); window.requestAnimationFrame(() => filterMenuButtonRef.current?.focus()); })}>
                   <div className="project-status-filter-menu-header">
                     <span>筛选项目</span>
@@ -529,9 +524,10 @@ export function ProjectRail({
                     </div>
                   ))}
                 </div>,
-                document.querySelector(".app-shell") ?? document.body
-              )
-            : null}
+                  document.querySelector(".app-shell") ?? document.body
+                )
+              : null}
+          </div>
         </div>
       </div>
 

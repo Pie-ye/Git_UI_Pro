@@ -33,7 +33,7 @@ export function TopBar({
 
       <div className="layout-controls" aria-label="布局控制">
         {onOpenRepositoryCenter ? (
-          <PathTooltip content="仓库中心" className="control-tooltip">
+          <PathTooltip content="仓库中心" className="control-tooltip" showOnFocus={false}>
             <button type="button" className="icon-button top-bar-repository-button" aria-label="打开仓库中心" onClick={onOpenRepositoryCenter}>
               <Settings2 size={16} />
             </button>

@@ -1,4 +1,4 @@
-import { cloneElement, isValidElement, useEffect, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
+import { cloneElement, isValidElement, useEffect, useLayoutEffect, useRef, useState, type FocusEvent, type ReactElement, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 interface PathTooltipProps {
@@ -6,6 +6,7 @@ interface PathTooltipProps {
   content?: string;
   className?: string;
   placement?: "path" | "control";
+  showOnFocus?: boolean;
   children: ReactNode;
 }
 
@@ -20,7 +21,7 @@ const TOOLTIP_SHOW_DELAY_MS = 1000;
 const PATH_TOOLTIP_OPEN_EVENT = "git-ui-pro:path-tooltip-open";
 let pathTooltipIdSeed = 0;
 
-export function PathTooltip({ path, content, className, placement, children }: PathTooltipProps) {
+export function PathTooltip({ path, content, className, placement, showOnFocus = true, children }: PathTooltipProps) {
   const anchorRef = useRef<HTMLSpanElement>(null);
   const popoverRef = useRef<HTMLSpanElement>(null);
   const showTimerRef = useRef<number | undefined>();
@@ -83,9 +84,19 @@ export function PathTooltip({ path, content, className, placement, children }: P
       return;
     }
 
+    if (!showOnFocus && anchorRef.current?.contains(document.activeElement)) {
+      return;
+    }
+
     clearShowTimer();
     clearCloseTimer();
-    showTimerRef.current = window.setTimeout(showTooltipNow, TOOLTIP_SHOW_DELAY_MS);
+    showTimerRef.current = window.setTimeout(() => {
+      if (!showOnFocus && anchorRef.current?.contains(document.activeElement)) {
+        return;
+      }
+
+      showTooltipNow();
+    }, TOOLTIP_SHOW_DELAY_MS);
   }
 
   function scheduleHideTooltip() {
@@ -100,6 +111,13 @@ export function PathTooltip({ path, content, className, placement, children }: P
     clearShowTimer();
     clearCloseTimer();
     setVisible(false);
+  }
+
+  function handleFocus(event: FocusEvent<HTMLSpanElement>) {
+    const target = event.target;
+    if (showOnFocus && target instanceof HTMLElement && target.matches(":focus-visible")) {
+      scheduleShowTooltip();
+    }
   }
 
   useEffect(
@@ -155,8 +173,10 @@ export function PathTooltip({ path, content, className, placement, children }: P
       aria-describedby={tooltipContent ? tooltipId : undefined}
       onMouseEnter={scheduleShowTooltip}
       onMouseLeave={scheduleHideTooltip}
-      onFocus={scheduleShowTooltip}
+      onFocus={handleFocus}
       onBlur={scheduleHideTooltip}
+      onPointerDown={hideTooltip}
+      onClick={hideTooltip}
     >
       {describedChildren}
       {tooltipContent && !visible ? <span id={tooltipId} className="sr-only">{tooltipContent}</span> : null}

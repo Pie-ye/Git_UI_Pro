@@ -72,7 +72,12 @@ async function captureThemeSmoke(page: Page, testInfo: TestInfo, theme: "light" 
 
 test("桌面宽度打开仓库中心不会产生横向溢出", async ({ page }) => {
   await openApp(page);
-  await page.getByRole("button", { name: "打开仓库中心" }).click();
+  const repositoryButton = page.getByRole("button", { name: "打开仓库中心" });
+  const repositoryTooltip = page.locator('[role="tooltip"]').filter({ hasText: "仓库中心" });
+  await repositoryButton.hover();
+  await expect(repositoryTooltip).toBeVisible();
+  await repositoryButton.click();
+  await expect(repositoryTooltip).toBeHidden();
 
   const dialog = page.getByRole("dialog", { name: /git ui pro/i });
   await expect(dialog).toBeVisible();
@@ -106,31 +111,42 @@ test("桌面宽度打开仓库中心不会产生横向溢出", async ({ page }) 
   expect(metrics.dialogScrollWidth).toBeLessThanOrEqual(metrics.dialogClientWidth + 1);
   expect(metrics.layoutScrollWidth).toBeLessThanOrEqual(metrics.layoutClientWidth + 1);
   expect(metrics.contentScrollWidth).toBeLessThanOrEqual(metrics.contentClientWidth + 1);
+
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await page.waitForTimeout(1_200);
+  await expect(repositoryTooltip).toBeHidden();
 });
 
-test("窄项目栏使用纯图标控件且顶部项目行保持紧凑", async ({ page }) => {
+test("项目栏头部使用单行等尺寸图标且搜索可展开", async ({ page }) => {
   await openApp(page);
 
   const metrics = await page.evaluate(() => {
     const topBar = document.querySelector<HTMLElement>(".top-bar")!;
     const search = document.querySelector<HTMLElement>(".project-rail-search")!;
     const searchInput = search.querySelector<HTMLInputElement>("input")!;
-    const filterButton = document.querySelector<HTMLButtonElement>(".project-status-filter-button")!;
-    const filterLabel = filterButton.querySelector<HTMLElement>("span")!;
+    const title = document.querySelector<HTMLElement>(".project-rail-header > strong")!;
+    const headerControls = Array.from(document.querySelectorAll<HTMLElement>(".project-rail-actions .compact-icon"));
+    const controlRects = headerControls.map((control) => control.getBoundingClientRect());
+    const titleRect = title.getBoundingClientRect();
     return {
       topBarHeight: topBar.getBoundingClientRect().height,
       searchWidth: search.getBoundingClientRect().width,
       searchInputOpacity: getComputedStyle(searchInput).opacity,
-      filterWidth: filterButton.getBoundingClientRect().width,
-      filterLabelDisplay: getComputedStyle(filterLabel).display
+      controlCount: controlRects.length,
+      controlWidthSpread: Math.max(...controlRects.map((rect) => rect.width)) - Math.min(...controlRects.map((rect) => rect.width)),
+      controlTopSpread: Math.max(...controlRects.map((rect) => rect.top)) - Math.min(...controlRects.map((rect) => rect.top)),
+      titleOverlapsControls: titleRect.width > 0 && titleRect.right > controlRects[0].left
     };
   });
 
   expect(metrics.topBarHeight).toBeLessThanOrEqual(54);
   expect(metrics.searchWidth).toBeLessThanOrEqual(44);
   expect(metrics.searchInputOpacity).toBe("0");
-  expect(metrics.filterWidth).toBeLessThanOrEqual(44);
-  expect(metrics.filterLabelDisplay).toBe("none");
+  expect(metrics.controlCount).toBe(5);
+  expect(metrics.controlWidthSpread).toBeLessThanOrEqual(1);
+  expect(metrics.controlTopSpread).toBeLessThanOrEqual(1);
+  expect(metrics.titleOverlapsControls).toBe(false);
 
   await page.locator(".project-rail-search").click();
   const searchInput = page.getByRole("textbox", { name: "搜索项目" });
