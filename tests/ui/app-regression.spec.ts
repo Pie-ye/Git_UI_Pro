@@ -210,6 +210,50 @@ test("项目栏头部使用单行等尺寸图标且搜索可展开", async ({ pa
   await expect.poll(async () => searchControl.evaluate((element) => element.getBoundingClientRect().width)).toBeLessThanOrEqual(44);
 });
 
+test("项目内搜索框统一使用无蓝色外圈的焦点状态", async ({ page }) => {
+  await openApp(page);
+
+  async function expectNeutralSearchFocus(containerSelector: string) {
+    const container = page.locator(containerSelector);
+    const input = container.locator("input");
+    await expect(container).toBeVisible();
+    await input.focus();
+    await expect(input).toBeFocused();
+
+    const visual = await container.evaluate((element) => {
+      const containerStyle = getComputedStyle(element);
+      const inputStyle = getComputedStyle(element.querySelector("input")!);
+      return {
+        containerBoxShadow: containerStyle.boxShadow,
+        inputBoxShadow: inputStyle.boxShadow,
+        inputOutlineWidth: inputStyle.outlineWidth
+      };
+    });
+
+    expect(visual.containerBoxShadow).not.toMatch(/0px 0px 0px [23]px/);
+    expect(visual.inputBoxShadow).toBe("none");
+    expect(visual.inputOutlineWidth).toBe("0px");
+  }
+
+  await page.locator(".project-rail-branch").first().click();
+  const branchDialog = page.getByRole("dialog", { name: "切换分支" });
+  await expect(branchDialog).toBeVisible();
+  await expectNeutralSearchFocus('.branch-dialog[aria-label="切换分支"] .branch-search');
+  await branchDialog.getByTitle("关闭").click();
+
+  await page.getByRole("button", { name: "搜索提交" }).click();
+  await expectNeutralSearchFocus(".graph-search");
+
+  await page.getByRole("button", { name: "选择图表引用" }).click();
+  const refsDialog = page.getByRole("dialog", { name: "选择图表引用" });
+  await expect(refsDialog).toBeVisible();
+  await expectNeutralSearchFocus(".graph-refs-search");
+  await refsDialog.getByRole("button", { name: "关闭引用选择" }).click();
+
+  await page.getByRole("button", { name: "命令历史" }).click();
+  await expectNeutralSearchFocus(".console-history-search");
+});
+
 for (const viewport of [
   { width: 850, height: 900 },
   { width: 700, height: 820 }
