@@ -326,6 +326,7 @@ test("Gitee 镜像发布时先创建发行版并最后上传校验清单", async
   const installer = `Git-UI-Pro-Setup-${version}-x64.exe`;
   const uploads = [];
   const requests = [];
+  const uploadedAssets = [];
   try {
     await Promise.all([
       writeFile(path.join(directory, installer), "installer"),
@@ -351,14 +352,17 @@ test("Gitee 镜像发布时先创建发行版并最后上传校验清单", async
         return Response.json({ id: 26, tag_name: tagName });
       }
       if (url.pathname.endsWith("/releases/26/attach_files") && (options.method ?? "GET") === "GET") {
-        return Response.json([]);
-      }
-      if (url.pathname.endsWith("/releases/26/attach_files") && options.method === "POST") {
-        uploads.push(options.body.get("file").name);
-        assert.equal(options.body.get("access_token"), "gitee-secret");
-        return Response.json({ id: uploads.length, name: uploads.at(-1) });
+        return Response.json(uploadedAssets);
       }
       throw new Error(`未处理的镜像请求：${options.method ?? "GET"} ${url}`);
+    };
+    const uploadImpl = async ({ url, token, filename, source, timeoutMs }) => {
+      assert.equal(new URL(url).pathname, "/api/v5/repos/zjx_master/git-ui-pro/releases/26/attach_files");
+      assert.equal(token, "gitee-secret");
+      assert.equal(timeoutMs, 10 * 60_000);
+      assert.equal(Boolean(source.filePath) || Buffer.isBuffer(source.data), true);
+      uploads.push(filename);
+      uploadedAssets.push({ id: uploads.length, name: filename });
     };
 
     const result = await syncGiteeRelease({
@@ -369,12 +373,14 @@ test("Gitee 镜像发布时先创建发行版并最后上传校验清单", async
       artifactsDirectory: directory,
       giteeOwner: "zjx_master",
       giteeRepository: "git-ui-pro",
-      fetchImpl
+      fetchImpl,
+      uploadImpl
     });
 
     assert.deepEqual(uploads, [installer, `${installer}.blockmap`, "latest.yml", "update-manifest.json"]);
     assert.equal(result.releaseUrl, `https://gitee.com/zjx_master/git-ui-pro/releases/tag/${tagName}`);
-    assert.equal(requests.filter((request) => request.method === "POST").length, 5);
+    assert.equal(requests.filter((request) => request.method === "POST").length, 1);
+    assert.equal(requests.filter((request) => request.path.endsWith("/attach_files")).length, 2);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

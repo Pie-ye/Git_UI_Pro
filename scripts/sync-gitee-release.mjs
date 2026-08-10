@@ -1,5 +1,7 @@
-import { createHash } from "node:crypto";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { readdir, stat } from "node:fs/promises";
+import { request as httpsRequest } from "node:https";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -69,14 +71,20 @@ export async function syncGiteeRelease(options = {}) {
   const installerName = `Git-UI-Pro-Setup-${version}-x64.exe`;
   const installerPath = files.get(installerName);
   const installerStat = await stat(installerPath);
-  const installerSha256 = createHash("sha256").update(await readFile(installerPath)).digest("hex");
+  const installerSha256 = await sha256File(installerPath);
   const manifest = createGiteeUpdateManifest(tagName, {
     name: installerName,
     size: installerStat.size,
     sha256: installerSha256
   });
   const githubRelease = await fetchGithubRelease(githubRepository, tagName, githubToken, options.fetchImpl);
-  const gitee = createGiteeClient({ owner, repository, token, fetchImpl: options.fetchImpl });
+  const gitee = createGiteeClient({
+    owner,
+    repository,
+    token,
+    fetchImpl: options.fetchImpl,
+    uploadImpl: options.uploadImpl
+  });
   const release = await gitee.ensureRelease({
     tagName,
     name: normalizeText(githubRelease.name) || `Git UI Pro v${version}`,
@@ -90,10 +98,15 @@ export async function syncGiteeRelease(options = {}) {
   const uploadNames = [...files.keys(), UPDATE_MANIFEST_NAME];
   await gitee.removeNamedAssets(release.id, new Set(uploadNames));
   for (const [name, filename] of files) {
-    await gitee.uploadAsset(release.id, name, await readFile(filename));
+    console.log(`正在上传 Gitee Release 附件：${name}`);
+    await gitee.uploadAsset(release.id, name, { filePath: filename });
+    console.log(`Gitee Release 附件上传完成：${name}`);
   }
   const manifestBuffer = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, "utf8");
-  await gitee.uploadAsset(release.id, UPDATE_MANIFEST_NAME, manifestBuffer);
+  console.log(`正在上传 Gitee Release 附件：${UPDATE_MANIFEST_NAME}`);
+  await gitee.uploadAsset(release.id, UPDATE_MANIFEST_NAME, { data: manifestBuffer });
+  console.log(`Gitee Release 附件上传完成：${UPDATE_MANIFEST_NAME}`);
+  await gitee.verifyNamedAssets(release.id, new Set(uploadNames));
 
   return Object.freeze({
     tagName,
@@ -103,7 +116,7 @@ export async function syncGiteeRelease(options = {}) {
   });
 }
 
-function createGiteeClient({ owner, repository, token, fetchImpl = fetch }) {
+function createGiteeClient({ owner, repository, token, fetchImpl = fetch, uploadImpl = uploadMultipartAsset }) {
   const baseUrl = `https://gitee.com/api/v5/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}`;
 
   async function request(pathname, init = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
@@ -143,6 +156,20 @@ function createGiteeClient({ owner, repository, token, fetchImpl = fetch }) {
     return response.json();
   }
 
+  async function listAssets(releaseId) {
+    const url = new URL(`${baseUrl}/releases/${releaseId}/attach_files`);
+    url.searchParams.set("access_token", token);
+    const response = await fetchImpl(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+    if (!response.ok) {
+      throw new Error(`读取 Gitee v5 Release 附件失败（HTTP ${response.status}）。`);
+    }
+    const assets = await response.json();
+    if (!Array.isArray(assets)) {
+      throw new Error("Gitee Release 附件列表格式无效。");
+    }
+    return assets;
+  }
+
   return {
     async ensureRelease({ tagName, name, body, targetCommitish }) {
       const existing = await findRelease(tagName);
@@ -169,16 +196,7 @@ function createGiteeClient({ owner, repository, token, fetchImpl = fetch }) {
     },
 
     async removeNamedAssets(releaseId, names) {
-      const url = new URL(`${baseUrl}/releases/${releaseId}/attach_files`);
-      url.searchParams.set("access_token", token);
-      const response = await fetchImpl(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
-      if (!response.ok) {
-        throw new Error(`读取 Gitee v5 Release 附件失败（HTTP ${response.status}）。`);
-      }
-      const assets = await response.json();
-      if (!Array.isArray(assets)) {
-        throw new Error("Gitee Release 附件列表格式无效。");
-      }
+      const assets = await listAssets(releaseId);
       for (const asset of assets) {
         if (asset && Number.isSafeInteger(asset.id) && names.has(asset.name)) {
           await request(`/releases/${releaseId}/attach_files/${asset.id}`, {
@@ -190,17 +208,115 @@ function createGiteeClient({ owner, repository, token, fetchImpl = fetch }) {
       }
     },
 
-    async uploadAsset(releaseId, filename, data) {
-      const form = new FormData();
-      form.append("file", new Blob([data]), filename);
-      form.append("access_token", token);
-      await request(`/releases/${releaseId}/attach_files`, {
-        method: "POST",
-        headers: { Accept: "application/json" },
-        body: form
-      }, UPLOAD_TIMEOUT_MS);
+    async uploadAsset(releaseId, filename, source) {
+      await uploadImpl({
+        url: `${baseUrl}/releases/${releaseId}/attach_files`,
+        token,
+        filename,
+        source,
+        timeoutMs: UPLOAD_TIMEOUT_MS
+      });
+    },
+
+    async verifyNamedAssets(releaseId, names) {
+      const assets = await listAssets(releaseId);
+      const uploadedNames = new Set(assets.map((asset) => asset?.name).filter(Boolean));
+      const missing = [...names].filter((name) => !uploadedNames.has(name));
+      if (missing.length > 0) {
+        throw new Error(`Gitee Release 附件上传后校验失败，缺少：${missing.join("、")}。`);
+      }
     }
   };
+}
+
+async function uploadMultipartAsset({ url, token, filename, source, timeoutMs }) {
+  const boundary = `----git-ui-pro-${randomUUID()}`;
+  const safeFilename = filename.replace(/["\r\n]/g, "_");
+  const prefix = Buffer.from(
+    `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="file"; filename="${safeFilename}"\r\n` +
+      "Content-Type: application/octet-stream\r\n\r\n",
+    "utf8"
+  );
+  const suffix = Buffer.from(
+    `\r\n--${boundary}\r\n` +
+      "Content-Disposition: form-data; name=\"access_token\"\r\n\r\n" +
+      `${token}\r\n--${boundary}--\r\n`,
+    "utf8"
+  );
+  const fileSize = source.filePath ? (await stat(source.filePath)).size : source.data?.length;
+  if (!Number.isSafeInteger(fileSize) || fileSize <= 0) {
+    throw new Error(`待上传附件 ${filename} 为空或大小无效。`);
+  }
+
+  await new Promise((resolve, reject) => {
+    let fileStream;
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeoutId);
+      callback(value);
+    };
+    const request = httpsRequest(url, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": `multipart/form-data; boundary=${boundary}`,
+        "Content-Length": prefix.length + fileSize + suffix.length,
+        "User-Agent": "Git-UI-Pro-Gitee-Mirror"
+      }
+    }, (response) => {
+      const chunks = [];
+      let responseSize = 0;
+      response.on("data", (chunk) => {
+        responseSize += chunk.length;
+        if (responseSize <= 16_384) {
+          chunks.push(chunk);
+        }
+      });
+      response.on("end", () => {
+        const detail = Buffer.concat(chunks).toString("utf8").slice(0, 500).replace(/\s+/g, " ").trim();
+        if (response.statusCode && response.statusCode >= 200 && response.statusCode < 300) {
+          finish(resolve);
+          return;
+        }
+        finish(
+          reject,
+          new Error(
+            `上传 Gitee Release 附件 ${filename} 返回 HTTP ${response.statusCode ?? "未知"}` +
+              `${detail ? `：${detail}` : ""}`
+          )
+        );
+      });
+    });
+    const timeoutId = setTimeout(() => {
+      request.destroy(new Error(`上传 Gitee Release 附件 ${filename} 超时。`));
+    }, timeoutMs);
+    request.on("error", (error) => {
+      fileStream?.destroy();
+      finish(reject, new Error(`上传 Gitee Release 附件 ${filename} 失败：${error.message}`));
+    });
+    request.write(prefix);
+    if (source.filePath) {
+      fileStream = createReadStream(source.filePath);
+      fileStream.on("error", (error) => request.destroy(error));
+      fileStream.on("end", () => request.end(suffix));
+      fileStream.pipe(request, { end: false });
+      return;
+    }
+    request.end(Buffer.concat([source.data, suffix]));
+  });
+}
+
+async function sha256File(filename) {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(filename)) {
+    hash.update(chunk);
+  }
+  return hash.digest("hex");
 }
 
 async function fetchGithubRelease(repository, tagName, token, fetchImpl = fetch) {

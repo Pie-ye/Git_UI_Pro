@@ -1,0 +1,59 @@
+name: Repair Gitee Release Mirror
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing stable release tag to mirror, such as v0.1.26
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  repair-gitee-release:
+    name: Repair Gitee ${{ inputs.release_tag }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout latest publication scripts
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Validate Gitee token
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          if [ -z "$GITEE_TOKEN" ]; then
+            echo "::error::未配置 GITEE_TOKEN，无法修复 Gitee 发行版附件。"
+            exit 1
+          fi
+
+      - name: Download existing GitHub release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          mkdir -p release-artifacts
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir release-artifacts \
+            --pattern "Git-UI-Pro-Setup-*-x64.exe" \
+            --pattern "Git-UI-Pro-Setup-*-x64.exe.blockmap" \
+            --pattern "latest.yml"
+
+      - name: Repair Gitee release assets
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_ARTIFACTS_DIR: release-artifacts
+          GITEE_OWNER: zjx_master
+          GITEE_REPOSITORY: git-ui-pro
+        run: node scripts/sync-gitee-release.mjs

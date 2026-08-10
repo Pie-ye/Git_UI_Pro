@@ -108,7 +108,13 @@ Actions 只上传安装包、必要的 blockmap 和 Windows `latest.yml`，不�
 
 当工作流由 `v*` 格式 tag 触发时，会在 Windows 和 Linux 构建完成后自动创建 GitHub Release，并把安装包上传到该 Release。随后工作流使用 `scripts/sync-gitee-release.mjs` 创建或更新同标签的 Gitee Release，上传 Windows 安装包、blockmap、`latest.yml` 和最后生成的 SHA-256 更新清单。
 
+Gitee 附件采用文件流上传，避免将约 80 MB 的 Windows 安装包整体载入 Actions 的 Node.js 内存；全部上传完成后还会重新读取附件列表，只有安装包、blockmap、`latest.yml` 和 `update-manifest.json` 均存在时才视为同步成功。
+
 首次启用国内镜像前，需要在 GitHub 仓库 `Settings -> Secrets and variables -> Actions` 中新增仓库密钥 `GITEE_TOKEN`。令牌由 Gitee 个人访问令牌页面创建，并需具备当前公开仓库的发行版创建、修改与附件上传权限。令牌只提供给 Actions，不写入代码、安装包或客户端。未配置该密钥时 GitHub Release 仍会正常发布，但工作流会给出警告，Gitee 国内更新源不会推进到新版本。
+
+如果 GitHub Release 已发布，但 Gitee 页面只显示自动生成的 `Source code`，说明 Gitee 自定义附件同步失败。提交修复后可进入 GitHub 仓库 `Actions` -> `Repair Gitee Release Mirror` -> `Run workflow`，输入已有标签（例如 `v0.1.26`）重新下载 GitHub Release 资产并修复同标签的 Gitee Release，无需重新创建 tag。该工作流会替换同名附件，不会删除源码归档。
+
+尚未包含双更新源逻辑的 v0.1.25 及更早客户端仍只会访问 GitHub，无法通过服务端配置让旧程序自动改用 Gitee。需要开启代理完成一次升级，或在 Gitee 附件修复后手动下载并覆盖安装基线版本；从包含双更新源逻辑的版本开始，后续检查会优先直连 Gitee。
 
 macOS runner 在免费 GitHub Actions 中经常长时间排队，因此 macOS 构建拆分到 `.github/workflows/build-macos-installer.yml`，需要时进入 `Actions` -> `Build macOS Installer` -> `Run workflow` 手动触发。macOS artifacts 生成后，可手动上传到对应 GitHub Release。
 
