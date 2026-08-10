@@ -458,11 +458,11 @@ export function AppUpdateControl() {
             ) : null}
 
             <section className="app-update-history" data-expanded={historyExpanded}>
-              <PathTooltip content="仅显示带 SHA-256 校验的 GitHub 正式安装版" className="app-update-history-tooltip">
+              <PathTooltip content="仅显示带 SHA-256 校验的正式安装版" className="app-update-history-tooltip">
                 <button
                   type="button"
                   className="app-update-history-toggle"
-                  aria-label="历史版本，仅显示带 SHA-256 校验的 GitHub 正式安装版"
+                  aria-label="历史版本，仅显示带 SHA-256 校验的正式安装版"
                   aria-expanded={historyExpanded}
                   aria-controls="app-update-history-body"
                   onClick={() => setHistoryExpanded((current) => !current)}
@@ -702,7 +702,7 @@ function createMockReleaseHistory(currentVersion: string): ReleaseHistoryItem[] 
       version,
       tagName: `v${version}`,
       releaseName: `Git UI Pro v${version}`,
-      releaseNotes: `1. Git UI Pro v${version} 正式版本\n2. 历史发布记录来自 GitHub Release`,
+      releaseNotes: `1. Git UI Pro v${version} 正式版本\n2. 历史发布记录来自在线发行版`,
       publishedAt: new Date(Date.UTC(2026, 6, 23 - index * 4)).toISOString(),
       releaseUrl: releaseUrlFor(version),
       installerSize: 82_000_000 - index * 1_400_000

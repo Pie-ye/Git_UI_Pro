@@ -26,7 +26,7 @@ npm run release:win
 2. 使用 `npm version --no-git-tag-version` 同步更新 `package.json` 与 `package-lock.json`。
 3. 执行 `npm run dist:win -- --publish never`，确认 `release/` 中已生成对应版本的 NSIS 安装包、blockmap 和 `latest.yml`。
 4. 按项目提交规范提交当前全部改动，创建带说明的 `v*` tag。
-5. 分别向 Gitee 和 GitHub 原子推送当前分支与 tag。GitHub 收到 tag 后会触发 Actions 并创建 GitHub Release。
+5. 分别向 Gitee 和 GitHub 原子推送当前分支与 tag。GitHub 收到 tag 后会触发 Actions，创建 GitHub Release，并将 Windows 更新资产镜像到 Gitee Release。
 
 发布控制台默认识别指向 `gitee.com` 的现有远端。若尚未配置 GitHub 远端，会使用 `package.json` 的 `repository.url` 添加名为 `github` 的远端。HTTPS 远端需要提前通过 Git Credential Manager 配置凭据；脚本不会读取或保存访问令牌。
 
@@ -38,17 +38,17 @@ Windows 正式版只发布 NSIS x64 安装包，不再生成 Portable 版本。�
 
 - `Git-UI-Pro-Setup-<version>-x64.exe`: NSIS 正式版安装包。
 - `Git-UI-Pro-Setup-<version>-x64.exe.blockmap`: 增量下载索引。
-- `latest.yml`: GitHub 更新源元数据；文件名固定，不包含版本号。
+- `latest.yml`: electron-updater 更新元数据；文件名固定，不包含版本号。
 
 ## Windows 应用内更新
 
-应用内更新仅在通过 NSIS 安装的 Windows x64 正式版中启用。Portable、开发环境、网页预览和其他操作系统不检查 GitHub 更新源。
+应用内更新仅在通过 NSIS 安装的 Windows x64 正式版中启用。Portable、开发环境、网页预览和其他操作系统不检查在线更新源。
 
-已安装应用启动后会静默检查 GitHub Release；发现比当前版本更高的稳定版时，左上角显示更新入口。用户打开更新面板后手动开始下载，下载完成后再确认安装；应用不会在后台自动下载，也不会未经确认退出并安装。
+已安装应用启动后会静默检查 Gitee 国内更新源，Gitee 不可用或镜像尚未同步完整时自动回退到 GitHub。发现比当前版本更高的稳定版时，左上角显示更新入口。用户打开更新面板后手动开始下载，下载完成后再确认安装；应用不会在后台自动下载，也不会未经确认退出并安装。
 
-首次启用时需要先发布并手动安装一个包含更新器的基线版本。更早、尚未集成更新器的旧版本不会出现更新入口；从基线版本开始，后续 GitHub Release 才能通过应用内更新完成升级。
+首次启用时需要先发布并手动安装一个包含双更新源逻辑的基线版本。更早、尚未集成该更新器的旧版本不会自动切换到国内源；从基线版本开始，后续 Gitee 或 GitHub Release 均可完成应用内升级。
 
-GitHub Release 必须同时上传同一版本的 NSIS `.exe`、对应 `.exe.blockmap` 和 `latest.yml`。只上传安装包时，用户能够在 Release 页面手动下载，但应用内更新无法解析或增量下载。发布后应至少在一台已安装旧正式版的 Windows x64 设备上验证检查、下载、退出安装和重启后的版本号。
+GitHub Release 必须同时上传同一版本的 NSIS `.exe`、对应 `.exe.blockmap` 和 `latest.yml`。Gitee Release 除这三项外还会上传 `update-manifest.json`，客户端会严格核对版本、文件名、下载域名和 SHA-256，并优先使用 blockmap 做差分下载；差分条件不满足时 electron-updater 会自动回退到完整安装包。镜像缺项或摘要不匹配时不会下载该安装包，而会尝试 GitHub 备用源。发布后应至少在一台未开启代理、已安装旧正式版的 Windows x64 设备上验证检查、下载、退出安装和重启后的版本号。
 
 安装向导会在开始安装前显示桌面快捷方式选项，默认勾选“创建桌面快捷方式”，用户可以取消。
 
@@ -106,7 +106,9 @@ GitHub Release 必须同时上传同一版本的 NSIS `.exe`、对应 `.exe.bloc
 
 Actions 只上传安装包、必要的 blockmap 和 Windows `latest.yml`，不上传 `win-unpacked`、`linux-unpacked` 等解包目录，避免 Release 阶段上传过多文件触发 GitHub secondary rate limit。
 
-当工作流由 `v*` 格式 tag 触发时，会在 Windows 和 Linux 构建完成后自动创建 GitHub Release，并把安装包上传到该 Release。
+当工作流由 `v*` 格式 tag 触发时，会在 Windows 和 Linux 构建完成后自动创建 GitHub Release，并把安装包上传到该 Release。随后工作流使用 `scripts/sync-gitee-release.mjs` 创建或更新同标签的 Gitee Release，上传 Windows 安装包、blockmap、`latest.yml` 和最后生成的 SHA-256 更新清单。
+
+首次启用国内镜像前，需要在 GitHub 仓库 `Settings -> Secrets and variables -> Actions` 中新增仓库密钥 `GITEE_TOKEN`。令牌由 Gitee 个人访问令牌页面创建，并需具备当前公开仓库的发行版创建、修改与附件上传权限。令牌只提供给 Actions，不写入代码、安装包或客户端。未配置该密钥时 GitHub Release 仍会正常发布，但工作流会给出警告，Gitee 国内更新源不会推进到新版本。
 
 macOS runner 在免费 GitHub Actions 中经常长时间排队，因此 macOS 构建拆分到 `.github/workflows/build-macos-installer.yml`，需要时进入 `Actions` -> `Build macOS Installer` -> `Run workflow` 手动触发。macOS artifacts 生成后，可手动上传到对应 GitHub Release。
 
@@ -135,4 +137,4 @@ git push github v0.1.0
 git push origin v0.1.0
 ```
 
-GitHub 会通过 Actions 自动生成 Release。Gitee 的发行版需要在 Gitee 页面手动创建，并上传同一批安装包。
+GitHub 会通过 Actions 自动生成 Release；配置 `GITEE_TOKEN` 后，同一工作流会自动维护 Gitee 发行版，无需再手动上传更新安装包。

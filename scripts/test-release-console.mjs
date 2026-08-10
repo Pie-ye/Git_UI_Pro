@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -26,6 +26,7 @@ import {
   validateWindowsUpdateArtifacts,
   waitForGitHubReleaseReady
 } from "./release-console.mjs";
+import { collectWindowsUpdateFiles, createGiteeUpdateManifest, syncGiteeRelease } from "./sync-gitee-release.mjs";
 
 test("解析并推荐稳定版本号", () => {
   assert.deepEqual(parseVersion("0.1.5"), { major: 0, minor: 1, patch: 5, text: "0.1.5" });
@@ -274,6 +275,106 @@ test("收集 Windows 正式版自动更新所需的三项产物", async () => {
       Object.values(expected).sort()
     );
     assert.equal(validateWindowsUpdateArtifacts(version, artifacts).valid, true);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Gitee 镜像清单固定绑定标签、安装包名称、大小与 SHA-256", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "git-ui-pro-gitee-mirror-"));
+  const nested = path.join(directory, "windows-x64");
+  const version = "0.1.26";
+  const installer = `Git-UI-Pro-Setup-${version}-x64.exe`;
+  try {
+    await mkdir(nested, { recursive: true });
+    await Promise.all([
+      writeFile(path.join(nested, installer), "installer"),
+      writeFile(path.join(nested, `${installer}.blockmap`), "blockmap"),
+      writeFile(path.join(nested, "latest.yml"), `version: ${version}`)
+    ]);
+    const files = await collectWindowsUpdateFiles(directory, `v${version}`);
+    assert.deepEqual([...files.keys()], [installer, `${installer}.blockmap`, "latest.yml"]);
+
+    const manifest = createGiteeUpdateManifest(`v${version}`, {
+      name: installer,
+      size: 82_000_000,
+      sha256: "B".repeat(64)
+    });
+    assert.deepEqual(manifest, {
+      schemaVersion: 1,
+      version,
+      tagName: `v${version}`,
+      installer: {
+        name: installer,
+        size: 82_000_000,
+        sha256: "b".repeat(64)
+      }
+    });
+    assert.throws(
+      () => createGiteeUpdateManifest(`v${version}`, { name: "foreign.exe", size: 1, sha256: "a".repeat(64) }),
+      /安装包信息无效/
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Gitee 镜像发布时先创建发行版并最后上传校验清单", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "git-ui-pro-gitee-publish-"));
+  const version = "0.1.26";
+  const tagName = `v${version}`;
+  const installer = `Git-UI-Pro-Setup-${version}-x64.exe`;
+  const uploads = [];
+  const requests = [];
+  try {
+    await Promise.all([
+      writeFile(path.join(directory, installer), "installer"),
+      writeFile(path.join(directory, `${installer}.blockmap`), "blockmap"),
+      writeFile(path.join(directory, "latest.yml"), `version: ${version}`)
+    ]);
+    const fetchImpl = async (requestUrl, options = {}) => {
+      const url = new URL(requestUrl);
+      requests.push({ host: url.hostname, path: url.pathname, method: options.method ?? "GET" });
+      if (url.hostname === "api.github.com") {
+        return Response.json({
+          tag_name: tagName,
+          name: `Git UI Pro v${version}`,
+          body: "同步国内镜像",
+          draft: false,
+          prerelease: false
+        });
+      }
+      if (url.pathname.endsWith(`/releases/tags/${tagName}`)) {
+        return new Response(null, { status: 404 });
+      }
+      if (url.pathname.endsWith("/releases") && options.method === "POST") {
+        return Response.json({ id: 26, tag_name: tagName });
+      }
+      if (url.pathname.endsWith("/releases/26/attach_files") && (options.method ?? "GET") === "GET") {
+        return Response.json([]);
+      }
+      if (url.pathname.endsWith("/releases/26/attach_files") && options.method === "POST") {
+        uploads.push(options.body.get("file").name);
+        assert.equal(options.body.get("access_token"), "gitee-secret");
+        return Response.json({ id: uploads.length, name: uploads.at(-1) });
+      }
+      throw new Error(`未处理的镜像请求：${options.method ?? "GET"} ${url}`);
+    };
+
+    const result = await syncGiteeRelease({
+      giteeToken: "gitee-secret",
+      githubToken: "github-secret",
+      githubRepository: "example/repo",
+      tagName,
+      artifactsDirectory: directory,
+      giteeOwner: "zjx_master",
+      giteeRepository: "git-ui-pro",
+      fetchImpl
+    });
+
+    assert.deepEqual(uploads, [installer, `${installer}.blockmap`, "latest.yml", "update-manifest.json"]);
+    assert.equal(result.releaseUrl, `https://gitee.com/zjx_master/git-ui-pro/releases/tag/${tagName}`);
+    assert.equal(requests.filter((request) => request.method === "POST").length, 5);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

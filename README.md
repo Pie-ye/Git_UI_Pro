@@ -45,10 +45,10 @@ Git UI Pro 不重新实现 Git 内核，所有仓库操作都调用用户本机�
 
 ## 安装
 
-正式版本会通过 GitHub Releases 发布：
+正式版本会通过 GitHub 和 Gitee Releases 发布：
 
 - GitHub: <https://github.com/zjx150504-lgtm/Git_UI_Pro/releases>
-- Gitee: 请在 Gitee 仓库的发行版页面查看同步发布内容。
+- Gitee（国内下载）: <https://gitee.com/zjx_master/git-ui-pro/releases>
 
 当前项目仍处于早期版本。如果 Releases 中还没有安装包，可以在 GitHub Actions 的 `Build Installers` 工作流中下载对应系统的 artifacts。
 
@@ -81,7 +81,7 @@ npm run dist:mac
 npm run release:win
 ```
 
-控制台会显示当前版本、推荐版本和历史 tag，并完成版本文件更新、Windows 打包、规范化版本提交、tag 以及 Gitee/GitHub 双远端推送。GitHub 收到 tag 后会自动执行多平台构建并创建 Release。详细约束和失败恢复方式见 [docs/PACKAGING.md](docs/PACKAGING.md)。
+控制台会显示当前版本、推荐版本和历史 tag，并完成版本文件更新、Windows 打包、规范化版本提交、tag 以及 Gitee/GitHub 双远端推送。GitHub 收到 tag 后会自动执行多平台构建、创建 Release，并在配置 `GITEE_TOKEN` 后同步国内更新资产。详细约束和失败恢复方式见 [docs/PACKAGING.md](docs/PACKAGING.md)。
 
 需要手动发布时：
 
@@ -102,7 +102,7 @@ npm run release:win
    git push origin v0.1.0
    ```
 
-4. GitHub Actions 会自动构建 Windows、Linux、macOS 安装包，并在 tag 触发时创建 GitHub Release。
+4. GitHub Actions 会自动构建 Windows、Linux 安装包，在 tag 触发时创建 GitHub Release，并同步 Gitee 国内更新源。
 
 ## 隐私说明
 

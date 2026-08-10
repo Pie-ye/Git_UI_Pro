@@ -8,14 +8,27 @@ import {
   type ReleaseHistoryItem,
   type RollbackTarget
 } from "./releaseHistory";
+import {
+  buildGiteeReleaseHistoryCatalog,
+  parseGiteeReleaseSummary,
+  parseLatestStableGiteeRelease,
+  selectGiteeHistoryCandidates,
+  verifyGiteeRelease,
+  type GiteeReleaseSummary,
+  type VerifiedGiteeRelease
+} from "./giteeUpdateSource";
 import { githubReleaseUrl, normalizeReleaseNotes, updateErrorMessage } from "./updateUtils";
 
 export const UPDATE_CHECK_INITIAL_DELAY_MS = 8_000;
 export const UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1_000;
 const RELEASE_HISTORY_CACHE_MS = 15 * 60 * 1_000;
+const GITEE_RELEASE_HISTORY_URL = "https://gitee.com/api/v5/repos/zjx_master/git-ui-pro/releases?per_page=20";
+const GITEE_LATEST_RELEASE_URL = "https://gitee.com/api/v5/repos/zjx_master/git-ui-pro/releases/latest";
 const RELEASE_HISTORY_URL = "https://api.github.com/repos/zjx150504-lgtm/Git_UI_Pro/releases?per_page=20";
 const LATEST_RELEASE_URL = "https://api.github.com/repos/zjx150504-lgtm/Git_UI_Pro/releases/latest";
 const MAX_RELEASE_HISTORY_RESPONSE_LENGTH = 5_000_000;
+const MAX_UPDATE_MANIFEST_RESPONSE_LENGTH = 64_000;
+const GITEE_REQUEST_TIMEOUT_MS = 8_000;
 const RELEASE_HISTORY_REQUEST_TIMEOUT_MS = 20_000;
 const SHA256_DIGEST_PATTERN = /^sha256:([a-f\d]{64})$/i;
 
@@ -113,7 +126,7 @@ export async function resolveFreshUpgradeCheck(
   const updaterVersion = normalizeStableVersion(result.updateInfo.version);
   if (updaterVersion !== latestRelease.version) {
     throw new Error(
-      `GitHub 最新正式版为 v${latestRelease.version}，但更新元数据仍为 v${updaterVersion ?? result.updateInfo.version}，操作已停止。`
+      `更新源最新正式版为 v${latestRelease.version}，但下载元数据仍为 v${updaterVersion ?? result.updateInfo.version}，操作已停止。`
     );
   }
   return result;
@@ -221,6 +234,7 @@ export function parseLatestStableGithubRelease(value: unknown): LatestStableRele
       releaseName,
       releaseNotes,
       releaseDate: publishedAt.toISOString(),
+      releaseUrl: githubReleaseUrl(version),
       downloadUrl: installerTarget.downloadUrl,
       sha256: installerTarget.sha256
     }
@@ -234,6 +248,8 @@ function parseExactGithubDownloadUrl(value: string, expectedPath: string): strin
       url.hostname === "github.com" &&
       url.username === "" &&
       url.password === "" &&
+      url.search === "" &&
+      url.hash === "" &&
       url.pathname === expectedPath
       ? url.toString()
       : null;
@@ -338,7 +354,7 @@ export class UpdateService {
       checkUpdater = this.createUpgradeUpdater(latestRelease.target);
       const result = await resolveFreshUpgradeCheck(checkUpdater, async () => latestRelease);
       if (result.isUpdateAvailable) {
-        this.setState(this.stateFromInfo("available", result.updateInfo, "upgrade"));
+        this.setState(this.stateFromInfo("available", result.updateInfo, "upgrade", latestRelease.target.releaseUrl));
       } else {
         this.setState({
           phase: "up-to-date",
@@ -346,7 +362,7 @@ export class UpdateService {
           currentVersion: this.state.currentVersion,
           availableVersion: result.updateInfo.version,
           releaseDate: result.updateInfo.releaseDate,
-          releaseUrl: githubReleaseUrl(result.updateInfo.version)
+          releaseUrl: latestRelease.target.releaseUrl
         });
       }
     } catch (error) {
@@ -402,7 +418,7 @@ export class UpdateService {
       releaseName: target.releaseName,
       releaseNotes: target.releaseNotes,
       releaseDate: target.releaseDate,
-      releaseUrl: githubReleaseUrl(target.version)
+      releaseUrl: target.releaseUrl
     });
 
     try {
@@ -425,7 +441,7 @@ export class UpdateService {
           releaseName: target.releaseName,
           releaseNotes: target.releaseNotes,
           releaseDate: target.releaseDate,
-          releaseUrl: githubReleaseUrl(target.version),
+          releaseUrl: target.releaseUrl,
           error: updateErrorMessage(error)
         });
       }
@@ -504,7 +520,7 @@ export class UpdateService {
     updater.allowDowngrade = false;
     updater.fullChangelog = false;
     updater.disableWebInstaller = true;
-    updater.disableDifferentialDownload = true;
+    updater.disableDifferentialDownload = false;
     updater.logger = console;
     return updater;
   }
@@ -518,7 +534,10 @@ export class UpdateService {
     });
     updater.on("update-downloaded", (info) => {
       if (isActive()) {
-        this.setState({ ...this.stateFromInfo("downloaded", info, "upgrade"), progress: this.state.progress });
+        this.setState({
+          ...this.stateFromInfo("downloaded", info, "upgrade", this.state.releaseUrl),
+          progress: this.state.progress
+        });
       }
     });
     updater.on("update-cancelled", () => {
@@ -552,7 +571,7 @@ export class UpdateService {
         async () => latestRelease,
         (info) => {
           this.setState({
-            ...this.stateFromInfo("available", info, "upgrade"),
+            ...this.stateFromInfo("available", info, "upgrade", latestRelease.target.releaseUrl),
             phase: "downloading",
             progress: { percent: 0, transferred: 0, total: 0, bytesPerSecond: 0 },
             error: undefined
@@ -568,7 +587,7 @@ export class UpdateService {
           currentVersion: this.state.currentVersion,
           availableVersion: freshDownload.info.version,
           releaseDate: freshDownload.info.releaseDate,
-          releaseUrl: githubReleaseUrl(freshDownload.info.version)
+          releaseUrl: latestRelease.target.releaseUrl
         });
         return this.getState();
       }
@@ -593,7 +612,7 @@ export class UpdateService {
     updater.allowDowngrade = true;
     updater.fullChangelog = false;
     updater.disableWebInstaller = true;
-    updater.disableDifferentialDownload = true;
+    updater.disableDifferentialDownload = false;
     updater.logger = console;
     return updater;
   }
@@ -607,7 +626,7 @@ export class UpdateService {
     });
     updater.on("update-available", (info) => {
       if (isActive()) {
-        this.setState(this.stateFromInfo("available", info, "rollback"));
+        this.setState(this.stateFromInfo("available", info, "rollback", this.state.releaseUrl));
       }
     });
     updater.on("update-not-available", () => {
@@ -622,7 +641,10 @@ export class UpdateService {
     });
     updater.on("update-downloaded", (info) => {
       if (isActive()) {
-        this.setState({ ...this.stateFromInfo("downloaded", info, "rollback"), progress: this.state.progress });
+        this.setState({
+          ...this.stateFromInfo("downloaded", info, "rollback", this.state.releaseUrl),
+          progress: this.state.progress
+        });
       }
     });
     updater.on("update-cancelled", () => {
@@ -671,100 +693,145 @@ export class UpdateService {
   }
 
   private async fetchLatestStableRelease(): Promise<LatestStableRelease> {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), RELEASE_HISTORY_REQUEST_TIMEOUT_MS);
-    const requestUrl = new URL(LATEST_RELEASE_URL);
-    requestUrl.searchParams.set("update-check", `${Date.now()}-${++this.latestReleaseRequestSeed}`);
-
-    let response: Response;
     try {
-      response = await net.fetch(requestUrl.toString(), {
-        headers: {
-          Accept: "application/vnd.github+json",
-          "Cache-Control": "no-cache, no-store, must-revalidate",
-          Pragma: "no-cache",
-          "User-Agent": `Git-UI-Pro/${this.state.currentVersion}`,
-          "X-GitHub-Api-Version": "2022-11-28"
-        },
-        signal: controller.signal
-      });
-    } catch (error) {
-      if (controller.signal.aborted) {
-        throw new Error("读取 GitHub 最新正式版超时，请检查网络后重试。");
+      return await this.fetchLatestStableGiteeRelease();
+    } catch (giteeError) {
+      console.warn("Gitee 更新源不可用，尝试 GitHub 备用源", giteeError);
+      try {
+        return await this.fetchLatestStableGithubRelease();
+      } catch (githubError) {
+        throw new Error(
+          `国内更新源不可用：${errorText(giteeError)}；GitHub 备用源也不可用：${errorText(githubError)}`
+        );
       }
-      throw error;
-    } finally {
-      clearTimeout(timeoutId);
     }
+  }
 
-    if (!response.ok) {
-      if (response.status === 403 || response.status === 429) {
-        throw new Error("GitHub 最新正式版查询受限，请稍后重试。");
-      }
-      throw new Error(`无法读取 GitHub 最新正式版（HTTP ${response.status}）。`);
+  private async fetchLatestStableGiteeRelease(): Promise<LatestStableRelease> {
+    const requestUrl = this.cacheBustedUrl(GITEE_LATEST_RELEASE_URL);
+    const rawRelease = await fetchJsonResource(requestUrl, {
+      sourceLabel: "Gitee 最新正式版",
+      timeoutMs: GITEE_REQUEST_TIMEOUT_MS,
+      maxLength: MAX_RELEASE_HISTORY_RESPONSE_LENGTH,
+      headers: this.giteeHeaders()
+    });
+    const summary = parseGiteeReleaseSummary(rawRelease);
+    if (!summary) {
+      throw new Error("Gitee 最新正式版尚未同步完整的 Windows 更新资产。");
     }
+    const rawManifest = await fetchJsonResource(this.cacheBustedUrl(summary.manifestUrl), {
+      sourceLabel: `Gitee v${summary.version} 更新清单`,
+      timeoutMs: GITEE_REQUEST_TIMEOUT_MS,
+      maxLength: MAX_UPDATE_MANIFEST_RESPONSE_LENGTH,
+      headers: this.giteeHeaders()
+    });
+    return parseLatestStableGiteeRelease(rawRelease, rawManifest);
+  }
 
-    const rawText = await response.text();
-    if (rawText.length > MAX_RELEASE_HISTORY_RESPONSE_LENGTH) {
-      throw new Error("GitHub 返回的最新正式版数据异常，已停止处理。");
-    }
-
-    let rawRelease: unknown;
-    try {
-      rawRelease = JSON.parse(rawText);
-    } catch {
-      throw new Error("GitHub 返回的最新正式版数据无法解析。");
-    }
+  private async fetchLatestStableGithubRelease(): Promise<LatestStableRelease> {
+    const rawRelease = await fetchJsonResource(this.cacheBustedUrl(LATEST_RELEASE_URL), {
+      sourceLabel: "GitHub 最新正式版",
+      timeoutMs: RELEASE_HISTORY_REQUEST_TIMEOUT_MS,
+      maxLength: MAX_RELEASE_HISTORY_RESPONSE_LENGTH,
+      headers: this.githubHeaders()
+    });
     return parseLatestStableGithubRelease(rawRelease);
   }
 
   private async fetchReleaseHistory(): Promise<ReleaseHistoryCatalog> {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), RELEASE_HISTORY_REQUEST_TIMEOUT_MS);
-    let response: Response;
     try {
-      response = await net.fetch(RELEASE_HISTORY_URL, {
-        headers: {
-          Accept: "application/vnd.github+json",
-          "User-Agent": `Git-UI-Pro/${this.state.currentVersion}`,
-          "X-GitHub-Api-Version": "2022-11-28"
-        },
-        signal: controller.signal
+      const catalog = await this.fetchGiteeReleaseHistory();
+      if (catalog.entries.length > 0) {
+        return this.cacheReleaseHistory(catalog);
+      }
+      throw new Error("Gitee 暂无可校验的历史版本。");
+    } catch (giteeError) {
+      console.warn("Gitee 历史版本源不可用，尝试 GitHub 备用源", giteeError);
+      try {
+        return this.cacheReleaseHistory(await this.fetchGithubReleaseHistory());
+      } catch (githubError) {
+        throw new Error(
+          `国内历史版本源不可用：${errorText(giteeError)}；GitHub 备用源也不可用：${errorText(githubError)}`
+        );
+      }
+    }
+  }
+
+  private async fetchGiteeReleaseHistory(): Promise<ReleaseHistoryCatalog> {
+    const rawReleases = await fetchJsonResource(this.cacheBustedUrl(GITEE_RELEASE_HISTORY_URL), {
+      sourceLabel: "Gitee 历史版本",
+      timeoutMs: GITEE_REQUEST_TIMEOUT_MS,
+      maxLength: MAX_RELEASE_HISTORY_RESPONSE_LENGTH,
+      headers: this.giteeHeaders()
+    });
+    const candidates = selectGiteeHistoryCandidates(rawReleases, this.state.currentVersion);
+    const verified = await Promise.all(candidates.map((candidate) => this.verifyGiteeHistoryCandidate(candidate)));
+    return buildGiteeReleaseHistoryCatalog(
+      verified.filter((release): release is VerifiedGiteeRelease => release !== null),
+      this.state.currentVersion
+    );
+  }
+
+  private async verifyGiteeHistoryCandidate(candidate: GiteeReleaseSummary): Promise<VerifiedGiteeRelease | null> {
+    try {
+      const manifest = await fetchJsonResource(this.cacheBustedUrl(candidate.manifestUrl), {
+        sourceLabel: `Gitee v${candidate.version} 更新清单`,
+        timeoutMs: GITEE_REQUEST_TIMEOUT_MS,
+        maxLength: MAX_UPDATE_MANIFEST_RESPONSE_LENGTH,
+        headers: this.giteeHeaders()
       });
+      return verifyGiteeRelease(candidate, manifest);
     } catch (error) {
-      if (controller.signal.aborted) {
-        throw new Error("读取 GitHub 历史版本超时，请检查网络后重试。");
-      }
-      throw error;
-    } finally {
-      clearTimeout(timeoutId);
+      console.warn(`忽略无法校验的 Gitee 历史版本 v${candidate.version}`, error);
+      return null;
     }
-    if (!response.ok) {
-      if (response.status === 403 || response.status === 429) {
-        throw new Error("GitHub 查询过于频繁，请稍后再刷新历史版本。");
-      }
-      throw new Error(`无法读取 GitHub 历史版本（HTTP ${response.status}）。`);
-    }
+  }
 
-    const rawText = await response.text();
-    if (rawText.length > MAX_RELEASE_HISTORY_RESPONSE_LENGTH) {
-      throw new Error("GitHub 返回的历史版本数据异常，已停止处理。");
-    }
+  private async fetchGithubReleaseHistory(): Promise<ReleaseHistoryCatalog> {
+    const rawReleases = await fetchJsonResource(this.cacheBustedUrl(RELEASE_HISTORY_URL), {
+      sourceLabel: "GitHub 历史版本",
+      timeoutMs: RELEASE_HISTORY_REQUEST_TIMEOUT_MS,
+      maxLength: MAX_RELEASE_HISTORY_RESPONSE_LENGTH,
+      headers: this.githubHeaders()
+    });
+    return buildReleaseHistoryCatalog(rawReleases, this.state.currentVersion);
+  }
 
-    let rawReleases: unknown;
-    try {
-      rawReleases = JSON.parse(rawText);
-    } catch {
-      throw new Error("GitHub 返回的历史版本数据无法解析。");
-    }
-
-    const catalog = buildReleaseHistoryCatalog(rawReleases, this.state.currentVersion);
+  private cacheReleaseHistory(catalog: ReleaseHistoryCatalog): ReleaseHistoryCatalog {
     this.releaseHistoryCatalog = catalog;
     this.releaseHistoryFetchedAt = Date.now();
     return catalog;
   }
 
-  private stateFromInfo(phase: "available" | "downloaded", info: UpdateInfo, operation: UpdateOperation): UpdateStateInput {
+  private cacheBustedUrl(value: string): string {
+    const requestUrl = new URL(value);
+    requestUrl.searchParams.set("update-check", `${Date.now()}-${++this.latestReleaseRequestSeed}`);
+    return requestUrl.toString();
+  }
+
+  private giteeHeaders(): Record<string, string> {
+    return {
+      Accept: "application/json",
+      "Cache-Control": "no-cache, no-store, must-revalidate",
+      Pragma: "no-cache",
+      "User-Agent": `Git-UI-Pro/${this.state.currentVersion}`
+    };
+  }
+
+  private githubHeaders(): Record<string, string> {
+    return {
+      ...this.giteeHeaders(),
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28"
+    };
+  }
+
+  private stateFromInfo(
+    phase: "available" | "downloaded",
+    info: UpdateInfo,
+    operation: UpdateOperation,
+    releaseUrl = githubReleaseUrl(info.version)
+  ): UpdateStateInput {
     return {
       phase,
       operation,
@@ -773,7 +840,7 @@ export class UpdateService {
       releaseName: info.releaseName?.trim() || `Git UI Pro v${info.version}`,
       releaseNotes: normalizeReleaseNotes(info.releaseNotes),
       releaseDate: info.releaseDate,
-      releaseUrl: githubReleaseUrl(info.version)
+      releaseUrl
     };
   }
 
@@ -810,4 +877,51 @@ function cloneState(state: UpdateState): UpdateState {
 function normalizeStableVersion(value: string): string | null {
   const match = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(value.trim());
   return match ? `${match[1]}.${match[2]}.${match[3]}` : null;
+}
+
+type JsonResourceOptions = {
+  sourceLabel: string;
+  timeoutMs: number;
+  maxLength: number;
+  headers: Record<string, string>;
+};
+
+async function fetchJsonResource(url: string, options: JsonResourceOptions): Promise<unknown> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), options.timeoutMs);
+  let response: Response;
+  try {
+    response = await net.fetch(url, {
+      headers: options.headers,
+      signal: controller.signal
+    });
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`读取${options.sourceLabel}超时，请检查网络后重试。`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
+  if (!response.ok) {
+    if (response.status === 403 || response.status === 429) {
+      throw new Error(`${options.sourceLabel}查询受限，请稍后重试。`);
+    }
+    throw new Error(`无法读取${options.sourceLabel}（HTTP ${response.status}）。`);
+  }
+
+  const rawText = await response.text();
+  if (rawText.length > options.maxLength) {
+    throw new Error(`${options.sourceLabel}返回的数据异常，已停止处理。`);
+  }
+  try {
+    return JSON.parse(rawText);
+  } catch {
+    throw new Error(`${options.sourceLabel}返回的数据无法解析。`);
+  }
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error && error.message ? error.message : String(error);
 }

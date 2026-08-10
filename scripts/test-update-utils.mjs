@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import giteeUpdateSource from "../dist-electron/giteeUpdateSource.js";
 import releaseHistory from "../dist-electron/releaseHistory.js";
 import updateService from "../dist-electron/updateService.js";
 import updateUtils from "../dist-electron/updateUtils.js";
 
 const { buildReleaseHistoryCatalog, createRollbackUpdaterOptions } = releaseHistory;
+const {
+  buildGiteeReleaseHistoryCatalog,
+  parseLatestStableGiteeRelease,
+  selectGiteeHistoryCandidates,
+  verifyGiteeRelease
+} = giteeUpdateSource;
 const {
   UPDATE_CHECK_INITIAL_DELAY_MS,
   UPDATE_CHECK_INTERVAL_MS,
@@ -104,6 +111,45 @@ function latestGithubRelease(version, overrides = {}) {
   };
 }
 
+function giteeRelease(version, overrides = {}) {
+  const tagName = overrides.tag_name ?? `v${version}`;
+  const installerName = `Git-UI-Pro-Setup-${version}-x64.exe`;
+  return {
+    tag_name: tagName,
+    name: `Git UI Pro v${version}`,
+    body: `版本 ${version} 说明`,
+    prerelease: false,
+    created_at: "2026-07-23T08:05:52Z",
+    ...overrides,
+    assets: overrides.assets ?? [
+      {
+        name: installerName,
+        browser_download_url: `https://gitee.com/zjx_master/git-ui-pro/releases/download/${tagName}/${installerName}`
+      },
+      {
+        name: "update-manifest.json",
+        browser_download_url: `https://gitee.com/zjx_master/git-ui-pro/releases/download/${tagName}/update-manifest.json`
+      }
+    ]
+  };
+}
+
+function giteeManifest(version, overrides = {}) {
+  const { installer: installerOverrides = {}, ...manifestOverrides } = overrides;
+  return {
+    schemaVersion: 1,
+    version,
+    tagName: `v${version}`,
+    ...manifestOverrides,
+    installer: {
+      name: `Git-UI-Pro-Setup-${version}-x64.exe`,
+      size: 82_000_000,
+      sha256: SHA256,
+      ...installerOverrides
+    }
+  };
+}
+
 function updateCheckResult(version, isUpdateAvailable = true) {
   const updateInfo = { version, files: [] };
   return {
@@ -171,6 +217,7 @@ test("渲染层记录不暴露安装包地址和校验值，内部目标仍可�
     "https://github.com/zjx150504-lgtm/Git_UI_Pro/releases/download/v0.1.12/Git-UI-Pro-Setup-0.1.12-x64.exe"
   );
   assert.equal(target?.sha256, SHA256);
+  assert.equal(target?.releaseUrl, "https://github.com/zjx150504-lgtm/Git_UI_Pro/releases/tag/v0.1.12");
   assert.equal(catalog.resolveTarget("0.1.9"), null);
 });
 
@@ -279,6 +326,61 @@ test("GitHub latest 只接受资产就绪的稳定正式版", () => {
   );
 });
 
+test("Gitee 国内更新源只接受路径、版本与 SHA-256 全部匹配的镜像", () => {
+  const release = giteeRelease("0.1.26");
+  const latest = parseLatestStableGiteeRelease(release, giteeManifest("0.1.26", {
+    installer: { sha256: "B".repeat(64) }
+  }));
+
+  assert.equal(latest.version, "0.1.26");
+  assert.equal(latest.target.sha256, "b".repeat(64));
+  assert.equal(
+    latest.target.downloadUrl,
+    "https://gitee.com/zjx_master/git-ui-pro/releases/download/v0.1.26/Git-UI-Pro-Setup-0.1.26-x64.exe"
+  );
+  assert.equal(
+    latest.target.releaseUrl,
+    "https://gitee.com/zjx_master/git-ui-pro/releases/tag/v0.1.26"
+  );
+  assert.doesNotThrow(() => createRollbackUpdaterOptions(latest.target));
+
+  assert.throws(
+    () => parseLatestStableGiteeRelease(release, giteeManifest("0.1.25")),
+    /更新清单与发行版不匹配/
+  );
+  assert.throws(
+    () => parseLatestStableGiteeRelease(
+      giteeRelease("0.1.26", {
+        assets: [
+          {
+            name: "Git-UI-Pro-Setup-0.1.26-x64.exe",
+            browser_download_url: "https://example.com/Git-UI-Pro-Setup-0.1.26-x64.exe"
+          },
+          {
+            name: "update-manifest.json",
+            browser_download_url: "https://gitee.com/zjx_master/git-ui-pro/releases/download/v0.1.26/update-manifest.json"
+          }
+        ]
+      }),
+      giteeManifest("0.1.26")
+    ),
+    /更新资产尚未同步完成/
+  );
+});
+
+test("Gitee 历史版本按版本筛选并生成可校验的回退目标", () => {
+  const candidates = selectGiteeHistoryCandidates(
+    [giteeRelease("0.1.24"), giteeRelease("0.1.23"), giteeRelease("0.1.26")],
+    "0.1.25"
+  );
+  assert.deepEqual(candidates.map((candidate) => candidate.version), ["0.1.24", "0.1.23"]);
+
+  const releases = candidates.map((candidate) => verifyGiteeRelease(candidate, giteeManifest(candidate.version)));
+  const catalog = buildGiteeReleaseHistoryCatalog(releases, "0.1.25");
+  assert.deepEqual(catalog.entries.map((entry) => entry.version), ["0.1.24", "0.1.23"]);
+  assert.match(catalog.resolveTarget("0.1.24")?.downloadUrl ?? "", /^https:\/\/gitee\.com\//);
+});
+
 test("权威 latest 与 updater 元数据不一致时拒绝旧候选", async () => {
   let downloadCalls = 0;
   const updater = {
@@ -298,7 +400,7 @@ test("权威 latest 与 updater 元数据不一致时拒绝旧候选", async () 
         async () => ({ version: "0.1.16", tagName: "v0.1.16" }),
         () => assert.fail("不应接受旧候选")
       ),
-    /GitHub 最新正式版为 v0\.1\.16.*更新元数据仍为 v0\.1\.15/
+    /更新源最新正式版为 v0\.1\.16.*下载元数据仍为 v0\.1\.15/
   );
   assert.equal(downloadCalls, 0);
 });

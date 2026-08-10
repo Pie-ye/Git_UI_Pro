@@ -7,6 +7,8 @@ import {
 
 const RELEASE_OWNER = "zjx150504-lgtm";
 const RELEASE_REPOSITORY = "Git_UI_Pro";
+const GITEE_RELEASE_OWNER = "zjx_master";
+const GITEE_RELEASE_REPOSITORY = "git-ui-pro";
 const MAX_HISTORY_ENTRIES = 3;
 const MAX_RELEASE_NOTES_LENGTH = 12_000;
 const STABLE_VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
@@ -50,6 +52,7 @@ export type RollbackTarget = Readonly<{
   releaseName: string;
   releaseNotes: string;
   releaseDate: string;
+  releaseUrl: string;
   downloadUrl: string;
   sha256: string;
 }>;
@@ -186,6 +189,7 @@ function parseGithubRelease(value: unknown, currentVersion: StableVersion): Pars
     releaseName,
     releaseNotes,
     releaseDate: publishedAt,
+    releaseUrl,
     downloadUrl: asset.downloadUrl,
     sha256: asset.sha256
   });
@@ -236,13 +240,15 @@ function findInstallerAsset(
   return null;
 }
 
-function parseExpectedDownloadUrl(value: string, expectedPath: string): string | null {
+function parseExpectedDownloadUrl(value: string, expectedPath: string, hostname = "github.com"): string | null {
   try {
     const url = new URL(value);
     return url.protocol === "https:" &&
-      url.hostname === "github.com" &&
+      url.hostname === hostname &&
       url.username === "" &&
       url.password === "" &&
+      url.search === "" &&
+      url.hash === "" &&
       url.pathname === expectedPath
       ? url.toString()
       : null;
@@ -305,14 +311,24 @@ function validateRollbackTarget(value: unknown): RollbackTarget {
 
   const version = typeof value.version === "string" ? parseStableVersion(value.version) : null;
   const expectedName = version ? `Git-UI-Pro-Setup-${version.value}-x64.exe` : "";
-  const expectedPath = version
+  const expectedGithubPath = version
     ? `/${RELEASE_OWNER}/${RELEASE_REPOSITORY}/releases/download/v${version.value}/${expectedName}`
     : "";
-  const downloadUrl = typeof value.downloadUrl === "string" ? parseExpectedDownloadUrl(value.downloadUrl, expectedPath) : null;
+  const expectedGiteePath = version
+    ? `/${GITEE_RELEASE_OWNER}/${GITEE_RELEASE_REPOSITORY}/releases/download/v${version.value}/${expectedName}`
+    : "";
+  const downloadUrl = typeof value.downloadUrl === "string"
+    ? parseExpectedDownloadUrl(value.downloadUrl, expectedGithubPath) ||
+      parseExpectedDownloadUrl(value.downloadUrl, expectedGiteePath, "gitee.com")
+    : null;
+  const releaseUrl = version && downloadUrl && typeof value.releaseUrl === "string"
+    ? parseExpectedReleaseUrl(value.releaseUrl, version.value, new URL(downloadUrl).hostname)
+    : null;
   const releaseDate = normalizePublishedAt(value.releaseDate);
   if (
     !version ||
     !downloadUrl ||
+    !releaseUrl ||
     typeof value.sha256 !== "string" ||
     !/^[a-f\d]{64}$/i.test(value.sha256) ||
     typeof value.releaseName !== "string" ||
@@ -327,13 +343,34 @@ function validateRollbackTarget(value: unknown): RollbackTarget {
     releaseName: value.releaseName,
     releaseNotes: value.releaseNotes.slice(0, MAX_RELEASE_NOTES_LENGTH),
     releaseDate,
+    releaseUrl,
     downloadUrl,
     sha256: value.sha256.toLowerCase()
   });
 }
 
+function parseExpectedReleaseUrl(value: string, version: string, hostname: string): string | null {
+  const expectedPath = hostname === "gitee.com"
+    ? `/${GITEE_RELEASE_OWNER}/${GITEE_RELEASE_REPOSITORY}/releases/tag/v${version}`
+    : `/${RELEASE_OWNER}/${RELEASE_REPOSITORY}/releases/tag/v${version}`;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" &&
+      url.hostname === hostname &&
+      url.username === "" &&
+      url.password === "" &&
+      url.search === "" &&
+      url.hash === "" &&
+      url.pathname === expectedPath
+      ? url.toString()
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function createSha256FileInfo(target: RollbackTarget): UpdateFileInfo {
-  // GitHub exposes SHA-256 while electron-updater 6.8.9 still validates its legacy sha2 field at runtime.
+  // Both release sources expose SHA-256 while electron-updater 6.8.9 validates its legacy sha2 field at runtime.
   return {
     url: target.downloadUrl,
     sha2: target.sha256
