@@ -25,6 +25,7 @@ interface ProjectRailProps {
   onRemoveProject: (projectId: string) => void;
   onReorderProjects: (projectIds: string[]) => void;
   onToggleProjectPinned: (projectId: string) => void;
+  onSetRemoteConnectionEnabled: (projectId: string, enabled: boolean) => void | Promise<void>;
   onSwitchBranch: (project: GitProject) => void;
   footer?: ReactNode;
 }
@@ -80,6 +81,7 @@ export function ProjectRail({
   onRemoveProject,
   onReorderProjects,
   onToggleProjectPinned,
+  onSetRemoteConnectionEnabled,
   onSwitchBranch,
   footer
 }: ProjectRailProps) {
@@ -93,6 +95,7 @@ export function ProjectRail({
   const [statusFilters, setStatusFilters] = useState<ProjectStatusFilterId[]>([]);
   const [collapsedGroupIds, setCollapsedGroupIds] = useState<string[]>([]);
   const [reorderAnnouncement, setReorderAnnouncement] = useState("");
+  const [remoteConnectionPendingIds, setRemoteConnectionPendingIds] = useState<string[]>([]);
   const searchControlRef = useRef<HTMLLabelElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const filterMenuButtonRef = useRef<HTMLButtonElement>(null);
@@ -343,7 +346,38 @@ export function ProjectRail({
     setCollapsedGroupIds((current) => current.includes(groupId) ? current.filter((id) => id !== groupId) : [...current, groupId]);
   }
 
+  async function toggleRemoteConnection(event: MouseEvent<HTMLButtonElement>, project: GitProject) {
+    event.stopPropagation();
+    if (!project.remote || remoteConnectionPendingIds.includes(project.id)) {
+      return;
+    }
+
+    setRemoteConnectionPendingIds((current) => [...current, project.id]);
+    try {
+      await onSetRemoteConnectionEnabled(project.id, project.remote.connectionEnabled === false);
+    } finally {
+      setRemoteConnectionPendingIds((current) => current.filter((projectId) => projectId !== project.id));
+    }
+  }
+
   function renderProjectItem(project: GitProject) {
+    const remoteConnectionEnabled = project.remote?.connectionEnabled !== false;
+    const remoteConnectionPending = remoteConnectionPendingIds.includes(project.id);
+    const branchLabel = !remoteConnectionEnabled
+      ? "连接已暂停"
+      : project.statusError
+        ? "状态不可用"
+        : project.status?.currentBranch ?? "未加载";
+    const branchTooltip = !remoteConnectionEnabled
+      ? "远程连接已暂停，不会自动重连"
+      : project.statusError ?? (project.status ? "切换分支" : "仓库状态尚未加载");
+    const branchAriaLabel = !remoteConnectionEnabled
+      ? "远程连接已暂停"
+      : project.statusError
+        ? "仓库状态不可用"
+        : project.status
+          ? `切换分支，当前 ${branchLabel}`
+          : "仓库状态尚未加载";
     return (
       <div
         ref={(node) => setProjectItemRef(project.id, node)}
@@ -355,7 +389,7 @@ export function ProjectRail({
         aria-expanded={contextMenu?.project.id === project.id}
         aria-describedby="project-reorder-help"
         aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown Shift+F10"
-        className={`project-rail-item ${project.id === selectedProjectId ? "active" : ""} ${project.favorite ? "pinned" : ""} ${draggedProjectId === project.id ? "dragging" : ""} ${dragOverProjectId === project.id ? `drag-over drag-over-${dragOverPlacement}` : ""}`}
+        className={`project-rail-item ${project.id === selectedProjectId ? "active" : ""} ${project.favorite ? "pinned" : ""} ${project.remote ? "remote-project" : ""} ${project.remote && !remoteConnectionEnabled ? "remote-paused" : ""} ${draggedProjectId === project.id ? "dragging" : ""} ${dragOverProjectId === project.id ? `drag-over drag-over-${dragOverPlacement}` : ""}`}
         key={project.id}
         onClick={(event) => { event.currentTarget.focus(); onSelectProject(project.id); }}
         onKeyDown={(event) => {
@@ -386,14 +420,36 @@ export function ProjectRail({
       >
         <span className="project-rail-icon">{project.remote ? <Server size={16} /> : <FolderGit2 size={16} />}</span>
         <span className="project-rail-main">
-          <PathTooltip content={projectLocationLabel(project)} className="project-rail-name"><span className="project-rail-name-text">{project.name}</span></PathTooltip>
+          <span className="project-rail-heading">
+            <PathTooltip content={projectLocationLabel(project)} className="project-rail-name"><span className="project-rail-name-text">{project.name}</span></PathTooltip>
+            {project.remote ? (
+              <PathTooltip
+                content={remoteConnectionPending ? "正在保存连接状态" : remoteConnectionEnabled ? "关闭远程连接" : "开启远程连接"}
+                className="project-remote-connection-tooltip"
+              >
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={remoteConnectionEnabled}
+                  aria-label={`${remoteConnectionEnabled ? "关闭" : "开启"} ${project.name} 的远程连接`}
+                  className={`project-remote-connection-switch ${remoteConnectionEnabled ? "enabled" : ""} ${remoteConnectionPending ? "pending" : ""}`}
+                  disabled={remoteConnectionPending}
+                  onClick={(event) => void toggleRemoteConnection(event, project)}
+                >
+                  <span aria-hidden="true" />
+                </button>
+              </PathTooltip>
+            ) : null}
+          </span>
           <span className="project-rail-meta">
-            <PathTooltip content={project.statusError ?? "切换分支"} className="project-rail-branch-tooltip">
-              <button type="button" className="project-rail-branch" aria-label="切换分支" disabled={Boolean(project.statusError)} onClick={(event) => { event.stopPropagation(); onSelectProject(project.id); onSwitchBranch(project); }}>
-                <GitBranch size={12} /><span>{project.statusError ? "状态不可用" : project.status?.currentBranch ?? "未知分支"}</span>
-              </button>
-            </PathTooltip>
-            {projectStatusTags(project).map((status) => <PathTooltip content={status.title} className="project-status-tooltip" key={`${project.id}-${status.tone}-${status.label}`}><span className={`project-status ${status.tone}`}>{status.label}</span></PathTooltip>)}
+            <span className="project-rail-meta-badges">
+              <PathTooltip content={branchTooltip} className="project-rail-branch-tooltip">
+                <button type="button" className="project-rail-branch" aria-label={branchAriaLabel} disabled={!remoteConnectionEnabled || Boolean(project.statusError)} onClick={(event) => { event.stopPropagation(); onSelectProject(project.id); onSwitchBranch(project); }}>
+                  <GitBranch size={12} /><span>{branchLabel}</span>
+                </button>
+              </PathTooltip>
+              {projectStatusTags(project).map((status) => <PathTooltip content={status.title} className="project-status-tooltip" key={`${project.id}-${status.tone}-${status.label}`}><span className={`project-status ${status.tone}`}>{status.label}</span></PathTooltip>)}
+            </span>
           </span>
         </span>
         {project.favorite ? <PathTooltip content="已置顶" className="project-rail-pin-tooltip"><span className="project-rail-pin-indicator" aria-label="已置顶"><Pin size={12} /></span></PathTooltip> : null}
@@ -742,16 +798,12 @@ function normalizeSearchText(value: string): string {
   return value.trim().toLowerCase();
 }
 
-type ProjectStatusTone = "unknown" | "conflict" | "dirty" | "sync" | "clean";
+type ProjectStatusTone = "conflict" | "dirty" | "sync" | "clean";
 
 function projectStatusTags(project: GitProject): Array<{ label: string; tone: ProjectStatusTone; title?: string }> {
-  if (project.statusError) {
-    return [{ label: "状态不可用", tone: "unknown", title: project.statusError }];
-  }
-
   const status = project.status;
-  if (!status) {
-    return [{ label: "未加载", tone: "unknown" }];
+  if (project.remote?.connectionEnabled === false || project.statusError || !status) {
+    return [];
   }
 
   const tags: Array<{ label: string; tone: ProjectStatusTone }> = [];

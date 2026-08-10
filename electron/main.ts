@@ -179,6 +179,8 @@ function registerIpc(): void {
     return true;
   });
   ipcMain.handle("projects:setGroup", (_event, projectId: string, groupId?: string) => configStore.setProjectGroup(projectId, groupId));
+  ipcMain.handle("projects:setRemoteConnectionEnabled", (_event, projectId: string, enabled: boolean) =>
+    configStore.setRemoteProjectConnectionEnabled(projectId, enabled));
   ipcMain.handle("projects:markOpened", (_event, projectId: string) => configStore.markProjectOpened(projectId));
   ipcMain.handle("projects:removeRecent", async (_event, projectId: string) => {
     await configStore.removeRecentProject(projectId);

@@ -100,6 +100,25 @@ test("项目分组、最近项目和界面偏好保持一致", async () => {
   });
 });
 
+test("远程连接开关默认开启、持久化并在重复添加时保留", async () => {
+  await withTemporaryStore(async (store, directory) => {
+    const remoteInput = { host: "offline.example.com", username: "deploy", repositoryPath: "/srv/repo" };
+    const remote = await store.addRemoteProject(remoteInput, "/srv/repo");
+    assert.equal(remote.remote?.connectionEnabled, true);
+
+    const paused = await store.setRemoteProjectConnectionEnabled(remote.id, false);
+    assert.equal(paused.remote?.connectionEnabled, false);
+    assert.equal((await new ConfigStore(directory).listProjects()).find((project) => project.id === remote.id)?.remote?.connectionEnabled, false);
+
+    const readded = await store.addRemoteProject(remoteInput, "/srv/repo");
+    assert.equal(readded.id, remote.id);
+    assert.equal(readded.remote?.connectionEnabled, false);
+
+    const local = await store.addProject(path.join(directory, "local-repo"));
+    await assert.rejects(store.setRemoteProjectConnectionEnabled(local.id, false), /不是远程项目/);
+  });
+});
+
 test("读取配置时拒绝非字符串快捷键", async () => {
   await withTemporaryStore(async (store, directory) => {
     await writeFile(path.join(directory, "config.json"), JSON.stringify({

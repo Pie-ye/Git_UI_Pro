@@ -67,6 +67,8 @@ contextBridge.exposeInMainWorld("gitUI", {
   renameProjectGroup: (groupId: string, name: string) => ipcRenderer.invoke("projects:renameGroup", groupId, name),
   deleteProjectGroup: (groupId: string) => ipcRenderer.invoke("projects:deleteGroup", groupId),
   setProjectGroup: (projectId: string, groupId?: string) => ipcRenderer.invoke("projects:setGroup", projectId, groupId),
+  setRemoteProjectConnectionEnabled: (projectId: string, enabled: boolean) =>
+    ipcRenderer.invoke("projects:setRemoteConnectionEnabled", projectId, enabled),
   markProjectOpened: (projectId: string) => ipcRenderer.invoke("projects:markOpened", projectId),
   removeRecentProject: (projectId: string) => ipcRenderer.invoke("projects:removeRecent", projectId),
   getUiPreferences: () => ipcRenderer.invoke("preferences:get"),

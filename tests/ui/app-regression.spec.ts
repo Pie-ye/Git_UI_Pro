@@ -468,6 +468,76 @@ test("项目内搜索框统一使用无蓝色外圈的焦点状态", async ({ pa
   await expectNeutralSearchFocus(".console-history-search");
 });
 
+test("远程项目可以暂停后台连接并从暂停页重新开启", async ({ page }, testInfo) => {
+  await openApp(page);
+  await page.getByRole("button", { name: "连接远程 Git 项目" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "连接远程仓库" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByLabel("SSH 主机").fill("offline.example.com");
+  await dialog.getByLabel("仓库绝对路径").fill("/srv/projects/Payload-SDK-3.16.0");
+  await dialog.getByRole("button", { name: "连接并添加" }).click();
+  await expect(dialog).toBeHidden();
+
+  const projectRow = page.locator(".project-rail-item", { hasText: "Payload-SDK-3.16.0" });
+  await expect(projectRow).toBeVisible();
+  const sidebarResize = page.locator(".sidebar-resize");
+  const resizeBox = await sidebarResize.boundingBox();
+  expect(resizeBox).not.toBeNull();
+  await page.mouse.move(resizeBox!.x + resizeBox!.width / 2, resizeBox!.y + 120);
+  await page.mouse.down();
+  await page.mouse.move(resizeBox!.x - 80, resizeBox!.y + 120);
+  await page.mouse.up();
+  await expect.poll(() => page.locator(".app-shell").evaluate((element) => getComputedStyle(element).getPropertyValue("--sidebar-width").trim())).toBe("180px");
+
+  const connectionSwitch = projectRow.getByRole("switch", { name: "关闭 Payload-SDK-3.16.0 的远程连接" });
+  await expect(connectionSwitch).toBeChecked();
+  await connectionSwitch.click();
+
+  await expect(projectRow.getByRole("switch", { name: "开启 Payload-SDK-3.16.0 的远程连接" })).not.toBeChecked();
+  await expect(projectRow).toContainText("连接已暂停");
+  await expect(projectRow).toContainText("已暂停");
+  const pausedNotice = page.getByRole("region", { name: "远程连接已暂停" });
+  await expect(pausedNotice).toBeVisible();
+  await expect(pausedNotice).toContainText("不会在后台轮询服务器");
+  const narrowLayout = await projectRow.evaluate((element) => {
+    const item = element.getBoundingClientRect();
+    const name = element.querySelector<HTMLElement>(".project-rail-name")!.getBoundingClientRect();
+    const branch = element.querySelector<HTMLElement>(".project-rail-branch")!.getBoundingClientRect();
+    const branchLabel = element.querySelector<HTMLElement>(".project-rail-branch span")!;
+    const connection = element.querySelector<HTMLElement>(".project-remote-connection-switch")!.getBoundingClientRect();
+    return {
+      itemRight: item.right,
+      connectionRight: connection.right,
+      nameTop: name.top,
+      branchTop: branch.top,
+      connectionTop: connection.top,
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+      statusCount: element.querySelectorAll(".project-status").length,
+      branchLabelDisplay: getComputedStyle(branchLabel).display
+    };
+  });
+  expect(narrowLayout.connectionRight).toBeLessThanOrEqual(narrowLayout.itemRight);
+  expect(Math.abs(narrowLayout.nameTop - narrowLayout.connectionTop)).toBeLessThanOrEqual(2);
+  expect(narrowLayout.branchTop).toBeGreaterThan(narrowLayout.connectionTop);
+  expect(narrowLayout.scrollWidth).toBeLessThanOrEqual(narrowLayout.clientWidth);
+  expect(narrowLayout.statusCount).toBe(0);
+  expect(narrowLayout.branchLabelDisplay).not.toBe("none");
+  await page.mouse.move(700, 700);
+  await page.waitForTimeout(2_100);
+  const pausedScreenshot = testInfo.outputPath("remote-connection-paused-narrow.png");
+  await page.screenshot({ path: pausedScreenshot, fullPage: false });
+  await testInfo.attach("remote-connection-paused-narrow", {
+    path: pausedScreenshot,
+    contentType: "image/png"
+  });
+
+  await pausedNotice.getByRole("button", { name: "开启远程连接" }).click();
+  await expect(pausedNotice).toBeHidden();
+  await expect(projectRow.getByRole("switch", { name: "关闭 Payload-SDK-3.16.0 的远程连接" })).toBeChecked();
+});
+
 for (const viewport of [
   { width: 850, height: 900 },
   { width: 700, height: 820 }

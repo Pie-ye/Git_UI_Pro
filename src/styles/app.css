@@ -3895,6 +3895,8 @@ button {
 /* Final SCM pass: closer to VS Code's source control density */
 .project-rail {
   --project-rail-content-gutter: 6px;
+  container-name: project-rail;
+  container-type: inline-size;
   grid-template-rows: 42px auto minmax(0, 1fr) auto;
   background: var(--panel);
 }
@@ -4198,6 +4200,18 @@ button {
   font-weight: 650;
 }
 
+.project-rail-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+
+.project-rail-heading .project-rail-name {
+  min-width: 0;
+}
+
 .project-rail-name-text {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4243,6 +4257,87 @@ button {
   min-width: 0;
   max-width: 100%;
   overflow: visible;
+}
+
+.project-rail-meta-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 4px;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.project-rail-item.remote-project {
+  border-color: color-mix(in srgb, var(--blue) 12%, var(--glass-edge));
+  background: color-mix(in srgb, var(--blue) 3%, var(--glass-fill));
+}
+
+.project-rail-item.remote-paused .project-rail-icon {
+  color: var(--muted-strong);
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+}
+
+.project-rail-item.remote-paused {
+  border-color: color-mix(in srgb, var(--border-strong) 54%, transparent);
+  background: color-mix(in srgb, var(--surface) 46%, transparent);
+}
+
+.project-remote-connection-tooltip {
+  display: inline-flex;
+  flex: 0 0 auto;
+  margin-left: 0;
+}
+
+.project-remote-connection-switch {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  width: 30px;
+  height: 18px;
+  border: 1px solid color-mix(in srgb, var(--border-strong) 76%, transparent);
+  border-radius: 999px;
+  padding: 2px;
+  color: var(--muted-strong);
+  background: color-mix(in srgb, var(--surface) 74%, transparent);
+  cursor: pointer;
+  transition: border-color 140ms ease, background-color 140ms ease;
+}
+
+.project-remote-connection-switch > span {
+  display: block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 1px 3px color-mix(in srgb, #000 22%, transparent);
+  transform: translateX(0);
+  transition: transform 140ms ease;
+}
+
+.project-remote-connection-switch.enabled {
+  border-color: color-mix(in srgb, var(--success) 48%, var(--border));
+  color: var(--accent-contrast);
+  background: color-mix(in srgb, var(--success) 78%, var(--surface));
+}
+
+.project-remote-connection-switch.enabled > span {
+  transform: translateX(12px);
+}
+
+.project-remote-connection-switch:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 62%, var(--border));
+}
+
+.project-remote-connection-switch:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 56%, transparent);
+  outline-offset: 2px;
+}
+
+.project-remote-connection-switch.pending {
+  cursor: wait;
+  opacity: 0.58;
 }
 
 .project-rail-branch-tooltip {
@@ -4334,6 +4429,34 @@ button {
   color: var(--success);
   border-color: color-mix(in srgb, var(--success) 26%, transparent);
   background: color-mix(in srgb, var(--success) 8%, transparent);
+}
+
+@container project-rail (max-width: 220px) {
+  .project-rail-item.remote-project {
+    grid-template-columns: 20px minmax(0, 1fr);
+    gap: 5px;
+    padding-right: 4px;
+    padding-left: 5px;
+  }
+
+  .project-rail-item.remote-project .project-rail-meta-badges {
+    flex-wrap: nowrap;
+    overflow: hidden;
+  }
+
+  .project-rail-item.remote-project .project-status-tooltip {
+    display: none;
+  }
+
+  .project-rail-item.remote-project .project-rail-branch-tooltip {
+    flex: 0 1 auto;
+    width: auto;
+    max-width: 100%;
+  }
+
+  .project-rail-item.remote-project .project-rail-branch {
+    width: auto;
+  }
 }
 
 .project-context-menu {
@@ -7937,6 +8060,66 @@ code,
 .git-dependency-secondary:disabled {
   cursor: default;
   opacity: 0.55;
+}
+
+.remote-connection-paused-grid {
+  position: relative;
+}
+
+.remote-connection-notice {
+  position: absolute;
+  z-index: 90;
+  inset: 0;
+  backdrop-filter: blur(12px);
+}
+
+.theme-light .remote-connection-notice {
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 8%, #eef5f7), #eef5f7 58%);
+}
+
+.theme-dark .remote-connection-notice {
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 9%, #10191f), #10191f 58%);
+}
+
+.remote-connection-card {
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
+  background: color-mix(in srgb, var(--panel) 96%, var(--accent));
+}
+
+.remote-connection-icon {
+  border-color: color-mix(in srgb, var(--accent) 44%, var(--border));
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+}
+
+.remote-connection-card .git-dependency-kicker {
+  color: var(--accent);
+}
+
+.remote-connection-address {
+  max-width: 100%;
+  margin-top: 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  overflow: hidden;
+  color: var(--muted-strong);
+  background: color-mix(in srgb, var(--sunken) 78%, transparent);
+  font-family: var(--mono-font);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-dependency-primary:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
+.git-dependency-primary .spin {
+  animation: graph-loading-spin 900ms linear infinite;
 }
 
 @media (max-width: 760px) {

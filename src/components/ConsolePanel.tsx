@@ -38,6 +38,7 @@ const TERMINAL_FONT_SIZE = 12;
 
 interface ConsolePanelProps {
   project?: GitProject;
+  disabledProjectIds: string[];
   theme: ThemeName;
   visible: boolean;
   maximized: boolean;
@@ -79,7 +80,7 @@ interface TerminalRuntime {
   captureState: TerminalCaptureState;
 }
 
-export function ConsolePanel({ project, theme, visible, maximized, onToggleMaximized, onHide, onConfirmCloseTabs, onConfirmClearHistory }: ConsolePanelProps) {
+export function ConsolePanel({ project, disabledProjectIds, theme, visible, maximized, onToggleMaximized, onHide, onConfirmCloseTabs, onConfirmClearHistory }: ConsolePanelProps) {
   const [tabs, setTabs] = useState<TerminalTab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [activeHasSelection, setActiveHasSelection] = useState(false);
@@ -98,6 +99,7 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
   const terminalSeedRef = useRef(0);
   const themeRef = useRef<ThemeName>(theme);
   const loadedHistoryProjectsRef = useRef(new Set<string>());
+  const disabledProjectKey = disabledProjectIds.join("|");
 
   const projectTabs = useMemo(() => (project ? tabs.filter((tab) => tab.projectId === project.id) : []), [project, tabs]);
   const activeTab = useMemo(() => projectTabs.find((tab) => tab.id === activeTabId) ?? projectTabs[0] ?? null, [activeTabId, projectTabs]);
@@ -112,6 +114,29 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
   useEffect(() => {
     tabsRef.current = tabs;
   }, [tabs]);
+
+  useEffect(() => {
+    if (!disabledProjectKey) {
+      return;
+    }
+
+    const disabledProjects = new Set(disabledProjectIds);
+    const closingTabs = tabsRef.current.filter((tab) => disabledProjects.has(tab.projectId));
+    if (closingTabs.length === 0) {
+      return;
+    }
+
+    const closingTabIds = new Set(closingTabs.map((tab) => tab.id));
+    closingTabs.forEach((tab) => disposeTerminalRuntime(tab.id));
+    closingTabs.forEach((tab) => activeByProjectRef.current.delete(tab.projectId));
+    const remainingTabs = renumberTerminalTabs(tabsRef.current.filter((tab) => !closingTabIds.has(tab.id)));
+    tabsRef.current = remainingTabs;
+    setTabs(remainingTabs);
+    setActiveTabId((current) => current && closingTabIds.has(current) ? null : current);
+    setHistoryOpen(false);
+    setRenamingTabId(null);
+    setRenameDraft("");
+  }, [disabledProjectKey]);
 
   useEffect(() => {
     activeTabIdRef.current = activeTab?.id ?? activeTabId;
@@ -198,7 +223,7 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
   }, [project?.id]);
 
   useEffect(() => {
-    if (!visible || !project) {
+    if (!visible || !project || project.remote?.connectionEnabled === false) {
       return;
     }
 
@@ -216,7 +241,7 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
     }
 
     createTerminalTab(project);
-  }, [project?.id, visible]);
+  }, [project?.id, project?.remote?.connectionEnabled, visible]);
 
   useEffect(() => {
     if (!visible || !activeTab) {
@@ -244,6 +269,10 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
 
   function createTerminalTab(targetProject = project) {
     if (!targetProject) {
+      return;
+    }
+    if (targetProject.remote?.connectionEnabled === false) {
+      setTerminalError("远程连接已暂停，请先开启连接后再创建终端。");
       return;
     }
 
@@ -855,7 +884,7 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
             </div>
           ))}
           <PathTooltip content="新建终端" className="console-icon-tooltip">
-            <button type="button" className="console-tab-add" aria-label="新建终端" onClick={() => createTerminalTab(project)} disabled={!project}>
+            <button type="button" className="console-tab-add" aria-label="新建终端" onClick={() => createTerminalTab(project)} disabled={!project || project.remote?.connectionEnabled === false}>
               <Plus size={14} />
             </button>
           </PathTooltip>
@@ -966,10 +995,12 @@ export function ConsolePanel({ project, theme, visible, maximized, onToggleMaxim
         ))}
         {visible && project && projectTabs.length === 0 ? (
           <div className="console-empty-state">
-            <p>当前项目没有打开的终端。</p>
-            <button type="button" className="text-button" onClick={() => createTerminalTab(project)}>
-              新建终端
-            </button>
+            <p>{project.remote?.connectionEnabled === false ? "远程连接已暂停。" : "当前项目没有打开的终端。"}</p>
+            {project.remote?.connectionEnabled !== false ? (
+              <button type="button" className="text-button" onClick={() => createTerminalTab(project)}>
+                新建终端
+              </button>
+            ) : null}
           </div>
         ) : null}
         {visible && !project ? <div className="console-empty-state">选择一个项目后使用控制台。</div> : null}

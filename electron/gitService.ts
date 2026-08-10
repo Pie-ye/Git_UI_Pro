@@ -3973,6 +3973,9 @@ export function normalizeRepositoryTarget(location: RepositoryLocation): Reposit
   if (!location.remote) {
     return { path: location.path };
   }
+  if (location.remote.connectionEnabled === false) {
+    throw new Error("远程连接已暂停，请先开启连接。");
+  }
   if (
     location.remote.type !== "ssh" ||
     typeof location.remote.host !== "string" ||
@@ -4002,7 +4005,8 @@ export function normalizeRepositoryTarget(location: RepositoryLocation): Reposit
       host: input.host.trim(),
       username: input.username?.trim() || undefined,
       port: input.port,
-      identityFile: input.identityFile?.trim() || undefined
+      identityFile: input.identityFile?.trim() || undefined,
+      connectionEnabled: true
     }
   };
 }

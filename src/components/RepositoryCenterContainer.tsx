@@ -101,15 +101,15 @@ export function RepositoryCenterContainer({
   projectsRef.current = projects;
 
   useEffect(() => {
-    setRepositoryStatus(project?.status);
-  }, [project?.id, project?.status]);
+    setRepositoryStatus(project?.remote?.connectionEnabled === false ? undefined : project?.status);
+  }, [project?.id, project?.remote?.connectionEnabled, project?.status]);
 
   const loadAll = useCallback(async (
     projectSource: GitProject[] = projectsRef.current,
     options: { sections?: readonly RepositoryCenterSection[] } = {}
   ): Promise<boolean> => {
     const loadToken = ++loadTokenRef.current;
-    const selectedProject = projectRef.current;
+    const selectedProject = projectRef.current?.remote?.connectionEnabled === false ? undefined : projectRef.current;
     const requestedSections = new Set(options.sections ?? Object.keys(emptyCenterData()) as RepositoryCenterSection[]);
     const shouldLoad = (section: RepositoryCenterSection) => requestedSections.has(section);
     const needsLibrary = shouldLoad("projects") || shouldLoad("groups") || shouldLoad("recent");
@@ -298,7 +298,7 @@ export function RepositoryCenterContainer({
     loadedSectionsRef.current.clear();
     loadTokenRef.current += 1;
     setActiveTab(initialTab ?? "recovery");
-  }, [initialTab, open, project?.id]);
+  }, [initialTab, open, project?.id, project?.remote?.connectionEnabled]);
 
   useEffect(() => {
     if (!open) {
@@ -329,7 +329,7 @@ export function RepositoryCenterContainer({
         }
       }
     })();
-  }, [activeTab, initialTab, loadAll, open, project?.id]);
+  }, [activeTab, initialTab, loadAll, open, project?.id, project?.remote?.connectionEnabled]);
 
   const handleTabChange = useCallback((tab: RepositoryCenterTab) => {
     setActiveTab(tab);
@@ -427,6 +427,9 @@ export function RepositoryCenterContainer({
   function requireProject(): GitProject {
     if (!project) {
       throw new Error("请先选择一个 Git 项目。");
+    }
+    if (project.remote?.connectionEnabled === false) {
+      throw new Error("远程连接已暂停，请先开启连接。");
     }
     return project;
   }
@@ -897,7 +900,7 @@ function projectSummary(project: GitProject): RepositoryProjectSummary {
     changedFiles: status ? status.stagedCount + status.unstagedCount + status.untrackedCount + status.conflictedCount : 0,
     ahead: status?.ahead ?? 0,
     behind: status?.behind ?? 0,
-    statusError: project.statusError,
+    statusError: project.remote?.connectionEnabled === false ? "远程连接已暂停" : project.statusError,
     lastOpenedAt: project.lastOpenedAt
   };
 }

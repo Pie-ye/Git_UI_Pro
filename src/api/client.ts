@@ -130,11 +130,28 @@ export const apiClient = {
   },
 
   async inspectSshHost(host: string, port?: number): Promise<SshHostInspection> {
-    return desktopBridge().inspectSshHost(host, port);
+    if (window.gitUI) {
+      return window.gitUI.inspectSshHost(host, port);
+    }
+    await wait(mockDelay);
+    return {
+      token: `mock-host-${Date.now()}`,
+      host,
+      port: port ?? 22,
+      status: "trusted",
+      currentFingerprints: [],
+      scannedFingerprints: [],
+      expiresAt: new Date(Date.now() + 60_000).toISOString()
+    };
   },
 
   async trustSshHost(token: string, replaceExisting: boolean): Promise<boolean> {
-    return desktopBridge().trustSshHost(token, replaceExisting);
+    if (window.gitUI) {
+      return window.gitUI.trustSshHost(token, replaceExisting);
+    }
+    void token;
+    void replaceExisting;
+    return true;
   },
 
   async startTerminal(project: GitProject): Promise<TerminalSessionInfo> {
@@ -290,7 +307,7 @@ export const apiClient = {
 
     const result = await this.testRemoteProject(input);
     const now = new Date().toISOString();
-    return {
+    const project: GitProject = {
       id: crypto.randomUUID(),
       name: result.projectName ?? "远程项目",
       path: result.repositoryRoot ?? input.repositoryPath,
@@ -299,13 +316,16 @@ export const apiClient = {
         host: input.host,
         username: input.username,
         port: input.port,
-        identityFile: input.identityFile
+        identityFile: input.identityFile,
+        connectionEnabled: true
       },
       favorite: false,
       lastOpenedAt: now,
       createdAt: now,
       updatedAt: now
     };
+    mockProjects.push(project);
+    return project;
   },
 
   async chooseAndScanProjects(): Promise<GitProject[]> {
@@ -343,6 +363,24 @@ export const apiClient = {
 
     await wait(mockDelay);
     return mockProjects.find((project) => project.id === projectId) ? { ...mockProjects.find((project) => project.id === projectId)!, favorite } : undefined;
+  },
+
+  async setRemoteProjectConnectionEnabled(projectId: string, enabled: boolean): Promise<GitProject> {
+    if (window.gitUI) {
+      return window.gitUI.setRemoteProjectConnectionEnabled(projectId, enabled);
+    }
+
+    await wait(mockDelay);
+    const project = mockProjects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error("项目不存在。");
+    }
+    if (!project.remote) {
+      throw new Error("该项目不是远程项目。");
+    }
+    project.remote = { ...project.remote, connectionEnabled: enabled };
+    project.updatedAt = new Date().toISOString();
+    return { ...project, remote: { ...project.remote } };
   },
 
   async getProjectStatus(project: GitProject): Promise<GitStatusSummary> {
@@ -1268,6 +1306,9 @@ function errorMessage(error: unknown): string {
 }
 
 function repositoryTarget(project: GitProject): RepositoryTarget {
+  if (project.remote?.connectionEnabled === false) {
+    throw new Error("远程连接已暂停，请先开启连接。");
+  }
   return {
     path: project.path,
     remote: project.remote

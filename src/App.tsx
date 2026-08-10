@@ -13,7 +13,9 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Plus,
+  Power,
   RefreshCw,
+  ServerOff,
   Sun,
   Terminal,
   Trash2,
@@ -476,7 +478,17 @@ export function App() {
     () => projects.find((project) => project.id === selectedProjectId) ?? projects[0],
     [projects, selectedProjectId]
   );
+  const selectedRemoteConnectionPaused = Boolean(selectedProject?.remote && selectedProject.remote.connectionEnabled === false);
   const selectedProjectGitReady = gitDependency.status === "ready" || Boolean(selectedProject?.remote);
+  const selectedProjectConnectionReady = selectedProjectGitReady && !selectedRemoteConnectionPaused;
+  const hasEnabledRemoteProjects = useMemo(
+    () => projects.some((project) => Boolean(project.remote) && project.remote?.connectionEnabled !== false),
+    [projects]
+  );
+  const disabledRemoteProjectIds = useMemo(
+    () => projects.filter((project) => project.remote?.connectionEnabled === false).map((project) => project.id),
+    [projects]
+  );
   const activeWorktreeTab = useMemo(
     () => worktreeTabs.find((tab) => tab.id === activeWorktreeTabId) ?? worktreeTabs[0],
     [activeWorktreeTabId, worktreeTabs]
@@ -512,7 +524,7 @@ export function App() {
         setConsoleVisibility(!consoleOpen);
         return;
       }
-      if (!selectedProject || !selectedProjectGitReady) {
+      if (!selectedProject || !selectedProjectConnectionReady) {
         notifyInfo("请先选择可用的 Git 仓库");
         return;
       }
@@ -523,7 +535,7 @@ export function App() {
 
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
-  }, [consoleOpen, leftCollapsed, selectedProject?.id, selectedProjectGitReady, uiPreferences.pullStrategy, uiPreferences.shortcuts]);
+  }, [consoleOpen, leftCollapsed, selectedProject?.id, selectedProjectConnectionReady, uiPreferences.pullStrategy, uiPreferences.shortcuts]);
 
   useEffect(() => {
     window.clearTimeout(selectedProjectLoadTimerRef.current);
@@ -537,7 +549,7 @@ export function App() {
       return;
     }
 
-    if (!selectedProjectGitReady) {
+    if (!selectedProjectConnectionReady) {
       setGraphLoading(false);
       setCommits([]);
       setGraphHistoryRefs([]);
@@ -568,10 +580,10 @@ export function App() {
     }, PROJECT_SELECTION_LOAD_DELAY_MS);
 
     return () => window.clearTimeout(selectedProjectLoadTimerRef.current);
-  }, [selectedProject?.id, selectedProjectGitReady]);
+  }, [selectedProject?.id, selectedProjectConnectionReady]);
 
   useEffect(() => {
-    if (!selectedProject || !selectedProjectGitReady) {
+    if (!selectedProject || !selectedProjectConnectionReady) {
       return;
     }
 
@@ -608,7 +620,7 @@ export function App() {
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [selectedProject?.id, selectedProject?.path, selectedProjectGitReady]);
+  }, [selectedProject?.id, selectedProject?.path, selectedProjectConnectionReady]);
 
   useEffect(() => {
     if (gitDependency.status !== "ready") {
@@ -633,10 +645,10 @@ export function App() {
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", refresh);
     };
-  }, [gitDependency.status, projects.some((project) => Boolean(project.remote))]);
+  }, [gitDependency.status]);
 
   useEffect(() => {
-    if (!projects.some((project) => Boolean(project.remote))) {
+    if (!hasEnabledRemoteProjects) {
       return;
     }
 
@@ -653,7 +665,7 @@ export function App() {
       window.clearTimeout(initialTimerId);
       window.clearInterval(intervalId);
     };
-  }, [projects.some((project) => Boolean(project.remote))]);
+  }, [hasEnabledRemoteProjects]);
 
   async function loadInitialData() {
     try {
@@ -717,7 +729,7 @@ export function App() {
     }
 
     notifySuccess("Git 检测通过", result.stdout.trim());
-    if (selectedProject) {
+    if (selectedProject && selectedProject.remote?.connectionEnabled !== false) {
       await loadProjectData(selectedProject);
     }
     void refreshProjectListStatuses();
@@ -728,6 +740,10 @@ export function App() {
   }
 
   function requireGitReady(actionLabel = "该操作", project: GitProject | null | undefined = selectedProject) {
+    if (project?.remote?.connectionEnabled === false) {
+      notifyInfo(`${actionLabel}需要先开启远程连接`);
+      return false;
+    }
     if (gitDependency.status === "ready" || Boolean(project?.remote)) {
       return true;
     }
@@ -1052,7 +1068,7 @@ export function App() {
   ) {
     const remoteMode = mode === "remote";
     projectSnapshot = projectSnapshot.filter((project) => remoteMode
-      ? Boolean(project.remote) && project.id !== selectedProjectIdRef.current
+      ? Boolean(project.remote) && project.remote?.connectionEnabled !== false && project.id !== selectedProjectIdRef.current
       : !project.remote && gitDependency.status === "ready");
     const busyRef = remoteMode ? remoteProjectListRefreshBusyRef : projectListRefreshBusyRef;
     if (isDisposed() || busyRef.current || projectSnapshot.length === 0) {
@@ -1091,6 +1107,9 @@ export function App() {
       setProjects((current) => {
         let changed = false;
         const nextProjects = current.map((project) => {
+          if (project.remote?.connectionEnabled === false) {
+            return project;
+          }
           const nextStatus = statusUpdates.get(project.id);
           const statusError = statusErrors.get(project.id);
           if (statusError) {
@@ -1530,6 +1549,48 @@ export function App() {
     } catch (error) {
       setProjects(previousProjects);
       notifyError(error instanceof Error ? error.message : "保存项目置顶状态失败");
+    }
+  }
+
+  async function handleSetRemoteProjectConnectionEnabled(projectId: string, enabled: boolean) {
+    const currentProject = projectsRef.current.find((project) => project.id === projectId);
+    if (!currentProject?.remote) {
+      return;
+    }
+
+    try {
+      const savedProject = await apiClient.setRemoteProjectConnectionEnabled(projectId, enabled);
+      const latestProject = projectsRef.current.find((project) => project.id === projectId) ?? currentProject;
+      const nextProject: GitProject = {
+        ...latestProject,
+        ...savedProject,
+        remote: {
+          ...latestProject.remote!,
+          ...savedProject.remote!,
+          connectionEnabled: enabled
+        },
+        status: enabled ? latestProject.status : undefined,
+        statusError: undefined
+      };
+      const nextProjects = projectsRef.current.map((project) => project.id === projectId ? nextProject : project);
+      projectsRef.current = nextProjects;
+      setProjects(nextProjects);
+      invalidateProjectCaches(projectId);
+
+      if (!enabled) {
+        nextProjectLoadRequestId();
+        rememberStatus(`${nextProject.name} 的远程连接已暂停`);
+        notifySuccess("已暂停远程连接", "后台状态刷新和 SSH 终端已停止。");
+        return;
+      }
+
+      rememberStatus(`${nextProject.name} 的远程连接已开启`);
+      notifySuccess("已开启远程连接", "将重新读取远程仓库状态。");
+      if (selectedProjectIdRef.current !== projectId) {
+        void refreshProjectListStatuses([nextProject], undefined, "remote");
+      }
+    } catch (error) {
+      notifyError(error instanceof Error ? cleanElectronError(error.message) : "保存远程连接状态失败");
     }
   }
 
@@ -2780,6 +2841,7 @@ export function App() {
           onRemoveProject={handleRemoveProject}
           onReorderProjects={(projectIds) => void handleReorderProjects(projectIds)}
           onToggleProjectPinned={(projectId) => void handleToggleProjectPinned(projectId)}
+          onSetRemoteConnectionEnabled={handleSetRemoteProjectConnectionEnabled}
           onSwitchBranch={(project) => void switchBranchFromToolbar(project)}
           footer={renderSidebarControls(false)}
         />
@@ -2814,7 +2876,13 @@ export function App() {
             />
           </section>
         ) : (
-          <section className="main-grid">
+          <section className={`main-grid ${selectedRemoteConnectionPaused ? "remote-connection-paused-grid" : ""}`}>
+            {selectedRemoteConnectionPaused && selectedProject ? (
+              <RemoteConnectionPausedNotice
+                project={selectedProject}
+                onEnable={() => handleSetRemoteProjectConnectionEnabled(selectedProject.id, true)}
+              />
+            ) : null}
             <div
               className={`source-control-pane ${changesPanelOpen ? "" : "changes-collapsed"} ${graphPanelOpen ? "" : "graph-collapsed"} ${
                 sourcePaneHeight !== DEFAULT_SOURCE_PANE_HEIGHT ? "source-pane-customized" : ""
@@ -2899,8 +2967,9 @@ export function App() {
                 <div className="console-resize" hidden={!consoleOpen} onMouseDown={(event) => beginResize("console", event)} />
                 <ConsolePanel
                   project={selectedProject}
+                  disabledProjectIds={disabledRemoteProjectIds}
                   theme={resolvedTheme}
-                  visible={consoleOpen}
+                  visible={consoleOpen && !selectedRemoteConnectionPaused}
                   maximized={consoleMaximized}
                   onToggleMaximized={toggleConsoleMaximized}
                   onHide={() => setConsoleVisibility(false)}
@@ -2949,7 +3018,7 @@ export function App() {
           }}
           onProjectsChange={(nextProjects) => setProjects(orderProjectsWithPinnedFirst(nextProjects))}
           onLibraryChange={setProjectLibrary}
-          onRepositoryChange={() => (selectedProject ? loadProjectData(selectedProject) : Promise.resolve())}
+          onRepositoryChange={() => (selectedProject && selectedProject.remote?.connectionEnabled !== false ? loadProjectData(selectedProject) : Promise.resolve())}
           onPreferencesChange={applyUiPreferences}
         />
         <GitOperationCenter
@@ -3065,6 +3134,58 @@ function GitDependencyNotice({
             <button type="button" className="git-dependency-secondary" onClick={onRecheck} disabled={checking}>
               <RefreshCw size={15} />
               重新检测
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function RemoteConnectionPausedNotice({ project, onEnable }: { project: GitProject; onEnable: () => Promise<void> }) {
+  const [enabling, setEnabling] = useState(false);
+
+  async function enableConnection() {
+    if (enabling) {
+      return;
+    }
+    setEnabling(true);
+    try {
+      await onEnable();
+    } finally {
+      setEnabling(false);
+    }
+  }
+
+  return (
+    <section className="git-dependency-notice remote-connection-notice" aria-label="远程连接已暂停">
+      <div className="git-dependency-card remote-connection-card">
+        <div className="git-dependency-icon remote-connection-icon" aria-hidden="true">
+          <ServerOff size={24} />
+        </div>
+        <div className="git-dependency-content">
+          <span className="git-dependency-kicker">远程资源控制</span>
+          <h2>远程连接已暂停</h2>
+          <p>软件不会连接 {project.name}，也不会在后台轮询服务器。连接设置和项目记录仍保留在本机。</p>
+
+          <div className="git-dependency-steps" aria-label="已暂停的后台任务">
+            <div>
+              <span>1</span>
+              <strong>停止状态刷新</strong>
+              <p>不再周期性探测提交、分支和工作区状态。</p>
+            </div>
+            <div>
+              <span>2</span>
+              <strong>结束 SSH 终端</strong>
+              <p>该项目已有会话会关闭，也不会自动创建新会话。</p>
+            </div>
+          </div>
+
+          <div className="remote-connection-address">{remoteProjectAddress(project)}</div>
+          <div className="git-dependency-actions">
+            <button type="button" className="git-dependency-primary" onClick={() => void enableConnection()} disabled={enabling}>
+              {enabling ? <RefreshCw size={15} className="spin" /> : <Power size={15} />}
+              {enabling ? "正在开启" : "开启远程连接"}
             </button>
           </div>
         </div>

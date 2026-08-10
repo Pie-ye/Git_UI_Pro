@@ -18,6 +18,7 @@ export interface SshConnection {
   username?: string;
   port?: number;
   identityFile?: string;
+  connectionEnabled?: boolean;
 }
 
 export interface RepositoryTarget {

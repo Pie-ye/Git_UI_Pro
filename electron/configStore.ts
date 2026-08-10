@@ -20,6 +20,7 @@ export interface SshConnection {
   username?: string;
   port?: number;
   identityFile?: string;
+  connectionEnabled?: boolean;
 }
 
 export interface RemoteProjectInput {
@@ -267,6 +268,33 @@ export class ConfigStore {
     });
   }
 
+  async setRemoteProjectConnectionEnabled(projectId: string, enabled: boolean): Promise<GitProject> {
+    return this.enqueue(async () => {
+      const config = await this.readUnlocked();
+      const projectIndex = config.projects.findIndex((project) => project.id === projectId);
+      if (projectIndex < 0) {
+        throw new Error("项目不存在");
+      }
+
+      const currentProject = config.projects[projectIndex];
+      if (!currentProject.remote) {
+        throw new Error("该项目不是远程项目");
+      }
+
+      const project: GitProject = {
+        ...currentProject,
+        remote: {
+          ...currentProject.remote,
+          connectionEnabled: enabled
+        },
+        updatedAt: new Date().toISOString()
+      };
+      config.projects[projectIndex] = project;
+      await this.writeUnlocked(config);
+      return project;
+    });
+  }
+
   async markProjectOpened(projectId: string): Promise<GitProject> {
     return this.enqueue(async () => {
       const config = await this.readUnlocked();
@@ -328,7 +356,8 @@ export class ConfigStore {
         host: input.host.trim(),
         username: input.username?.trim() || undefined,
         port: input.port,
-        identityFile: input.identityFile?.trim() || undefined
+        identityFile: input.identityFile?.trim() || undefined,
+        connectionEnabled: true
       };
       const normalizedPath = normalizeRemotePath(repositoryRoot);
       const existing = config.projects.find(
@@ -338,7 +367,10 @@ export class ConfigStore {
       if (existing) {
         const updatedProject: GitProject = {
           ...existing,
-          remote,
+          remote: {
+            ...remote,
+            connectionEnabled: existing.remote?.connectionEnabled !== false
+          },
           updatedAt: new Date().toISOString()
         };
         config.projects = config.projects.map((project) => (project.id === existing.id ? updatedProject : project));
@@ -498,7 +530,11 @@ function parseConfig(raw: string): AppConfig {
     throw new Error("config.json 缺少有效的 projects 列表");
   }
 
-  const projects = orderProjectsWithPinnedFirst(parsed.projects.map((project) => ({ ...project, favorite: Boolean(project.favorite) })));
+  const projects = orderProjectsWithPinnedFirst(parsed.projects.map((project) => ({
+    ...project,
+    remote: project.remote ? { ...project.remote, connectionEnabled: project.remote.connectionEnabled !== false } : undefined,
+    favorite: Boolean(project.favorite)
+  })));
   return {
     ...defaultConfig,
     ...parsed,
