@@ -9,7 +9,8 @@ const DEFAULT_GITEE_OWNER = "zjx_master";
 const DEFAULT_GITEE_REPOSITORY = "git-ui-pro";
 const UPDATE_MANIFEST_NAME = "update-manifest.json";
 const REQUEST_TIMEOUT_MS = 30_000;
-const UPLOAD_TIMEOUT_MS = 10 * 60_000;
+const UPLOAD_TIMEOUT_MS = 30 * 60_000;
+const UPLOAD_IDLE_TIMEOUT_MS = 5 * 60_000;
 const STABLE_TAG_PATTERN = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 export function createGiteeUpdateManifest(tagName, installer) {
@@ -96,8 +97,13 @@ export async function syncGiteeRelease(options = {}) {
   }
 
   const uploadNames = [...files.keys(), UPDATE_MANIFEST_NAME];
+  const uploadEntries = [
+    `${installerName}.blockmap`,
+    "latest.yml",
+    installerName
+  ].map((name) => [name, files.get(name)]);
   await gitee.removeNamedAssets(release.id, new Set(uploadNames));
-  for (const [name, filename] of files) {
+  for (const [name, filename] of uploadEntries) {
     console.log(`正在上传 Gitee Release 附件：${name}`);
     await gitee.uploadAsset(release.id, name, { filePath: filename });
     console.log(`Gitee Release 附件上传完成：${name}`);
@@ -214,7 +220,8 @@ function createGiteeClient({ owner, repository, token, fetchImpl = fetch, upload
         token,
         filename,
         source,
-        timeoutMs: UPLOAD_TIMEOUT_MS
+        timeoutMs: UPLOAD_TIMEOUT_MS,
+        idleTimeoutMs: UPLOAD_IDLE_TIMEOUT_MS
       });
     },
 
@@ -229,7 +236,7 @@ function createGiteeClient({ owner, repository, token, fetchImpl = fetch, upload
   };
 }
 
-async function uploadMultipartAsset({ url, token, filename, source, timeoutMs }) {
+async function uploadMultipartAsset({ url, token, filename, source, timeoutMs, idleTimeoutMs }) {
   const boundary = `----git-ui-pro-${randomUUID()}`;
   const safeFilename = filename.replace(/["\r\n]/g, "_");
   const prefix = Buffer.from(
@@ -251,6 +258,8 @@ async function uploadMultipartAsset({ url, token, filename, source, timeoutMs })
 
   await new Promise((resolve, reject) => {
     let fileStream;
+    let uploadedBytes = 0;
+    let nextProgressPercent = 10;
     let settled = false;
     const finish = (callback, value) => {
       if (settled) {
@@ -293,8 +302,21 @@ async function uploadMultipartAsset({ url, token, filename, source, timeoutMs })
       });
     });
     const timeoutId = setTimeout(() => {
-      request.destroy(new Error(`上传 Gitee Release 附件 ${filename} 超时。`));
+      request.destroy(
+        new Error(
+          `上传 Gitee Release 附件 ${filename} 超过 ${Math.round(timeoutMs / 60_000)} 分钟` +
+            `（已传输 ${formatMegabytes(uploadedBytes)} / ${formatMegabytes(fileSize)}）。`
+        )
+      );
     }, timeoutMs);
+    request.setTimeout(idleTimeoutMs, () => {
+      request.destroy(
+        new Error(
+          `上传 Gitee Release 附件 ${filename} 连续 ${Math.round(idleTimeoutMs / 60_000)} 分钟无网络进度` +
+            `（已传输 ${formatMegabytes(uploadedBytes)} / ${formatMegabytes(fileSize)}）。`
+        )
+      );
+    });
     request.on("error", (error) => {
       fileStream?.destroy();
       finish(reject, new Error(`上传 Gitee Release 附件 ${filename} 失败：${error.message}`));
@@ -303,12 +325,28 @@ async function uploadMultipartAsset({ url, token, filename, source, timeoutMs })
     if (source.filePath) {
       fileStream = createReadStream(source.filePath);
       fileStream.on("error", (error) => request.destroy(error));
+      fileStream.on("data", (chunk) => {
+        uploadedBytes += chunk.length;
+        const progressPercent = Math.floor((uploadedBytes / fileSize) * 100);
+        if (progressPercent >= nextProgressPercent) {
+          console.log(
+            `Gitee Release 附件传输进度：${filename} ${progressPercent}%` +
+              `（${formatMegabytes(uploadedBytes)} / ${formatMegabytes(fileSize)}）`
+          );
+          nextProgressPercent = Math.min(100, progressPercent + 10);
+        }
+      });
       fileStream.on("end", () => request.end(suffix));
       fileStream.pipe(request, { end: false });
       return;
     }
+    uploadedBytes = source.data.length;
     request.end(Buffer.concat([source.data, suffix]));
   });
+}
+
+function formatMegabytes(bytes) {
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 async function sha256File(filename) {

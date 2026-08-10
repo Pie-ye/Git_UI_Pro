@@ -48,6 +48,7 @@ jobs:
             --pattern "latest.yml"
 
       - name: Repair Gitee release assets
+        timeout-minutes: 35
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           GITHUB_TOKEN: ${{ github.token }}

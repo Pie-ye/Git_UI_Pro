@@ -108,7 +108,7 @@ Actions 只上传安装包、必要的 blockmap 和 Windows `latest.yml`，不�
 
 当工作流由 `v*` 格式 tag 触发时，会在 Windows 和 Linux 构建完成后自动创建 GitHub Release，并把安装包上传到该 Release。随后工作流使用 `scripts/sync-gitee-release.mjs` 创建或更新同标签的 Gitee Release，上传 Windows 安装包、blockmap、`latest.yml` 和最后生成的 SHA-256 更新清单。
 
-Gitee 附件采用文件流上传，避免将约 80 MB 的 Windows 安装包整体载入 Actions 的 Node.js 内存；全部上传完成后还会重新读取附件列表，只有安装包、blockmap、`latest.yml` 和 `update-manifest.json` 均存在时才视为同步成功。
+Gitee 附件采用文件流上传，避免将约 80 MB 的 Windows 安装包整体载入 Actions 的 Node.js 内存。上传时先发布体积较小的 blockmap 和 `latest.yml`，再以最长 30 分钟上传安装包，并输出每 10% 的传输进度；全部上传完成后还会重新读取附件列表，只有安装包、blockmap、`latest.yml` 和 `update-manifest.json` 均存在时才视为同步成功。
 
 首次启用国内镜像前，需要在 GitHub 仓库 `Settings -> Secrets and variables -> Actions` 中新增仓库密钥 `GITEE_TOKEN`。令牌由 Gitee 个人访问令牌页面创建，并需具备当前公开仓库的发行版创建、修改与附件上传权限。令牌只提供给 Actions，不写入代码、安装包或客户端。未配置该密钥时 GitHub Release 仍会正常发布，但工作流会给出警告，Gitee 国内更新源不会推进到新版本。
 

@@ -95,6 +95,7 @@ jobs:
           files: release-artifacts/**/*
 
       - name: Publish Gitee update mirror
+        timeout-minutes: 35
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           GITHUB_TOKEN: ${{ github.token }}

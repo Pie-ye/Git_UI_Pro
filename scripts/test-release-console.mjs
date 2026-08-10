@@ -356,10 +356,11 @@ test("Gitee 镜像发布时先创建发行版并最后上传校验清单", async
       }
       throw new Error(`未处理的镜像请求：${options.method ?? "GET"} ${url}`);
     };
-    const uploadImpl = async ({ url, token, filename, source, timeoutMs }) => {
+    const uploadImpl = async ({ url, token, filename, source, timeoutMs, idleTimeoutMs }) => {
       assert.equal(new URL(url).pathname, "/api/v5/repos/zjx_master/git-ui-pro/releases/26/attach_files");
       assert.equal(token, "gitee-secret");
-      assert.equal(timeoutMs, 10 * 60_000);
+      assert.equal(timeoutMs, 30 * 60_000);
+      assert.equal(idleTimeoutMs, 5 * 60_000);
       assert.equal(Boolean(source.filePath) || Buffer.isBuffer(source.data), true);
       uploads.push(filename);
       uploadedAssets.push({ id: uploads.length, name: filename });
@@ -377,7 +378,7 @@ test("Gitee 镜像发布时先创建发行版并最后上传校验清单", async
       uploadImpl
     });
 
-    assert.deepEqual(uploads, [installer, `${installer}.blockmap`, "latest.yml", "update-manifest.json"]);
+    assert.deepEqual(uploads, [`${installer}.blockmap`, "latest.yml", installer, "update-manifest.json"]);
     assert.equal(result.releaseUrl, `https://gitee.com/zjx_master/git-ui-pro/releases/tag/${tagName}`);
     assert.equal(requests.filter((request) => request.method === "POST").length, 1);
     assert.equal(requests.filter((request) => request.path.endsWith("/attach_files")).length, 2);
