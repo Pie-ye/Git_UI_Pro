@@ -61,6 +61,8 @@ const emptyWorktree: WorktreeState = {
 };
 
 const defaultGraphHistoryFilter = (): GitHistoryFilter => ({ mode: "auto" });
+const cloneGraphHistoryFilter = (filter: GitHistoryFilter): GitHistoryFilter =>
+  filter.mode === "custom" ? { mode: "custom", refIds: [...(filter.refIds ?? [])] } : { mode: filter.mode };
 
 const DEFAULT_SOURCE_PANE_HEIGHT = 320;
 const DEFAULT_CONSOLE_HEIGHT = 240;
@@ -194,6 +196,7 @@ export function App() {
   const remoteProjectListRefreshBusyRef = useRef(false);
   const graphLoadingRef = useRef(false);
   const graphHistoryFilterRef = useRef<GitHistoryFilter>(graphHistoryFilter);
+  const graphHistoryFiltersByProjectRef = useRef(new Map<string, GitHistoryFilter>());
   const graphHistoryQueryRef = useRef<AdvancedHistoryQuery>(graphHistoryQuery);
   const graphHistoryRefsRef = useRef<GitHistoryRef[]>(graphHistoryRefs);
   const selectedProjectLoadTimerRef = useRef<number | undefined>();
@@ -536,7 +539,6 @@ export function App() {
   useEffect(() => {
     window.clearTimeout(selectedProjectLoadTimerRef.current);
     const requestId = nextProjectLoadRequestId();
-    const nextHistoryFilter = defaultGraphHistoryFilter();
 
     if (!selectedProject) {
       setGraphLoading(false);
@@ -544,6 +546,10 @@ export function App() {
       setGraphHistoryNextSkip(0);
       return;
     }
+
+    const nextHistoryFilter = cloneGraphHistoryFilter(
+      graphHistoryFiltersByProjectRef.current.get(selectedProject.id) ?? defaultGraphHistoryFilter()
+    );
 
     if (!selectedProjectConnectionReady) {
       setGraphLoading(false);
@@ -557,6 +563,7 @@ export function App() {
       return;
     }
 
+    graphHistoryFilterRef.current = nextHistoryFilter;
     setGraphHistoryFilter(nextHistoryFilter);
     setGraphHistoryQuery({});
     setGraphHistoryRefs([]);
@@ -877,13 +884,16 @@ export function App() {
       return;
     }
 
+    const nextFilter = cloneGraphHistoryFilter(filter);
     const requestId = nextProjectLoadRequestId();
-    setGraphHistoryFilter(filter);
+    graphHistoryFiltersByProjectRef.current.set(selectedProject.id, nextFilter);
+    graphHistoryFilterRef.current = nextFilter;
+    setGraphHistoryFilter(nextFilter);
     setSelectedCommitHash("");
     setGraphLoading(true);
     setGraphHistoryLoadingMore(false);
     const cacheAllowed = !hasAdvancedHistoryQuery(graphHistoryQuery);
-    const cachedHistory = cacheAllowed ? readFreshGraphHistoryCache(selectedProject.id, filter) : undefined;
+    const cachedHistory = cacheAllowed ? readFreshGraphHistoryCache(selectedProject.id, nextFilter) : undefined;
     if (cachedHistory) {
       setCommits(cachedHistory.history);
       setGraphHistoryRefs(cachedHistory.historyRefs);
@@ -900,7 +910,7 @@ export function App() {
 
     try {
       const [historyPage, historyRefs] = await Promise.all([
-        apiClient.getHistoryPage(selectedProject, { filter, ...graphHistoryQuery, skip: 0, limit: HISTORY_PAGE_SIZE }),
+        apiClient.getHistoryPage(selectedProject, { filter: nextFilter, ...graphHistoryQuery, skip: 0, limit: HISTORY_PAGE_SIZE }),
         apiClient.getHistoryRefs(selectedProject)
       ]);
       if (!isCurrentProjectLoad(requestId)) {
@@ -913,7 +923,7 @@ export function App() {
       setGraphHistoryHasMore(historyPage.hasMore);
       setGraphHistoryNextSkip(historyPage.nextSkip);
       if (cacheAllowed) {
-        writeGraphHistoryCache(selectedProject, filter, {
+        writeGraphHistoryCache(selectedProject, nextFilter, {
           history,
           historyRefs,
           historyHasMore: historyPage.hasMore,
