@@ -2964,6 +2964,8 @@ export function App() {
         <Toaster
           position="top-center"
           theme={resolvedTheme}
+          offset={{ top: 44 }}
+          mobileOffset={{ top: 44 }}
           expand
           visibleToasts={5}
           toastOptions={{ duration: 2000 }}
