@@ -193,20 +193,56 @@ button {
   -webkit-app-region: drag;
 }
 
-.app-chrome-brand {
-  grid-column: 1;
-  display: inline-flex;
-  gap: 7px;
+.app-chrome-tools {
+  grid-column: 2;
+  display: flex;
+  gap: 2px;
   align-items: center;
+  align-self: center;
+  height: 28px;
   min-width: 0;
-  padding: 0 10px 0 8px;
-  color: var(--muted-strong);
-  font-size: 12px;
-  font-weight: 600;
+  -webkit-app-region: no-drag;
 }
 
-.app-chrome-brand svg {
-  color: var(--muted);
+.app-chrome-settings-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  height: 26px;
+  border: 0;
+  border-radius: 8px;
+  padding: 0 8px;
+  color: var(--muted-strong);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.app-chrome-settings-button:hover,
+.app-chrome-settings-button:focus-visible {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 9%, var(--surface));
+}
+
+.app-chrome-brand {
+  grid-column: 1;
+  display: grid;
+  width: 38px;
+  height: 32px;
+  place-items: center;
+  pointer-events: none;
+}
+
+.app-chrome-brand img {
+  display: block;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  user-select: none;
 }
 
 .app-chrome-drag-region {
@@ -899,7 +935,7 @@ button {
 
 .workspace-shell {
   display: grid;
-  grid-template-rows: 76px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   position: relative;
   min-width: 0;
   height: 100%;
@@ -2650,7 +2686,7 @@ button {
 }
 
 .workspace-shell {
-  grid-template-rows: 56px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
 }
 
 .main-grid {

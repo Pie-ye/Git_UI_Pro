@@ -1,13 +1,18 @@
-import { Copy, GitBranch, Minus, Square, X } from "lucide-react";
+import { Copy, Minus, Square, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { WindowState } from "../types/electron";
 import { AppUpdateControl } from "./AppUpdateControl";
 
+const APP_ICON_URL = new URL("../../build/icons/24x24.png", import.meta.url).href;
+
 interface AppChromeProps {
   onCommand: (command: string) => void;
+  gitVersion: string;
+  gitReady?: boolean;
+  onOpenRepositoryCenter: () => void;
 }
 
-export function AppChrome({ onCommand }: AppChromeProps) {
+export function AppChrome({ onCommand, gitVersion, gitReady = true, onOpenRepositoryCenter }: AppChromeProps) {
   const [windowState, setWindowState] = useState<WindowState>({ isMaximized: false, isFullScreen: false });
   const shouldRestore = windowState.isMaximized || windowState.isFullScreen;
 
@@ -35,11 +40,15 @@ export function AppChrome({ onCommand }: AppChromeProps) {
   return (
     <header className="app-chrome">
       <div className="app-chrome-titlebar">
-        <div className="app-chrome-brand">
-          <GitBranch size={14} />
-          <span>Git UI Pro</span>
+        <div className="app-chrome-brand" aria-label="Git UI Pro">
+          <img src={APP_ICON_URL} alt="" draggable={false} />
         </div>
-        <AppUpdateControl />
+        <div className="app-chrome-tools" aria-label="应用工具">
+          <button type="button" className="app-chrome-settings-button" aria-label="打开设置" onClick={onOpenRepositoryCenter}>
+            设置
+          </button>
+          <AppUpdateControl gitVersion={gitVersion} gitReady={gitReady} />
+        </div>
         <div className="app-chrome-drag-region" />
         <div className="app-window-controls" aria-label="窗口控制">
           <button type="button" title="最小化" onClick={() => runCommand("window:minimize")}>

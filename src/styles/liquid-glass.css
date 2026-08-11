@@ -100,9 +100,22 @@
 }
 
 .app-chrome-brand {
-  font-size: 13px;
-  font-weight: 720;
   color: var(--text-strong);
+}
+
+.app-chrome-brand img {
+  box-shadow: 0 2px 7px color-mix(in srgb, var(--blue) 18%, transparent);
+}
+
+.app-chrome-settings-button {
+  color: var(--muted-strong);
+  transition: color 160ms ease, background 160ms ease;
+}
+
+.app-chrome-settings-button:hover,
+.app-chrome-settings-button:focus-visible {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
 .app-chrome-controls,
@@ -323,7 +336,7 @@
 }
 
 .workspace-shell {
-  grid-template-rows: 64px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   min-width: 0;
   background: transparent;
 }
@@ -368,7 +381,7 @@
 .main-grid {
   height: auto;
   min-height: 0;
-  margin: 0 10px 10px 4px;
+  margin: 8px 10px 10px 4px;
   border: 1px solid var(--glass-edge);
   border-radius: 24px;
   background: var(--glass-fill-static);
@@ -804,7 +817,7 @@ input[type="radio"]:focus-visible {
 
 @media (max-width: 900px) {
   .workspace-shell {
-    grid-template-rows: 60px minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
   }
 
   .top-bar {
@@ -813,7 +826,7 @@ input[type="radio"]:focus-visible {
   }
 
   .main-grid {
-    margin: 0 8px 8px 3px;
+    margin: 8px 8px 8px 3px;
     border-radius: 20px;
   }
 }
@@ -1195,7 +1208,7 @@ input[type="radio"]:focus-visible {
   border-radius: 22px;
   color: var(--text);
   background:
-    linear-gradient(145deg, color-mix(in srgb, var(--glass-fill-strong) 91%, #eaf8ff) 0%, color-mix(in srgb, var(--glass-fill-strong) 94%, #f7eef8) 100%);
+    linear-gradient(145deg, #f7fbfe 0%, #f8f6fa 100%);
   box-shadow: 0 30px 76px rgba(24, 48, 69, 0.28), 0 5px 18px rgba(31, 61, 84, 0.12), inset 0 1px 0 var(--glass-edge);
   backdrop-filter: blur(36px) saturate(172%);
   -webkit-backdrop-filter: blur(36px) saturate(172%);
@@ -1207,7 +1220,7 @@ input[type="radio"]:focus-visible {
 .theme-dark .app-update-popover {
   border-color: color-mix(in srgb, var(--glass-edge) 78%, var(--blue));
   background:
-    linear-gradient(145deg, color-mix(in srgb, var(--glass-fill-strong) 94%, #0b2e3a) 0%, color-mix(in srgb, var(--glass-fill-strong) 96%, #292034) 100%);
+    linear-gradient(145deg, #112735 0%, #251f2e 100%);
   box-shadow: 0 34px 82px rgba(0, 5, 11, 0.5), 0 5px 18px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.1);
 }
 
@@ -2003,77 +2016,85 @@ select:not([disabled]):focus {
   }
 }
 
-/* Always-visible version capsule and release history workflow. */
+/* About, version and release history workflow. */
 .app-update-control {
   grid-column: 2;
-  align-self: stretch;
+  align-self: center;
   width: auto;
+  height: 26px;
   min-width: 0;
-  padding-left: 3px;
+  padding-left: 0;
 }
 
 .app-update-trigger-tooltip {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
+  height: 26px;
   min-width: 0;
 }
 
 .app-update-trigger {
   display: inline-flex;
-  gap: 5px;
   align-items: center;
+  justify-content: center;
   width: auto;
-  min-width: 62px;
-  height: 24px;
-  min-height: 24px;
-  border: 1px solid color-mix(in srgb, var(--blue) 18%, var(--glass-edge));
+  min-width: 44px;
+  height: 26px;
+  min-height: 26px;
+  border: 0;
   border-radius: 8px;
-  padding: 0 5px 0 8px;
+  padding: 0 8px;
   color: var(--muted-strong);
-  background: color-mix(in srgb, var(--glass-fill-static) 56%, transparent);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--glass-edge) 70%, transparent);
+  background: transparent;
+  box-shadow: none;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
 }
 
 .app-update-trigger:hover,
 .app-update-trigger[aria-expanded="true"] {
-  border-color: color-mix(in srgb, var(--blue) 38%, var(--glass-edge));
+  border-color: transparent;
   color: var(--text-strong);
-  background: color-mix(in srgb, var(--blue) 8%, var(--glass-fill-strong));
-  box-shadow: inset 0 1px 0 var(--glass-edge), 0 5px 14px color-mix(in srgb, var(--blue) 12%, transparent);
+  background: color-mix(in srgb, var(--blue) 9%, transparent);
+  box-shadow: none;
 }
 
-.app-update-trigger-version {
-  font-family: var(--mono-font);
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 1;
+.app-chrome-tools .app-update-control {
+  align-self: center;
+  height: 26px;
+  padding-left: 0;
 }
 
-.app-update-trigger-state {
-  display: grid;
-  width: 16px;
-  height: 16px;
-  place-items: center;
-  border-radius: 50%;
-  color: var(--success);
-  background: color-mix(in srgb, var(--success) 10%, transparent);
+.app-chrome-tools .app-update-trigger-tooltip {
+  height: 26px;
 }
 
-.app-update-trigger[data-phase="available"] .app-update-trigger-state,
-.app-update-trigger[data-phase="downloading"] .app-update-trigger-state {
-  color: var(--blue);
-  background: color-mix(in srgb, var(--blue) 10%, transparent);
+.app-chrome-tools .app-update-trigger {
+  min-width: 44px;
+  height: 26px;
+  min-height: 26px;
+  border: 0;
+  border-radius: 8px;
+  padding: 0 8px;
+  color: var(--muted-strong);
+  background: transparent;
+  box-shadow: none;
 }
 
-.app-update-trigger[data-operation="rollback"] .app-update-trigger-state {
-  color: var(--warning);
-  background: color-mix(in srgb, var(--warning) 11%, transparent);
+.app-chrome-tools .app-update-trigger:hover,
+.app-chrome-tools .app-update-trigger[aria-expanded="true"] {
+  border-color: transparent;
+  color: var(--text-strong);
+  background: color-mix(in srgb, var(--blue) 9%, transparent);
+  box-shadow: none;
 }
 
-.app-update-trigger[data-phase="error"] .app-update-trigger-state {
-  color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 10%, transparent);
+.app-chrome-tools .app-update-trigger:focus-visible,
+.app-chrome-settings-button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 38%, transparent);
+  outline-offset: -2px;
 }
 
 .app-update-trigger-dot {
@@ -2094,7 +2115,7 @@ select:not([disabled]):focus {
 }
 
 .app-update-popover {
-  left: -86px;
+  left: -72px;
   width: min(404px, calc(100vw - 20px));
   max-height: min(640px, calc(100vh - 52px));
 }
@@ -2193,6 +2214,68 @@ select:not([disabled]):focus {
 .app-update-overview[data-operation="rollback"] {
   border-color: color-mix(in srgb, var(--warning) 28%, var(--glass-edge));
   background: linear-gradient(112deg, color-mix(in srgb, var(--blue) 6%, var(--surface-3)), color-mix(in srgb, var(--warning) 9%, var(--surface-3)));
+}
+
+.app-update-environment {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) max-content;
+  gap: 10px;
+  align-items: center;
+  min-height: 44px;
+  margin: 0 16px 8px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--surface-3) 92%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--glass-edge) 66%, transparent);
+}
+
+.app-update-environment-label {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  color: var(--muted-strong);
+  font-size: 12px;
+  font-weight: 680;
+}
+
+.app-update-environment-label > svg {
+  color: var(--blue);
+}
+
+.app-update-environment > code {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-strong);
+  font-family: var(--mono-font);
+  font-size: 11px;
+  font-weight: 650;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-update-environment > small {
+  border-radius: 999px;
+  padding: 3px 7px;
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 9%, transparent);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.app-update-environment.warning {
+  border-color: color-mix(in srgb, var(--warning) 26%, var(--border));
+}
+
+.app-update-environment.warning .app-update-environment-label > svg,
+.app-update-environment.warning > small {
+  color: var(--warning);
+}
+
+.app-update-environment.warning > small {
+  background: color-mix(in srgb, var(--warning) 9%, transparent);
 }
 
 .app-update-version-route {

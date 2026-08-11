@@ -33,7 +33,6 @@ import { ProjectRail } from "./components/ProjectRail";
 import { RepositoryCenterContainer } from "./components/RepositoryCenterContainer";
 import type { RepositoryCenterTab } from "./components/RepositoryCenter";
 import { RemoteProjectDialog } from "./components/RemoteProjectDialog";
-import { TopBar, type ThemeMode } from "./components/TopBar";
 import { WorktreeDetailPanel, type WorktreeEditorTab } from "./components/WorktreeDetailPanel";
 import { WorkspaceView } from "./components/WorkspaceView";
 import type {
@@ -61,6 +60,8 @@ import type {
 } from "./types/domain";
 import { cancelGitOperation, dismissGitOperation, getGitOperationsSnapshot, subscribeGitOperations } from "./api/operationTracker";
 import { absoluteFilePath } from "./utils/filePath";
+
+type ThemeMode = "system" | "light" | "dark";
 
 const emptyWorktree: WorktreeState = {
   stagedFiles: [],
@@ -2803,7 +2804,15 @@ export function App() {
       }`}
       style={layoutStyle}
     >
-      <AppChrome onCommand={runAppCommand} />
+      <AppChrome
+        onCommand={runAppCommand}
+        gitVersion={gitVersion}
+        gitReady={gitDependency.status === "ready"}
+        onOpenRepositoryCenter={() => {
+          setRepositoryCenterInitialTab(selectedProject ? "recovery" : "projects");
+          setRepositoryCenterOpen(true);
+        }}
+      />
       {leftCollapsed ? (
         <aside className="collapsed-sidebar">
           <div className="collapsed-project-list" aria-label="项目列表">
@@ -2857,16 +2866,6 @@ export function App() {
       />
 
       <main className="workspace-shell">
-        <TopBar
-          project={selectedProject}
-          gitVersion={gitVersion}
-          gitReady={selectedProjectGitReady}
-          onOpenRepositoryCenter={() => {
-            setRepositoryCenterInitialTab(selectedProject ? "recovery" : "projects");
-            setRepositoryCenterOpen(true);
-          }}
-        />
-
         {!selectedProjectGitReady ? (
           <section className="main-grid git-dependency-grid">
             <GitDependencyNotice

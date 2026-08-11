@@ -11,6 +11,7 @@ import {
   PackageCheck,
   RefreshCw,
   RotateCcw,
+  Terminal,
   X
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -23,7 +24,12 @@ const MOCK_PHASES = new Set<UpdatePhase>(["idle", "checking", "up-to-date", "ava
 const CURRENT_VERSION = packageInfo.version;
 const UPDATE_BRIDGE_UNAVAILABLE = "更新服务不可用：桌面进程未提供所需接口。";
 
-export function AppUpdateControl() {
+interface AppUpdateControlProps {
+  gitVersion: string;
+  gitReady?: boolean;
+}
+
+export function AppUpdateControl({ gitVersion, gitReady = true }: AppUpdateControlProps) {
   const mockState = useMemo(() => readMockUpdateState(), []);
   const isMock = mockState !== null;
   const [state, setState] = useState<UpdateState>(() => mockState ?? unsupportedUpdateState());
@@ -130,7 +136,8 @@ export function AppUpdateControl() {
   const progressPercent = normalizedPercent(state.progress?.percent);
   const statusLabel = phaseLabel(state);
   const hasTarget = hasTargetVersion(state);
-  const triggerLabel = triggerContent(state);
+  const gitVersionLabel = gitVersion.replace(/^git version\s*/i, "").trim() || gitVersion;
+  const gitStatusLabel = gitVersion.trim() === "检测中" ? "检测中" : gitReady ? "可用" : "不可用";
   const canCheck = !actionPending && state.operation !== "rollback" && !["checking", "downloading", "downloaded", "installing"].includes(state.phase);
   const selectedRollbackPrepared = state.operation === "rollback" &&
     state.availableVersion === selectedHistoryVersion &&
@@ -345,23 +352,17 @@ export function AppUpdateControl() {
 
   return (
     <div className="app-update-control">
-      <PathTooltip content={triggerLabel.title} className="app-update-trigger-tooltip">
+      <PathTooltip content="关于、版本与更新" className="app-update-trigger-tooltip">
         <button
           ref={triggerRef}
           type="button"
           className="app-update-trigger"
-          data-phase={state.phase}
-          data-operation={state.operation}
-          aria-label={triggerLabel.title}
+          aria-label="打开关于、版本与更新"
           aria-expanded={open}
           aria-controls="app-update-popover"
           onClick={() => setOpen((current) => !current)}
         >
-          <span className="app-update-trigger-version">v{stripVersionPrefix(state.currentVersion)}</span>
-          <span className="app-update-trigger-state" aria-hidden="true">
-            <UpdateIcon phase={state.phase} operation={state.operation} size={12} />
-          </span>
-          {triggerLabel.attention ? <span className="app-update-trigger-dot" aria-hidden="true" /> : null}
+          <span className="app-update-trigger-label">关于</span>
         </button>
       </PathTooltip>
 
@@ -376,7 +377,7 @@ export function AppUpdateControl() {
           tabIndex={-1}
         >
           <div className="app-update-panel-header">
-            <h2 id="app-update-title">版本与更新</h2>
+            <h2 id="app-update-title">关于 Git UI Pro</h2>
             <div className="app-update-header-actions">
               <PathTooltip
                 content={`查看 v${stripVersionPrefix(state.availableVersion ?? state.currentVersion)} 发布页`}
@@ -421,7 +422,7 @@ export function AppUpdateControl() {
             >
               <div className={`app-update-version-route ${hasTarget ? "has-target" : "is-current-only"}`}>
                 <div className="app-update-version-node is-current">
-                  <span className="app-update-version-label">当前版本</span>
+                  <span className="app-update-version-label">{hasTarget ? "当前版本" : "应用版本"}</span>
                   <strong className="app-update-version-value">v{stripVersionPrefix(state.currentVersion)}</strong>
                   {!hasTarget ? <em className="app-update-version-status">{statusLabel}</em> : null}
                 </div>
@@ -437,6 +438,12 @@ export function AppUpdateControl() {
                   </div>
                 </> : null}
               </div>
+            </section>
+
+            <section className={`app-update-environment ${gitReady ? "" : "warning"}`} aria-label={`Git 版本 ${gitVersionLabel}，${gitStatusLabel}`}>
+              <span className="app-update-environment-label"><Terminal size={15} />Git 环境</span>
+              <code title={gitVersion}>{gitVersionLabel}</code>
+              <small>{gitStatusLabel}</small>
             </section>
 
             {state.phase === "downloading" ? (
@@ -556,22 +563,6 @@ export function AppUpdateControl() {
   );
 }
 
-function UpdateIcon({ phase, operation, size }: { phase: UpdatePhase; operation: UpdateOperation; size: number }) {
-  if (phase === "checking" || phase === "downloading" || phase === "installing") {
-    return <LoaderCircle className="app-update-spin" size={size} />;
-  }
-  if (phase === "downloaded") {
-    return <PackageCheck size={size} />;
-  }
-  if (phase === "error") {
-    return <AlertTriangle size={size} />;
-  }
-  if (phase === "available") {
-    return operation === "rollback" ? <RotateCcw size={size} /> : <Download size={size} />;
-  }
-  return <CheckCircle2 size={size} />;
-}
-
 function phaseLabel(state: UpdateState): string {
   const rollback = state.operation === "rollback";
   switch (state.phase) {
@@ -594,22 +585,6 @@ function phaseLabel(state: UpdateState): string {
     default:
       return rollback ? "已选择" : "可更新";
   }
-}
-
-function triggerContent(state: UpdateState): { title: string; attention: boolean } {
-  if (state.phase === "available") {
-    return { title: state.operation === "rollback" ? `已准备回退到 v${state.availableVersion}` : `可更新至 v${state.availableVersion}`, attention: true };
-  }
-  if (state.phase === "downloading") {
-    return { title: `${state.operation === "rollback" ? "回退包" : "更新包"}下载中`, attention: true };
-  }
-  if (state.phase === "downloaded") {
-    return { title: `v${state.availableVersion} 已可安装`, attention: true };
-  }
-  if (state.phase === "error") {
-    return { title: "版本操作失败，点击查看详情", attention: true };
-  }
-  return { title: `当前版本 v${state.currentVersion}`, attention: false };
 }
 
 function primaryActionLabel(state: UpdateState, actionPending: boolean): string {
