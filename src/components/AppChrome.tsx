@@ -81,6 +81,9 @@ export function AppChrome({
   return (
     <header className="app-chrome">
       <div className="app-chrome-titlebar">
+        <div className="app-chrome-brand" aria-label="Git UI Pro">
+          <img src={APP_ICON_URL} alt="" draggable={false} />
+        </div>
         <button
           type="button"
           className="app-chrome-sidebar-button"
@@ -90,9 +93,6 @@ export function AppChrome({
         >
           <PanelLeft size={16} />
         </button>
-        <div className="app-chrome-brand" aria-label="Git UI Pro">
-          <img src={APP_ICON_URL} alt="" draggable={false} />
-        </div>
         <div className="app-chrome-tools" aria-label="应用工具">
           <button type="button" className="app-chrome-settings-button" aria-label="打开设置" onClick={onOpenRepositoryCenter}>
             设置
