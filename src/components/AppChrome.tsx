@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import type { WindowState } from "../types/electron";
 import { AppUpdateControl } from "./AppUpdateControl";
 
-const APP_ICON_URL = new URL("../../build/icons/24x24.png", import.meta.url).href;
+const APP_ICON_URL = new URL("../assets/git-ui-pro-mark.svg", import.meta.url).href;
 
 interface AppChromeProps {
   onCommand: (command: string) => void;

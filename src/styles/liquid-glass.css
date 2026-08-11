@@ -104,7 +104,7 @@
 }
 
 .app-chrome-brand img {
-  box-shadow: 0 2px 7px color-mix(in srgb, var(--blue) 18%, transparent);
+  filter: drop-shadow(0 2px 5px color-mix(in srgb, var(--blue) 20%, transparent));
 }
 
 .app-chrome-settings-button {

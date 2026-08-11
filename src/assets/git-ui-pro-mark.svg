@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+  <defs>
+    <linearGradient id="base" x1="3" y1="2" x2="21" y2="23" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#174653" />
+      <stop offset="0.56" stop-color="#103341" />
+      <stop offset="1" stop-color="#102438" />
+    </linearGradient>
+    <linearGradient id="flow" x1="12" y1="12" x2="18" y2="18" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#46BFA9" />
+      <stop offset="1" stop-color="#7BE2CC" />
+    </linearGradient>
+  </defs>
+
+  <rect x="0.75" y="0.75" width="22.5" height="22.5" rx="6.25" fill="url(#base)" />
+  <rect x="1.125" y="1.125" width="21.75" height="21.75" rx="5.875" stroke="#D8FFF7" stroke-opacity="0.44" stroke-width="0.75" />
+
+  <path
+    d="M6.75 17.25L12 12L17.25 6.75"
+    stroke="#F7FCFF"
+    stroke-width="1.75"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M12 12H14.1C15.84 12 17.25 13.41 17.25 15.15V17.25"
+    stroke="url(#flow)"
+    stroke-width="1.75"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+
+  <circle cx="6.75" cy="17.25" r="1.8" fill="#F7FCFF" stroke="#163746" stroke-width="0.6" />
+  <circle cx="12" cy="12" r="1.8" fill="#F7FCFF" stroke="#163746" stroke-width="0.6" />
+  <circle cx="17.25" cy="6.75" r="1.8" fill="#6FDAC4" stroke="#163746" stroke-width="0.6" />
+  <circle cx="17.25" cy="17.25" r="1.8" fill="#6FDAC4" stroke="#F7FCFF" stroke-width="0.65" />
+</svg>
