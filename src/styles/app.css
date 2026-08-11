@@ -6410,7 +6410,9 @@ button {
 
 .source-control-pane .graph-commit-list {
   display: grid;
+  grid-auto-rows: min-content;
   gap: 0;
+  align-content: start;
   padding: 2px 4px 10px;
   scrollbar-color: transparent transparent;
 }
