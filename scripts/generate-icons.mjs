@@ -40,35 +40,106 @@ await writeFile(
 
 function renderIcon(size) {
   const pixels = Buffer.alloc(size * size * 4);
-  const radius = size * 0.21;
-  const padding = size * 0.055;
-  const rectSize = size - padding * 2;
-  const center = size / 2;
+  const scale = size / 24;
+  const iconPoint = (value) => value * scale;
+  const gradientStart = [23, 70, 83];
+  const gradientMiddle = [16, 51, 65];
+  const gradientEnd = [16, 36, 56];
 
   for (let y = 0; y < size; y += 1) {
     for (let x = 0; x < size; x += 1) {
-      const alpha = roundedRectAlpha(x + 0.5, y + 0.5, padding, padding, rectSize, rectSize, radius);
-      const t = (x + y) / (size * 2);
-      const vignette = Math.min(1, Math.hypot(x - center, y - center) / (size * 0.72));
-      const base = mixColor([19, 130, 120], [23, 43, 60], t * 0.72 + vignette * 0.28);
-      const glow = Math.max(0, 1 - Math.hypot(x - size * 0.35, y - size * 0.28) / (size * 0.55));
-      const color = mixColor(base, [80, 194, 169], glow * 0.32);
+      const alpha = roundedRectAlpha(
+        x + 0.5,
+        y + 0.5,
+        iconPoint(0.75),
+        iconPoint(0.75),
+        iconPoint(22.5),
+        iconPoint(22.5),
+        iconPoint(6.25)
+      );
+      const svgX = (x + 0.5) / scale;
+      const svgY = (y + 0.5) / scale;
+      const t = clamp(((svgX - 3) * 18 + (svgY - 2) * 21) / (18 * 18 + 21 * 21), 0, 1);
+      const color = t <= 0.56
+        ? mixColor(gradientStart, gradientMiddle, t / 0.56)
+        : mixColor(gradientMiddle, gradientEnd, (t - 0.56) / 0.44);
       setPixel(pixels, size, x, y, color[0], color[1], color[2], Math.round(alpha * 255));
     }
   }
 
-  drawLine(pixels, size, size * 0.27, size * 0.63, size * 0.44, size * 0.47, size * 0.055, [245, 248, 250, 238]);
-  drawLine(pixels, size, size * 0.44, size * 0.47, size * 0.64, size * 0.53, size * 0.055, [245, 248, 250, 238]);
-  drawLine(pixels, size, size * 0.44, size * 0.47, size * 0.68, size * 0.30, size * 0.044, [240, 195, 107, 232]);
-  drawLine(pixels, size, size * 0.64, size * 0.53, size * 0.77, size * 0.69, size * 0.044, [122, 167, 255, 232]);
+  drawRoundedRectStroke(
+    pixels,
+    size,
+    iconPoint(1.125),
+    iconPoint(1.125),
+    iconPoint(21.75),
+    iconPoint(21.75),
+    iconPoint(5.875),
+    Math.max(iconPoint(0.75), 0.55),
+    [216, 255, 247, 112]
+  );
 
-  drawCircle(pixels, size, size * 0.27, size * 0.63, size * 0.082, [247, 250, 252, 255]);
-  drawCircle(pixels, size, size * 0.44, size * 0.47, size * 0.09, [247, 250, 252, 255]);
-  drawCircle(pixels, size, size * 0.64, size * 0.53, size * 0.082, [247, 250, 252, 255]);
-  drawCircle(pixels, size, size * 0.68, size * 0.30, size * 0.072, [240, 195, 107, 255]);
-  drawCircle(pixels, size, size * 0.77, size * 0.69, size * 0.072, [122, 167, 255, 255]);
+  const primaryStroke = Math.max(iconPoint(1.75), 1.15);
+  const flowStroke = Math.max(iconPoint(1.75), 1.15);
+  const white = [247, 252, 255, 255];
+  const flow = [102, 216, 193, 255];
+  drawLine(pixels, size, iconPoint(6.75), iconPoint(17.25), iconPoint(12), iconPoint(12), primaryStroke, white);
+  drawLine(pixels, size, iconPoint(12), iconPoint(12), iconPoint(17.25), iconPoint(6.75), primaryStroke, white);
+  drawLine(pixels, size, iconPoint(12), iconPoint(12), iconPoint(14.1), iconPoint(12), flowStroke, flow);
+  drawCubicBezier(
+    pixels,
+    size,
+    [iconPoint(14.1), iconPoint(12)],
+    [iconPoint(15.84), iconPoint(12)],
+    [iconPoint(17.25), iconPoint(13.41)],
+    [iconPoint(17.25), iconPoint(15.15)],
+    flowStroke,
+    flow
+  );
+  drawLine(pixels, size, iconPoint(17.25), iconPoint(15.15), iconPoint(17.25), iconPoint(17.25), flowStroke, flow);
+
+  drawRingCircle(pixels, size, iconPoint(6.75), iconPoint(17.25), iconPoint(1.8), white, [22, 55, 70, 255], Math.max(iconPoint(0.6), 0.45));
+  drawRingCircle(pixels, size, iconPoint(12), iconPoint(12), iconPoint(1.8), white, [22, 55, 70, 255], Math.max(iconPoint(0.6), 0.45));
+  drawRingCircle(pixels, size, iconPoint(17.25), iconPoint(6.75), iconPoint(1.8), [111, 218, 196, 255], [22, 55, 70, 255], Math.max(iconPoint(0.6), 0.45));
+  drawRingCircle(pixels, size, iconPoint(17.25), iconPoint(17.25), iconPoint(1.8), [111, 218, 196, 255], white, Math.max(iconPoint(0.65), 0.5));
 
   return pixels;
+}
+
+function drawRoundedRectStroke(pixels, size, x, y, width, height, radius, strokeWidth, color) {
+  for (let py = Math.floor(y - 1); py <= Math.ceil(y + height + 1); py += 1) {
+    for (let px = Math.floor(x - 1); px <= Math.ceil(x + width + 1); px += 1) {
+      if (px < 0 || py < 0 || px >= size || py >= size) {
+        continue;
+      }
+      const outer = roundedRectAlpha(px + 0.5, py + 0.5, x - strokeWidth / 2, y - strokeWidth / 2, width + strokeWidth, height + strokeWidth, radius + strokeWidth / 2);
+      const inner = roundedRectAlpha(px + 0.5, py + 0.5, x + strokeWidth / 2, y + strokeWidth / 2, width - strokeWidth, height - strokeWidth, Math.max(0, radius - strokeWidth / 2));
+      const alpha = clamp(outer - inner, 0, 1);
+      if (alpha > 0) {
+        blendPixel(pixels, size, px, py, color[0], color[1], color[2], color[3] * alpha);
+      }
+    }
+  }
+}
+
+function drawCubicBezier(pixels, size, start, controlA, controlB, end, width, color) {
+  const steps = Math.max(12, Math.ceil(Math.hypot(end[0] - start[0], end[1] - start[1]) * 1.4));
+  let previous = start;
+  for (let index = 1; index <= steps; index += 1) {
+    const t = index / steps;
+    const inverse = 1 - t;
+    const current = [
+      inverse ** 3 * start[0] + 3 * inverse ** 2 * t * controlA[0] + 3 * inverse * t ** 2 * controlB[0] + t ** 3 * end[0],
+      inverse ** 3 * start[1] + 3 * inverse ** 2 * t * controlA[1] + 3 * inverse * t ** 2 * controlB[1] + t ** 3 * end[1]
+    ];
+    drawLine(pixels, size, previous[0], previous[1], current[0], current[1], width, color);
+    previous = current;
+  }
+}
+
+function drawRingCircle(pixels, size, cx, cy, radius, fill, stroke, strokeWidth) {
+  drawCircle(pixels, size, cx, cy, radius, stroke);
+  drawCircle(pixels, size, cx, cy, Math.max(0, radius - strokeWidth), fill);
 }
 
 function roundedRectAlpha(px, py, x, y, width, height, radius) {

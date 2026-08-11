@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -359,11 +359,12 @@ test("Gitee 镜像发布时先创建发行版并最后上传校验清单", async
     const uploadImpl = async ({ url, token, filename, source, timeoutMs, idleTimeoutMs }) => {
       assert.equal(new URL(url).pathname, "/api/v5/repos/zjx_master/git-ui-pro/releases/26/attach_files");
       assert.equal(token, "gitee-secret");
-      assert.equal(timeoutMs, 30 * 60_000);
-      assert.equal(idleTimeoutMs, 5 * 60_000);
+      assert.equal(timeoutMs, 120 * 60_000);
+      assert.equal(idleTimeoutMs, 10 * 60_000);
       assert.equal(Boolean(source.filePath) || Buffer.isBuffer(source.data), true);
       uploads.push(filename);
-      uploadedAssets.push({ id: uploads.length, name: filename });
+      const size = source.filePath ? (await stat(source.filePath)).size : source.data.length;
+      uploadedAssets.push({ id: uploads.length, name: filename, size });
     };
 
     const result = await syncGiteeRelease({
@@ -378,10 +379,10 @@ test("Gitee 镜像发布时先创建发行版并最后上传校验清单", async
       uploadImpl
     });
 
-    assert.deepEqual(uploads, [`${installer}.blockmap`, "latest.yml", installer, "update-manifest.json"]);
+    assert.deepEqual(uploads, [installer, `${installer}.blockmap`, "latest.yml", "update-manifest.json"]);
     assert.equal(result.releaseUrl, `https://gitee.com/zjx_master/git-ui-pro/releases/tag/${tagName}`);
     assert.equal(requests.filter((request) => request.method === "POST").length, 1);
-    assert.equal(requests.filter((request) => request.path.endsWith("/attach_files")).length, 2);
+    assert.equal(requests.filter((request) => request.path.endsWith("/attach_files")).length, 5);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

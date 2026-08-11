@@ -43,6 +43,7 @@ async function createWindow(): Promise<void> {
     height: 920,
     minWidth: 860,
     minHeight: 640,
+    icon: path.join(__dirname, "../build/icon.png"),
     frame: false,
     backgroundColor: "#101317",
     title: "Git UI Pro",
@@ -649,6 +650,9 @@ if (!hasSingleInstanceLock) {
   });
 
   app.whenReady().then(async () => {
+    if (process.platform === "win32") {
+      app.setAppUserModelId("com.gitui.pro");
+    }
     const userDataPath = app.getPath("userData");
     configStore = new ConfigStore(userDataPath);
     hostingService = new HostingService(userDataPath);

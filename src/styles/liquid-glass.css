@@ -2175,6 +2175,22 @@ select:not([disabled]):focus {
   box-shadow: none;
 }
 
+.app-chrome-tools .app-update-trigger[data-update-notice="true"] {
+  --update-notice-color: var(--blue);
+  min-width: 48px;
+  padding-right: 12px;
+  color: var(--text-strong);
+  background: color-mix(in srgb, var(--update-notice-color) 8%, transparent);
+}
+
+.app-chrome-tools .app-update-trigger[data-update-notice="true"][data-phase="downloaded"] {
+  --update-notice-color: var(--success);
+}
+
+.app-chrome-tools .app-update-trigger[data-update-notice="true"][data-phase="error"] {
+  --update-notice-color: var(--danger);
+}
+
 .app-chrome-tools .app-update-trigger:focus-visible,
 .app-chrome-settings-button:focus-visible,
 .app-chrome-theme-button:focus-visible,
@@ -2199,20 +2215,17 @@ select:not([disabled]):focus {
 }
 
 .app-update-trigger-dot {
-  top: 1px;
-  right: 1px;
+  top: 3px;
+  right: 4px;
   width: 6px;
   height: 6px;
+  border-color: color-mix(in srgb, var(--glass-fill-static) 88%, transparent);
+  background: var(--update-notice-color, var(--blue));
 }
 
-.app-update-trigger[data-phase="available"][data-operation="upgrade"] .app-update-trigger-dot {
+.app-update-trigger[data-update-notice="true"] .app-update-trigger-dot {
   transform-origin: center;
-  animation: app-update-attention-dot 1.9s ease-in-out infinite;
-}
-
-.app-update-trigger[data-phase="available"][data-operation="upgrade"] .app-update-trigger-state svg {
-  transform-origin: center;
-  animation: app-update-attention-icon 1.9s ease-in-out infinite;
+  animation: app-update-attention-dot 2.8s cubic-bezier(0.45, 0, 0.2, 1) infinite;
 }
 
 .app-update-popover {
@@ -2867,27 +2880,13 @@ select:not([disabled]):focus {
 @keyframes app-update-attention-dot {
   0%,
   100% {
-    opacity: 0.72;
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--blue) 10%, transparent);
-    transform: scale(0.86);
+    opacity: 0.7;
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--update-notice-color, var(--blue)) 10%, transparent);
+    transform: scale(0.82);
   }
   50% {
     opacity: 1;
-    box-shadow: 0 0 0 4px color-mix(in srgb, var(--blue) 18%, transparent), 0 0 8px color-mix(in srgb, var(--blue) 36%, transparent);
-    transform: scale(1.08);
-  }
-}
-
-@keyframes app-update-attention-icon {
-  0%,
-  100% {
-    opacity: 0.82;
-    filter: drop-shadow(0 0 0 transparent);
-    transform: scale(0.94);
-  }
-  50% {
-    opacity: 1;
-    filter: drop-shadow(0 0 4px color-mix(in srgb, var(--blue) 44%, transparent));
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--update-notice-color, var(--blue)) 14%, transparent), 0 0 9px color-mix(in srgb, var(--update-notice-color, var(--blue)) 34%, transparent);
     transform: scale(1.06);
   }
 }
@@ -2942,10 +2941,8 @@ select:not([disabled]):focus {
     animation: none !important;
   }
 
-  .app-update-trigger[data-phase="available"][data-operation="upgrade"] .app-update-trigger-dot,
-  .app-update-trigger[data-phase="available"][data-operation="upgrade"] .app-update-trigger-state svg {
+  .app-update-trigger[data-update-notice="true"] .app-update-trigger-dot {
     animation: none !important;
-    filter: none;
     transform: none;
   }
 }

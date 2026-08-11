@@ -136,6 +136,13 @@ export function AppUpdateControl({ gitVersion, gitReady = true }: AppUpdateContr
   const progressPercent = normalizedPercent(state.progress?.percent);
   const statusLabel = phaseLabel(state);
   const hasTarget = hasTargetVersion(state);
+  const hasUpgradeNotification = state.operation === "upgrade" &&
+    Boolean(state.availableVersion) &&
+    stripVersionPrefix(state.availableVersion ?? "") !== stripVersionPrefix(state.currentVersion) &&
+    (TARGET_PHASES.has(state.phase) || state.phase === "error");
+  const triggerLabel = hasUpgradeNotification
+    ? `发现新版本 v${stripVersionPrefix(state.availableVersion ?? state.currentVersion)}`
+    : "关于、版本与更新";
   const gitVersionLabel = gitVersion.replace(/^git version\s*/i, "").trim() || gitVersion;
   const gitStatusLabel = gitVersion.trim() === "检测中" ? "检测中" : gitReady ? "可用" : "不可用";
   const canCheck = !actionPending && state.operation !== "rollback" && !["checking", "downloading", "downloaded", "installing"].includes(state.phase);
@@ -352,17 +359,21 @@ export function AppUpdateControl({ gitVersion, gitReady = true }: AppUpdateContr
 
   return (
     <div className="app-update-control">
-      <PathTooltip content="关于、版本与更新" className="app-update-trigger-tooltip">
+      <PathTooltip content={triggerLabel} className="app-update-trigger-tooltip">
         <button
           ref={triggerRef}
           type="button"
           className="app-update-trigger"
-          aria-label="打开关于、版本与更新"
+          aria-label={hasUpgradeNotification ? `${triggerLabel}，打开关于与更新` : "打开关于、版本与更新"}
           aria-expanded={open}
           aria-controls="app-update-popover"
+          data-phase={state.phase}
+          data-operation={state.operation}
+          data-update-notice={hasUpgradeNotification}
           onClick={() => setOpen((current) => !current)}
         >
           <span className="app-update-trigger-label">关于</span>
+          {hasUpgradeNotification ? <span className="app-update-trigger-dot" aria-hidden="true" /> : null}
         </button>
       </PathTooltip>
 

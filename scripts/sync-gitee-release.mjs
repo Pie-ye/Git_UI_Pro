@@ -9,8 +9,10 @@ const DEFAULT_GITEE_OWNER = "zjx_master";
 const DEFAULT_GITEE_REPOSITORY = "git-ui-pro";
 const UPDATE_MANIFEST_NAME = "update-manifest.json";
 const REQUEST_TIMEOUT_MS = 30_000;
-const UPLOAD_TIMEOUT_MS = 30 * 60_000;
-const UPLOAD_IDLE_TIMEOUT_MS = 5 * 60_000;
+const UPLOAD_TIMEOUT_MS = 120 * 60_000;
+const UPLOAD_IDLE_TIMEOUT_MS = 10 * 60_000;
+const UPLOAD_MAX_ATTEMPTS = 2;
+const UPLOAD_RETRY_DELAY_MS = 15_000;
 const STABLE_TAG_PATTERN = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 export function createGiteeUpdateManifest(tagName, installer) {
@@ -98,21 +100,21 @@ export async function syncGiteeRelease(options = {}) {
 
   const uploadNames = [...files.keys(), UPDATE_MANIFEST_NAME];
   const uploadEntries = [
+    installerName,
     `${installerName}.blockmap`,
-    "latest.yml",
-    installerName
+    "latest.yml"
   ].map((name) => [name, files.get(name)]);
-  await gitee.removeNamedAssets(release.id, new Set(uploadNames));
+  const expectedAssets = new Map();
   for (const [name, filename] of uploadEntries) {
     console.log(`正在上传 Gitee Release 附件：${name}`);
-    await gitee.uploadAsset(release.id, name, { filePath: filename });
-    console.log(`Gitee Release 附件上传完成：${name}`);
+    const size = await gitee.ensureAsset(release.id, name, { filePath: filename });
+    expectedAssets.set(name, size);
   }
   const manifestBuffer = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   console.log(`正在上传 Gitee Release 附件：${UPDATE_MANIFEST_NAME}`);
-  await gitee.uploadAsset(release.id, UPDATE_MANIFEST_NAME, { data: manifestBuffer });
-  console.log(`Gitee Release 附件上传完成：${UPDATE_MANIFEST_NAME}`);
-  await gitee.verifyNamedAssets(release.id, new Set(uploadNames));
+  const manifestSize = await gitee.ensureAsset(release.id, UPDATE_MANIFEST_NAME, { data: manifestBuffer });
+  expectedAssets.set(UPDATE_MANIFEST_NAME, manifestSize);
+  await gitee.verifyNamedAssets(release.id, expectedAssets);
 
   return Object.freeze({
     tagName,
@@ -201,10 +203,18 @@ function createGiteeClient({ owner, repository, token, fetchImpl = fetch, upload
       });
     },
 
-    async removeNamedAssets(releaseId, names) {
+    async ensureAsset(releaseId, filename, source) {
+      const expectedSize = await assetSourceSize(filename, source);
       const assets = await listAssets(releaseId);
-      for (const asset of assets) {
-        if (asset && Number.isSafeInteger(asset.id) && names.has(asset.name)) {
+      const namedAssets = assets.filter((asset) => asset?.name === filename);
+      const reusableAsset = namedAssets.find((asset) => Number(asset?.size) === expectedSize);
+      if (reusableAsset) {
+        console.log(`Gitee Release 附件已存在且大小一致，跳过重传：${filename}`);
+        return expectedSize;
+      }
+
+      for (const asset of namedAssets) {
+        if (Number.isSafeInteger(asset?.id)) {
           await request(`/releases/${releaseId}/attach_files/${asset.id}`, {
             method: "DELETE",
             headers: { Accept: "application/json", "Content-Type": "application/json" },
@@ -212,28 +222,67 @@ function createGiteeClient({ owner, repository, token, fetchImpl = fetch, upload
           });
         }
       }
+
+      for (let attempt = 1; attempt <= UPLOAD_MAX_ATTEMPTS; attempt += 1) {
+        try {
+          await uploadImpl({
+            url: `${baseUrl}/releases/${releaseId}/attach_files`,
+            token,
+            filename,
+            source,
+            timeoutMs: UPLOAD_TIMEOUT_MS,
+            idleTimeoutMs: UPLOAD_IDLE_TIMEOUT_MS
+          });
+          console.log(`Gitee Release 附件上传完成：${filename}`);
+          return expectedSize;
+        } catch (error) {
+          const completedAfterError = await listAssets(releaseId)
+            .then((assets) => assets.some((asset) => asset?.name === filename && Number(asset?.size) === expectedSize))
+            .catch(() => false);
+          if (completedAfterError) {
+            console.log(`Gitee Release 已在连接中断后确认附件完整：${filename}`);
+            return expectedSize;
+          }
+          if (attempt >= UPLOAD_MAX_ATTEMPTS || !isRetryableUploadError(error)) {
+            throw error;
+          }
+          console.warn(`Gitee Release 附件上传中断，${Math.round(UPLOAD_RETRY_DELAY_MS / 1_000)} 秒后重试（${attempt + 1}/${UPLOAD_MAX_ATTEMPTS}）：${filename}`);
+          await delay(UPLOAD_RETRY_DELAY_MS);
+        }
+      }
+      throw new Error(`Gitee Release 附件 ${filename} 未能完成上传。`);
     },
 
-    async uploadAsset(releaseId, filename, source) {
-      await uploadImpl({
-        url: `${baseUrl}/releases/${releaseId}/attach_files`,
-        token,
-        filename,
-        source,
-        timeoutMs: UPLOAD_TIMEOUT_MS,
-        idleTimeoutMs: UPLOAD_IDLE_TIMEOUT_MS
-      });
-    },
-
-    async verifyNamedAssets(releaseId, names) {
+    async verifyNamedAssets(releaseId, expectedAssets) {
       const assets = await listAssets(releaseId);
-      const uploadedNames = new Set(assets.map((asset) => asset?.name).filter(Boolean));
-      const missing = [...names].filter((name) => !uploadedNames.has(name));
-      if (missing.length > 0) {
-        throw new Error(`Gitee Release 附件上传后校验失败，缺少：${missing.join("、")}。`);
+      const invalid = [...expectedAssets].filter(([name, size]) => !assets.some((asset) => asset?.name === name && Number(asset?.size) === size));
+      if (invalid.length > 0) {
+        throw new Error(`Gitee Release 附件上传后校验失败，缺少或大小不一致：${invalid.map(([name]) => name).join("、")}。`);
       }
     }
   };
+}
+
+async function assetSourceSize(filename, source) {
+  const size = source.filePath ? (await stat(source.filePath)).size : source.data?.length;
+  if (!Number.isSafeInteger(size) || size <= 0) {
+    throw new Error(`待上传附件 ${filename} 为空或大小无效。`);
+  }
+  return size;
+}
+
+function isRetryableUploadError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  const status = /HTTP\s+(\d{3})/i.exec(message);
+  if (!status) {
+    return true;
+  }
+  const statusCode = Number(status[1]);
+  return statusCode === 408 || statusCode === 429 || statusCode >= 500;
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 async function uploadMultipartAsset({ url, token, filename, source, timeoutMs, idleTimeoutMs }) {
@@ -251,10 +300,7 @@ async function uploadMultipartAsset({ url, token, filename, source, timeoutMs, i
       `${token}\r\n--${boundary}--\r\n`,
     "utf8"
   );
-  const fileSize = source.filePath ? (await stat(source.filePath)).size : source.data?.length;
-  if (!Number.isSafeInteger(fileSize) || fileSize <= 0) {
-    throw new Error(`待上传附件 ${filename} 为空或大小无效。`);
-  }
+  const fileSize = await assetSourceSize(filename, source);
 
   await new Promise((resolve, reject) => {
     let fileStream;
