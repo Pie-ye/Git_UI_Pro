@@ -1118,13 +1118,93 @@ input[type="radio"]:focus-visible {
   }
 }
 
+.app-shell.left-collapsed,
+.app-shell.sidebar-right.left-collapsed {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.app-shell.left-collapsed > .workspace-shell {
+  grid-column: 1;
+}
+
+@media (max-width: 700px) {
+  .app-shell,
+  .app-shell.left-collapsed,
+  .app-shell.sidebar-right,
+  .app-shell.sidebar-right.left-collapsed {
+    position: relative;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-shell > .project-rail {
+    position: absolute;
+    z-index: 35;
+    top: 32px;
+    bottom: 0;
+    left: 0;
+    width: min(260px, calc(100vw - 56px));
+    height: auto;
+    margin: 8px 0 10px 8px;
+  }
+
+  .theme-light.app-shell > .project-rail {
+    background: #f7fcff;
+  }
+
+  .theme-dark.app-shell > .project-rail {
+    background: #0e1b28;
+  }
+
+  .app-shell.sidebar-right > .project-rail {
+    right: 8px;
+    left: auto;
+    grid-column: 1;
+  }
+
+  .app-shell > .sidebar-resize {
+    display: none;
+  }
+
+  .app-shell > .workspace-shell,
+  .app-shell.sidebar-right > .workspace-shell {
+    grid-column: 1;
+  }
+}
+
 /* Windows updater: one strong glass surface anchored to the compact title bar. */
 .app-shell > .app-chrome {
   z-index: 40;
 }
 
 .app-chrome-titlebar {
-  grid-template-columns: max-content max-content minmax(0, 1fr) max-content;
+  grid-template-columns: max-content max-content max-content minmax(0, 1fr) max-content;
+}
+
+/* Invisible resize hit areas keep layout adjustment without visual dividers. */
+.sidebar-resize,
+.sidebar-resize:hover,
+.sidebar-resize:active,
+.detail-resize,
+.detail-resize:hover,
+.detail-resize:active,
+.source-graph-divider,
+.source-graph-divider:hover,
+.source-graph-divider:active,
+.console-resize,
+.console-resize:hover,
+.console-resize:active {
+  background: transparent;
+}
+
+.sidebar-resize::before,
+.sidebar-resize::after,
+.detail-resize::before,
+.detail-resize::after,
+.source-graph-divider::before,
+.source-graph-divider::after,
+.console-resize::before,
+.console-resize::after {
+  display: none;
 }
 
 .app-update-control {
@@ -2092,9 +2172,17 @@ select:not([disabled]):focus {
 }
 
 .app-chrome-tools .app-update-trigger:focus-visible,
-.app-chrome-settings-button:focus-visible {
+.app-chrome-settings-button:focus-visible,
+.app-chrome-theme-button:focus-visible,
+.app-chrome-sidebar-button:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent) 38%, transparent);
   outline-offset: -2px;
+}
+
+.app-chrome-theme-menu {
+  border-color: var(--glass-edge);
+  background: var(--panel);
+  box-shadow: 0 16px 38px rgba(27, 49, 67, 0.2), inset 0 1px 0 color-mix(in srgb, var(--glass-edge) 72%, transparent);
 }
 
 .app-update-trigger-dot {

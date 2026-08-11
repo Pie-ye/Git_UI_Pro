@@ -3,20 +3,13 @@ import {
   AlertTriangle,
   Check,
   ExternalLink,
-  FolderGit2,
   GitBranch,
   GitMerge,
   MessageSquareText,
-  Moon,
-  PanelLeftClose,
-  PanelLeftOpen,
-  PanelRightClose,
-  PanelRightOpen,
   Plus,
   Power,
   RefreshCw,
   ServerOff,
-  Sun,
   Terminal,
   Trash2,
   X
@@ -28,7 +21,6 @@ import { ConsolePanel } from "./components/ConsolePanel";
 import { FeedbackConfirmDialog, type FeedbackConfirmOptions } from "./components/FeedbackConfirmDialog";
 import { GraphSidebar } from "./components/GraphSidebar";
 import { GitOperationCenter } from "./components/GitOperationCenter";
-import { PathTooltip } from "./components/PathTooltip";
 import { ProjectRail } from "./components/ProjectRail";
 import { RepositoryCenterContainer } from "./components/RepositoryCenterContainer";
 import type { RepositoryCenterTab } from "./components/RepositoryCenter";
@@ -2638,8 +2630,7 @@ export function App() {
     setResolvedTheme(resolveTheme(mode));
   }
 
-  function toggleThemeMode() {
-    const nextTheme = resolvedTheme === "dark" ? "light" : "dark";
+  function selectThemeMode(nextTheme: "light" | "dark") {
     const previousTheme = uiPreferences.theme;
     applyThemeMode(nextTheme);
     persistUiPreferences({ theme: nextTheme }, () => applyThemeMode(previousTheme));
@@ -2690,32 +2681,6 @@ export function App() {
     restoreConsoleHeightRef.current = clamp(consoleHeight, MIN_CONSOLE_HEIGHT, Math.max(MIN_CONSOLE_HEIGHT, getMaxConsoleHeight() - 1));
     setConsoleHeight(getMaxConsoleHeight());
     setConsoleMaximized(true);
-  }
-
-  function renderSidebarControls(collapsed: boolean) {
-    const sidebarToggleLabel = collapsed ? "展开项目栏" : "收起项目栏";
-    const themeToggleLabel = resolvedTheme === "dark" ? "切换浅色主题" : "切换深色主题";
-    const sidebarOnRight = uiPreferences.sidebarPosition === "right";
-    return (
-      <div className={`sidebar-bottom-controls ${collapsed ? "collapsed" : ""}`} aria-label={`${sidebarOnRight ? "右" : "左"}侧栏控制`}>
-        <PathTooltip content={sidebarToggleLabel} className="sidebar-control-tooltip">
-          <button type="button" className="icon-button compact-icon" aria-label={sidebarToggleLabel} onClick={() => setLeftCollapsed(!collapsed)}>
-            {collapsed ? (
-              sidebarOnRight ? <PanelRightOpen size={16} /> : <PanelLeftOpen size={16} />
-            ) : sidebarOnRight ? (
-              <PanelRightClose size={16} />
-            ) : (
-              <PanelLeftClose size={16} />
-            )}
-          </button>
-        </PathTooltip>
-        <PathTooltip content={themeToggleLabel} className="sidebar-control-tooltip">
-          <button type="button" className="icon-button compact-icon" aria-label={themeToggleLabel} onClick={toggleThemeMode}>
-            {resolvedTheme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
-          </button>
-        </PathTooltip>
-      </div>
-    );
   }
 
   function beginResize(target: ResizeTarget, event: MouseEvent<HTMLDivElement>) {
@@ -2784,7 +2749,7 @@ export function App() {
   }
 
   const layoutStyle = {
-    "--sidebar-width": leftCollapsed ? "64px" : `${sidebarWidth}px`,
+    "--sidebar-width": leftCollapsed ? "0px" : `${sidebarWidth}px`,
     "--detail-width": rightCollapsed ? "0px" : `${detailWidth}px`,
     "--scm-pane-height": `${sourcePaneHeight}px`,
     "--console-height": `${consoleHeight}px`,
@@ -2808,37 +2773,16 @@ export function App() {
         onCommand={runAppCommand}
         gitVersion={gitVersion}
         gitReady={gitDependency.status === "ready"}
+        sidebarCollapsed={leftCollapsed}
+        theme={resolvedTheme}
+        onToggleSidebar={() => setLeftCollapsed((collapsed) => !collapsed)}
+        onThemeChange={selectThemeMode}
         onOpenRepositoryCenter={() => {
           setRepositoryCenterInitialTab(selectedProject ? "recovery" : "projects");
           setRepositoryCenterOpen(true);
         }}
       />
-      {leftCollapsed ? (
-        <aside className="collapsed-sidebar">
-          <div className="collapsed-project-list" aria-label="项目列表">
-            {projects.map((project) => (
-              <PathTooltip content={project.name} className="collapsed-project-tooltip" key={project.id}>
-                <button
-                  type="button"
-                  className={`collapsed-project-item ${project.id === selectedProject?.id ? "active" : ""}`}
-                  aria-label={project.name}
-                  onClick={() => selectProject(project.id)}
-                >
-                  {projectInitial(project)}
-                </button>
-              </PathTooltip>
-            ))}
-            {projects.length === 0 ? (
-              <PathTooltip content="暂无项目" className="collapsed-project-tooltip">
-                <span className="collapsed-project-empty" aria-label="暂无项目">
-                  <FolderGit2 size={18} />
-                </span>
-              </PathTooltip>
-            ) : null}
-          </div>
-          {renderSidebarControls(true)}
-        </aside>
-      ) : (
+      {!leftCollapsed ? (
         <ProjectRail
           projects={projects}
           groups={projectLibrary.groups}
@@ -2852,18 +2796,10 @@ export function App() {
           onToggleProjectPinned={(projectId) => void handleToggleProjectPinned(projectId)}
           onSetRemoteConnectionEnabled={handleSetRemoteProjectConnectionEnabled}
           onSwitchBranch={(project) => void switchBranchFromToolbar(project)}
-          footer={renderSidebarControls(false)}
         />
-      )}
+      ) : null}
 
-      <div
-        className={`resize-handle sidebar-resize ${leftCollapsed ? "collapsed" : ""}`}
-        onMouseDown={(event) => {
-          if (!leftCollapsed) {
-            beginResize("sidebar", event);
-          }
-        }}
-      />
+      {!leftCollapsed ? <div className="resize-handle sidebar-resize" onMouseDown={(event) => beginResize("sidebar", event)} /> : null}
 
       <main className="workspace-shell">
         {!selectedProjectGitReady ? (
@@ -3639,13 +3575,6 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
       .catch(reject)
       .finally(() => window.clearTimeout(timeoutId));
   });
-}
-
-function projectInitial(project: GitProject): string {
-  const fallbackName = project.path.split(/[\\/]/).filter(Boolean).at(-1) ?? "";
-  const source = (project.name.trim() || fallbackName.trim() || "?").trim();
-  const alphaNumeric = source.match(/[a-z0-9]/i)?.[0];
-  return (alphaNumeric ?? source[0] ?? "?").toUpperCase();
 }
 
 function hasAdvancedHistoryQuery(query: AdvancedHistoryQuery): boolean {

@@ -1,5 +1,5 @@
-import { Copy, Minus, Square, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Check, ChevronDown, Copy, Minus, Moon, PanelLeft, Square, Sun, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import type { WindowState } from "../types/electron";
 import { AppUpdateControl } from "./AppUpdateControl";
 
@@ -9,11 +9,26 @@ interface AppChromeProps {
   onCommand: (command: string) => void;
   gitVersion: string;
   gitReady?: boolean;
+  sidebarCollapsed: boolean;
+  theme: "light" | "dark";
+  onToggleSidebar: () => void;
+  onThemeChange: (theme: "light" | "dark") => void;
   onOpenRepositoryCenter: () => void;
 }
 
-export function AppChrome({ onCommand, gitVersion, gitReady = true, onOpenRepositoryCenter }: AppChromeProps) {
+export function AppChrome({
+  onCommand,
+  gitVersion,
+  gitReady = true,
+  sidebarCollapsed,
+  theme,
+  onToggleSidebar,
+  onThemeChange,
+  onOpenRepositoryCenter
+}: AppChromeProps) {
   const [windowState, setWindowState] = useState<WindowState>({ isMaximized: false, isFullScreen: false });
+  const [themeMenuOpen, setThemeMenuOpen] = useState(false);
+  const themeControlRef = useRef<HTMLDivElement>(null);
   const shouldRestore = windowState.isMaximized || windowState.isFullScreen;
 
   useEffect(() => {
@@ -33,6 +48,31 @@ export function AppChrome({ onCommand, gitVersion, gitReady = true, onOpenReposi
     };
   }, []);
 
+  useEffect(() => {
+    if (!themeMenuOpen) {
+      return;
+    }
+
+    const closeOnPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && !themeControlRef.current?.contains(target)) {
+        setThemeMenuOpen(false);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setThemeMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", closeOnPointerDown, true);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnPointerDown, true);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [themeMenuOpen]);
+
   function runCommand(command: string) {
     onCommand(command);
   }
@@ -40,6 +80,15 @@ export function AppChrome({ onCommand, gitVersion, gitReady = true, onOpenReposi
   return (
     <header className="app-chrome">
       <div className="app-chrome-titlebar">
+        <button
+          type="button"
+          className="app-chrome-sidebar-button"
+          aria-label={sidebarCollapsed ? "展开项目栏" : "收起项目栏"}
+          title={sidebarCollapsed ? "展开项目栏" : "收起项目栏"}
+          onClick={onToggleSidebar}
+        >
+          <PanelLeft size={16} />
+        </button>
         <div className="app-chrome-brand" aria-label="Git UI Pro">
           <img src={APP_ICON_URL} alt="" draggable={false} />
         </div>
@@ -47,6 +96,48 @@ export function AppChrome({ onCommand, gitVersion, gitReady = true, onOpenReposi
           <button type="button" className="app-chrome-settings-button" aria-label="打开设置" onClick={onOpenRepositoryCenter}>
             设置
           </button>
+          <div className="app-chrome-theme-control" ref={themeControlRef}>
+            <button
+              type="button"
+              className="app-chrome-theme-button"
+              aria-haspopup="menu"
+              aria-expanded={themeMenuOpen}
+              onClick={() => setThemeMenuOpen((open) => !open)}
+            >
+              主题
+              <ChevronDown size={12} aria-hidden="true" />
+            </button>
+            {themeMenuOpen ? (
+              <div className="app-chrome-theme-menu" role="menu" aria-label="选择主题">
+                <button
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={theme === "light"}
+                  onClick={() => {
+                    onThemeChange("light");
+                    setThemeMenuOpen(false);
+                  }}
+                >
+                  <Sun size={14} aria-hidden="true" />
+                  <span>明亮</span>
+                  {theme === "light" ? <Check size={13} aria-hidden="true" /> : null}
+                </button>
+                <button
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={theme === "dark"}
+                  onClick={() => {
+                    onThemeChange("dark");
+                    setThemeMenuOpen(false);
+                  }}
+                >
+                  <Moon size={14} aria-hidden="true" />
+                  <span>黑暗</span>
+                  {theme === "dark" ? <Check size={13} aria-hidden="true" /> : null}
+                </button>
+              </div>
+            ) : null}
+          </div>
           <AppUpdateControl gitVersion={gitVersion} gitReady={gitReady} />
         </div>
         <div className="app-chrome-drag-region" />
