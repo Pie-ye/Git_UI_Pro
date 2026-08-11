@@ -3,6 +3,8 @@ import type { GitLongOperationKind, GitLongOperationProgress } from "../types/op
 const operations = new Map<string, GitLongOperationProgress>();
 const listeners = new Set<() => void>();
 const dismissTimers = new Map<string, number>();
+const COMPLETED_DISMISS_DELAY_MS = 3_200;
+const NON_SUCCESS_DISMISS_DELAY_MS = 5_000;
 let snapshot: GitLongOperationProgress[] = [];
 let bridgeSubscribed = false;
 
@@ -107,7 +109,8 @@ function updateOperation(progress: GitLongOperationProgress): void {
     if (existingTimer !== undefined) {
       window.clearTimeout(existingTimer);
     }
-    dismissTimers.set(next.id, window.setTimeout(() => dismissGitOperation(next.id), 10_000));
+    const dismissDelay = next.phase === "completed" ? COMPLETED_DISMISS_DELAY_MS : NON_SUCCESS_DISMISS_DELAY_MS;
+    dismissTimers.set(next.id, window.setTimeout(() => dismissGitOperation(next.id), dismissDelay));
   }
 }
 
