@@ -161,7 +161,6 @@ export function App() {
   const [worktree, setWorktree] = useState<WorktreeState>(emptyWorktree);
   const [worktreeTabs, setWorktreeTabs] = useState<WorktreeEditorTab[]>([]);
   const [activeWorktreeTabId, setActiveWorktreeTabId] = useState<string | null>(null);
-  const [gitVersion, setGitVersion] = useState("检测中");
   const [gitDependency, setGitDependency] = useState<GitDependencyState>({ status: "checking" });
   const [statusMessage, setStatusMessage] = useState("准备就绪");
   const [themeMode, setThemeModeState] = useState<ThemeMode>(() => readThemeMode());
@@ -268,6 +267,10 @@ export function App() {
   }
 
   function selectProject(projectId: string | null, openedProject?: GitProject) {
+    if (selectedProjectIdRef.current !== projectId) {
+      setConsoleOpen(false);
+      setConsoleMaximized(false);
+    }
     setSelectedProjectId((current) => (current === projectId ? current : projectId));
     if (openedProject) {
       setProjects((current) => current.map((project) => (project.id === openedProject.id ? { ...project, ...openedProject } : project)));
@@ -684,7 +687,6 @@ export function App() {
   }
 
   function applyGitVersionResult(result: GitOperationResult) {
-    setGitVersion(formatGitVersion(result));
     if (result.ok) {
       setGitDependency({ status: "ready", version: result.stdout.trim() || "Git 已就绪" });
       rememberStatus("Git 已就绪");
@@ -702,7 +704,6 @@ export function App() {
 
   async function handleRecheckGit() {
     setGitDependency({ status: "checking" });
-    setGitVersion("检测中");
     rememberStatus("正在检测 Git...");
 
     let result: GitOperationResult;
@@ -716,7 +717,6 @@ export function App() {
     } catch (error) {
       const message = error instanceof Error ? error.message : "Git 检测失败";
       setGitDependency({ status: "missing", message });
-      setGitVersion("Git 未就绪");
       notifyError(message);
       return;
     }
@@ -2775,8 +2775,6 @@ export function App() {
     >
       <AppChrome
         onCommand={runAppCommand}
-        gitVersion={gitVersion}
-        gitReady={gitDependency.status === "ready"}
         sidebarCollapsed={leftCollapsed}
         theme={resolvedTheme}
         onToggleSidebar={() => setLeftCollapsed((collapsed) => !collapsed)}
@@ -3369,14 +3367,6 @@ function CommitMessageDialog({
       </section>
     </div>
   );
-}
-
-function formatGitVersion(result: GitOperationResult): string {
-  if (!result.ok) {
-    return "Git 未就绪";
-  }
-
-  return result.stdout.trim() || "Git 已就绪";
 }
 
 function gitOutputPreview(result: GitOperationResult): string | undefined {

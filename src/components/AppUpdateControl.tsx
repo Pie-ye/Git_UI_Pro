@@ -1,17 +1,15 @@
 import {
   AlertTriangle,
-  ArrowDownToLine,
   Check,
   CheckCircle2,
   ChevronDown,
   Download,
-  ExternalLink,
+  Github,
   History,
   LoaderCircle,
   PackageCheck,
   RefreshCw,
   RotateCcw,
-  Terminal,
   X
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -24,17 +22,12 @@ const MOCK_PHASES = new Set<UpdatePhase>(["idle", "checking", "up-to-date", "ava
 const CURRENT_VERSION = packageInfo.version;
 const UPDATE_BRIDGE_UNAVAILABLE = "更新服务不可用：桌面进程未提供所需接口。";
 
-interface AppUpdateControlProps {
-  gitVersion: string;
-  gitReady?: boolean;
-}
-
-export function AppUpdateControl({ gitVersion, gitReady = true }: AppUpdateControlProps) {
+export function AppUpdateControl() {
   const mockState = useMemo(() => readMockUpdateState(), []);
   const isMock = mockState !== null;
   const [state, setState] = useState<UpdateState>(() => mockState ?? unsupportedUpdateState());
   const [open, setOpen] = useState(false);
-  const [historyExpanded, setHistoryExpanded] = useState(false);
+  const [historyExpanded, setHistoryExpanded] = useState(true);
   const [historyItems, setHistoryItems] = useState<ReleaseHistoryItem[]>([]);
   const [selectedHistoryVersion, setSelectedHistoryVersion] = useState("");
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -109,11 +102,11 @@ export function AppUpdateControl({ gitVersion, gitReady = true }: AppUpdateContr
       }
     }
 
-    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("pointerdown", handlePointerDown, true);
     document.addEventListener("keydown", handleKeyDown);
     window.requestAnimationFrame(() => panelRef.current?.focus());
     return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("pointerdown", handlePointerDown, true);
       document.removeEventListener("keydown", handleKeyDown);
     };
   }, [open]);
@@ -143,12 +136,7 @@ export function AppUpdateControl({ gitVersion, gitReady = true }: AppUpdateContr
   const triggerLabel = hasUpgradeNotification
     ? `发现新版本 v${stripVersionPrefix(state.availableVersion ?? state.currentVersion)}`
     : "关于、版本与更新";
-  const gitVersionLabel = gitVersion.replace(/^git version\s*/i, "").trim() || gitVersion;
-  const gitStatusLabel = gitVersion.trim() === "检测中" ? "检测中" : gitReady ? "可用" : "不可用";
   const canCheck = !actionPending && state.operation !== "rollback" && !["checking", "downloading", "downloaded", "installing"].includes(state.phase);
-  const selectedRollbackPrepared = state.operation === "rollback" &&
-    state.availableVersion === selectedHistoryVersion &&
-    (TARGET_PHASES.has(state.phase) || (state.phase === "error" && Boolean(state.progress)));
   const rollbackNeedsPreparation = state.operation === "rollback" && state.phase === "error" && !state.progress;
 
   function closePanel() {
@@ -164,7 +152,13 @@ export function AppUpdateControl({ gitVersion, gitReady = true }: AppUpdateContr
         ? createMockReleaseHistory(state.currentVersion)
         : await requireUpdateBridgeMethod(window.gitUI?.listUpdateReleases)(force);
       setHistoryItems(items);
-      setSelectedHistoryVersion((current) => current && items.some((item) => item.version === current) ? current : items[0]?.version ?? "");
+      setSelectedHistoryVersion((current) => {
+        if (current && items.some((item) => item.version === current)) {
+          return current;
+        }
+        const preparedVersion = state.operation === "rollback" ? state.availableVersion : undefined;
+        return preparedVersion && items.some((item) => item.version === preparedVersion) ? preparedVersion : "";
+      });
     } catch (error) {
       setHistoryError(cleanActionError(error, "无法读取历史版本，请稍后重试。"));
     } finally {
@@ -209,9 +203,12 @@ export function AppUpdateControl({ gitVersion, gitReady = true }: AppUpdateContr
     }
   }
 
-  async function prepareRollback() {
-    const selected = historyItems.find((item) => item.version === selectedHistoryVersion);
-    if (!selected || actionPending || selectedRollbackPrepared) {
+  async function prepareRollback(version = selectedHistoryVersion) {
+    const selected = historyItems.find((item) => item.version === version);
+    const alreadyPrepared = state.operation === "rollback" &&
+      state.availableVersion === selected?.version &&
+      (TARGET_PHASES.has(state.phase) || (state.phase === "error" && Boolean(state.progress)));
+    if (!selected || actionPending || alreadyPrepared) {
       return;
     }
 
@@ -388,29 +385,11 @@ export function AppUpdateControl({ gitVersion, gitReady = true }: AppUpdateContr
           tabIndex={-1}
         >
           <div className="app-update-panel-header">
-            <h2 id="app-update-title">关于 Git UI Pro</h2>
+            <h2 id="app-update-title">当前版本</h2>
             <div className="app-update-header-actions">
-              <PathTooltip
-                content={`查看 v${stripVersionPrefix(state.availableVersion ?? state.currentVersion)} 发布页`}
-                className="app-update-action-tooltip"
-              >
-                <button
-                  type="button"
-                  className="app-update-icon-button"
-                  aria-label={`查看 v${stripVersionPrefix(state.availableVersion ?? state.currentVersion)} 发布页`}
-                  onClick={() => openRelease()}
-                >
-                  <ExternalLink size={15} />
-                </button>
-              </PathTooltip>
               <PathTooltip content="检查最新版本" className="app-update-action-tooltip">
                 <button type="button" className="app-update-icon-button" aria-label="检查最新版本" disabled={!canCheck} onClick={() => void checkForUpdates()}>
                   <RefreshCw className={state.phase === "checking" ? "app-update-spin" : ""} size={15} />
-                </button>
-              </PathTooltip>
-              <PathTooltip content="关闭版本窗口" className="app-update-action-tooltip">
-                <button type="button" className="app-update-icon-button" aria-label="关闭版本窗口" onClick={closePanel}>
-                  <X size={16} />
                 </button>
               </PathTooltip>
             </div>
@@ -424,37 +403,27 @@ export function AppUpdateControl({ gitVersion, gitReady = true }: AppUpdateContr
 
           <div className="app-update-scroll-region">
             <section
-              className="app-update-overview"
+              className="app-update-summary"
               data-has-target={hasTarget}
               data-operation={state.operation}
               aria-label={hasTarget
                 ? `从 ${state.currentVersion} ${state.operation === "rollback" ? "回退" : "更新"}到 ${state.availableVersion}`
                 : `当前版本 v${stripVersionPrefix(state.currentVersion)}`}
             >
-              <div className={`app-update-version-route ${hasTarget ? "has-target" : "is-current-only"}`}>
-                <div className="app-update-version-node is-current">
-                  <span className="app-update-version-label">{hasTarget ? "当前版本" : "应用版本"}</span>
-                  <strong className="app-update-version-value">v{stripVersionPrefix(state.currentVersion)}</strong>
-                  {!hasTarget ? <em className="app-update-version-status">{statusLabel}</em> : null}
-                </div>
-                {hasTarget ? <>
-                  <span className="app-update-version-rail" aria-hidden="true">
-                    <span className="app-update-version-action">{state.operation === "rollback" ? "回退" : "升级"}</span>
-                    <i className="app-update-version-track" />
-                  </span>
-                  <div className="app-update-version-node is-target">
-                    <span className="app-update-version-label">{state.operation === "rollback" ? "回退版本" : "最新版本"}</span>
-                    <strong className="app-update-version-value">v{stripVersionPrefix(state.availableVersion ?? state.currentVersion)}</strong>
-                    <em className="app-update-version-status">{statusLabel}</em>
-                  </div>
-                </> : null}
+              <div className="app-update-summary-current">
+                <strong>v{stripVersionPrefix(state.currentVersion)}</strong>
+                {!hasTarget ? <CheckCircle2 size={18} aria-hidden="true" /> : null}
               </div>
-            </section>
-
-            <section className={`app-update-environment ${gitReady ? "" : "warning"}`} aria-label={`Git 版本 ${gitVersionLabel}，${gitStatusLabel}`}>
-              <span className="app-update-environment-label"><Terminal size={15} />Git 环境</span>
-              <code title={gitVersion}>{gitVersionLabel}</code>
-              <small>{gitStatusLabel}</small>
+              <span className="app-update-summary-status">{hasTarget ? (state.operation === "rollback" ? "已选择回退版本" : "发现新版本") : statusLabel}</span>
+              {hasTarget ? (
+                <div className="app-update-summary-target">
+                  <span>{state.operation === "rollback" ? "回退到" : "可更新至"}</span>
+                  <strong>v{stripVersionPrefix(state.availableVersion ?? state.currentVersion)}</strong>
+                </div>
+              ) : null}
+              <button type="button" className="app-update-release-link" onClick={() => openRelease()}>
+                <Github size={14} aria-hidden="true" />查看发布
+              </button>
             </section>
 
             {state.phase === "downloading" ? (
@@ -485,7 +454,10 @@ export function AppUpdateControl({ gitVersion, gitReady = true }: AppUpdateContr
                   aria-controls="app-update-history-body"
                   onClick={() => setHistoryExpanded((current) => !current)}
                 >
-                  <span className="app-update-history-title"><History size={16} /><strong>历史版本</strong>{historyItems.length > 0 ? <small>{historyItems.length}</small> : null}</span>
+                  <span className="app-update-history-heading">
+                    <span className="app-update-history-title"><History size={16} /><strong>版本回退</strong></span>
+                    <small>选择要回退到的版本（近 3 个版本）</small>
+                  </span>
                   <ChevronDown size={16} />
                 </button>
               </PathTooltip>
@@ -511,16 +483,15 @@ export function AppUpdateControl({ gitVersion, gitReady = true }: AppUpdateContr
                               name="rollback-version"
                               value={item.version}
                               checked={selectedHistoryVersion === item.version}
-                              onChange={() => setSelectedHistoryVersion(item.version)}
+                              onChange={() => {
+                                setSelectedHistoryVersion(item.version);
+                                void prepareRollback(item.version);
+                              }}
                               disabled={actionPending || ["downloading", "downloaded", "installing"].includes(state.phase)}
                             />
                             <span className="app-update-history-radio" aria-hidden="true"><Check size={11} /></span>
                             <span className="app-update-history-meta"><strong>v{item.version}</strong><small>{formatReleaseDate(item.publishedAt)}</small></span>
-                            <span className="app-update-history-size">{formatBytes(item.installerSize)}</span>
                           </label>
-                          <PathTooltip content={`查看 v${item.version} 发布页`} className="app-update-action-tooltip">
-                            <button type="button" className="app-update-icon-button" aria-label={`查看 v${item.version} 发布页`} onClick={() => openRelease(item.releaseUrl)}><ExternalLink size={13} /></button>
-                          </PathTooltip>
                         </div>
                       ))}
                     </div>
@@ -528,21 +499,6 @@ export function AppUpdateControl({ gitVersion, gitReady = true }: AppUpdateContr
                     <div className="app-update-history-empty"><History size={16} />暂无可安全回退的正式版本</div>
                   )}
 
-                  {historyItems.length > 0 ? (
-                    <button
-                      type="button"
-                      className="app-update-prepare-rollback"
-                      disabled={!selectedHistoryVersion || actionPending || selectedRollbackPrepared || ["downloading", "downloaded", "installing"].includes(state.phase)}
-                      onClick={() => void prepareRollback()}
-                    >
-                      {selectedRollbackPrepared
-                        ? <CheckCircle2 size={15} />
-                        : actionPending
-                          ? <LoaderCircle className="app-update-spin" size={15} />
-                          : <ArrowDownToLine size={15} />}
-                      {selectedRollbackPrepared ? `已选择 v${selectedHistoryVersion}` : `选为回退目标`}
-                    </button>
-                  ) : null}
                 </> : null}
               </div>
             </section>

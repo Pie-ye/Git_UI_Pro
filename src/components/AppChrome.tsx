@@ -8,8 +8,6 @@ const APP_ICON_URL = new URL("../assets/git-ui-pro-mark.svg", import.meta.url).h
 
 interface AppChromeProps {
   onCommand: (command: string) => void;
-  gitVersion: string;
-  gitReady?: boolean;
   sidebarCollapsed: boolean;
   theme: "light" | "dark";
   onToggleSidebar: () => void;
@@ -19,8 +17,6 @@ interface AppChromeProps {
 
 export function AppChrome({
   onCommand,
-  gitVersion,
-  gitReady = true,
   sidebarCollapsed,
   theme,
   onToggleSidebar,
@@ -139,7 +135,7 @@ export function AppChrome({
               </div>
             ) : null}
           </div>
-          <AppUpdateControl gitVersion={gitVersion} gitReady={gitReady} />
+          <AppUpdateControl />
         </div>
         <div className="app-chrome-drag-region" />
         <div className="app-window-controls" aria-label="窗口控制">

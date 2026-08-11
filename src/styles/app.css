@@ -5103,9 +5103,9 @@ button {
 }
 
 .editor-detail-panel.empty .editor-empty-state {
-  align-self: start;
+  align-self: center;
   justify-self: center;
-  margin-top: clamp(120px, 24vh, 220px);
+  margin-top: 0;
   color: color-mix(in srgb, var(--muted) 80%, transparent);
   font-size: 13px;
 }
