@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronDown, ChevronRight, GitMerge, GitPullRequest, Plus, RefreshCw, Trash2, Undo2 } from "lucide-react";
 import { PathTooltip } from "./PathTooltip";
@@ -39,6 +39,7 @@ interface CommitMessageDraftRequest {
 
 const COMMIT_MESSAGE_MIN_HEIGHT = 34;
 const COMMIT_MESSAGE_MAX_HEIGHT = 260;
+const COMMIT_ACTION_REVEAL_GAP = 8;
 
 export function WorkspaceView({
   project,
@@ -120,7 +121,7 @@ export function WorkspaceView({
     return () => window.cancelAnimationFrame(frameId);
   }, [messageDraftRequest]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const input = messageInputRef.current;
     if (!input) {
       return;
@@ -130,6 +131,23 @@ export function WorkspaceView({
     const nextHeight = Math.min(COMMIT_MESSAGE_MAX_HEIGHT, Math.max(COMMIT_MESSAGE_MIN_HEIGHT, input.scrollHeight));
     input.style.height = `${nextHeight}px`;
     input.style.overflowY = input.scrollHeight > COMMIT_MESSAGE_MAX_HEIGHT ? "auto" : "hidden";
+
+    if (document.activeElement !== input) {
+      return;
+    }
+
+    const scrollContainer = input.closest<HTMLElement>(".scm-panel-body");
+    const commitActions = commitActionsRef.current;
+    if (!scrollContainer || !commitActions) {
+      return;
+    }
+
+    const containerBottom = scrollContainer.getBoundingClientRect().bottom;
+    const actionsBottom = commitActions.getBoundingClientRect().bottom;
+    const hiddenDistance = actionsBottom + COMMIT_ACTION_REVEAL_GAP - containerBottom;
+    if (hiddenDistance > 0) {
+      scrollContainer.scrollTop += hiddenDistance;
+    }
   }, [message, panelOpen]);
 
   useEffect(() => {
