@@ -242,7 +242,10 @@ button {
   width: 22px;
   height: 22px;
   border-radius: 6px;
+  object-fit: contain;
+  flex-shrink: 0;
   user-select: none;
+  -webkit-user-drag: none;
 }
 
 .app-chrome-drag-region {

@@ -1,36 +1,44 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
   <defs>
-    <linearGradient id="base" x1="3" y1="2" x2="21" y2="23" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#174653" />
-      <stop offset="0.56" stop-color="#103341" />
-      <stop offset="1" stop-color="#102438" />
+    <linearGradient id="tile" x1="3" y1="1.5" x2="21" y2="22.5" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3ADCC4" />
+      <stop offset="0.5" stop-color="#2BB0D4" />
+      <stop offset="1" stop-color="#4578EC" />
     </linearGradient>
-    <linearGradient id="flow" x1="12" y1="12" x2="18" y2="18" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#46BFA9" />
-      <stop offset="1" stop-color="#7BE2CC" />
-    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="translate(6.5 5) rotate(48) scale(15 13)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity="0.34" />
+      <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0.06" />
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0" />
+    </radialGradient>
+    <radialGradient id="shade" cx="0" cy="0" r="1" gradientTransform="translate(17.5 18.5) rotate(-128) scale(11)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1B45B0" stop-opacity="0.26" />
+      <stop offset="1" stop-color="#1B45B0" stop-opacity="0" />
+    </radialGradient>
   </defs>
 
-  <rect x="0.75" y="0.75" width="22.5" height="22.5" rx="6.25" fill="url(#base)" />
-  <rect x="1.125" y="1.125" width="21.75" height="21.75" rx="5.875" stroke="#D8FFF7" stroke-opacity="0.44" stroke-width="0.75" />
+  <!-- App tile -->
+  <rect x="0.5" y="0.5" width="23" height="23" rx="6.35" fill="url(#tile)" />
+  <rect x="0.5" y="0.5" width="23" height="23" rx="6.35" fill="url(#glow)" />
+  <rect x="0.5" y="0.5" width="23" height="23" rx="6.35" fill="url(#shade)" />
+  <rect x="1.1" y="1.1" width="21.8" height="21.8" rx="5.85" stroke="#FFFFFF" stroke-opacity="0.22" stroke-width="0.65" />
 
+  <!--
+    Geometric G: open ring + right-half spur + terminal node.
+    Spur stays in the right half so the counter reads as a letter, not a capsule joint.
+  -->
   <path
-    d="M6.75 17.25L12 12L17.25 6.75"
-    stroke="#F7FCFF"
-    stroke-width="1.75"
+    d="M15.03 8.27
+       A5.35 5.35 0 1 0 15.03 15.43"
+    stroke="#FFFFFF"
+    stroke-width="2.4"
     stroke-linecap="round"
-    stroke-linejoin="round"
+    fill="none"
   />
   <path
-    d="M12 12H14.1C15.84 12 17.25 13.41 17.25 15.15V17.25"
-    stroke="url(#flow)"
-    stroke-width="1.75"
+    d="M13.45 11.85H15.55"
+    stroke="#FFFFFF"
+    stroke-width="2.4"
     stroke-linecap="round"
-    stroke-linejoin="round"
   />
-
-  <circle cx="6.75" cy="17.25" r="1.8" fill="#F7FCFF" stroke="#163746" stroke-width="0.6" />
-  <circle cx="12" cy="12" r="1.8" fill="#F7FCFF" stroke="#163746" stroke-width="0.6" />
-  <circle cx="17.25" cy="6.75" r="1.8" fill="#6FDAC4" stroke="#163746" stroke-width="0.6" />
-  <circle cx="17.25" cy="17.25" r="1.8" fill="#6FDAC4" stroke="#F7FCFF" stroke-width="0.65" />
+  <circle cx="16.05" cy="11.85" r="1.78" fill="#FFFFFF" />
 </svg>

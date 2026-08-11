@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import type { WindowState } from "../types/electron";
 import { AppUpdateControl } from "./AppUpdateControl";
 
+/** In-app brand mark — SVG stays sharp at titlebar size (~22px). */
 const APP_ICON_URL = new URL("../assets/git-ui-pro-mark.svg", import.meta.url).href;
 
 interface AppChromeProps {

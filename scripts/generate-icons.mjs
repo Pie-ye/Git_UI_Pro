@@ -42,27 +42,45 @@ function renderIcon(size) {
   const pixels = Buffer.alloc(size * size * 4);
   const scale = size / 24;
   const iconPoint = (value) => value * scale;
-  const gradientStart = [23, 70, 83];
-  const gradientMiddle = [16, 51, 65];
-  const gradientEnd = [16, 36, 56];
+  // Match src/assets/git-ui-pro-mark.svg — geometric "G" with open counter.
+  const tileTop = [58, 220, 196];
+  const tileMid = [43, 176, 212];
+  const tileBottom = [69, 120, 236];
+  const small = size <= 32;
+  const stroke = Math.max(iconPoint(small ? 2.55 : 2.4), small ? 1.5 : 1.25);
+  const nodeRadius = iconPoint(small ? 1.95 : 1.78);
+  const mark = [255, 255, 255, 255];
+
+  // Monogram geometry (SVG units). Spur lives in the right half only.
+  const gCx = 11.05;
+  const gCy = 11.85;
+  const gR = 5.35;
+  const gapDeg = 42;
+  const spurStartX = 13.45;
+  const spurEndX = 15.55;
+  const nodeX = 16.05;
 
   for (let y = 0; y < size; y += 1) {
     for (let x = 0; x < size; x += 1) {
       const alpha = roundedRectAlpha(
         x + 0.5,
         y + 0.5,
-        iconPoint(0.75),
-        iconPoint(0.75),
-        iconPoint(22.5),
-        iconPoint(22.5),
-        iconPoint(6.25)
+        iconPoint(0.5),
+        iconPoint(0.5),
+        iconPoint(23),
+        iconPoint(23),
+        iconPoint(6.35)
       );
       const svgX = (x + 0.5) / scale;
       const svgY = (y + 0.5) / scale;
-      const t = clamp(((svgX - 3) * 18 + (svgY - 2) * 21) / (18 * 18 + 21 * 21), 0, 1);
-      const color = t <= 0.56
-        ? mixColor(gradientStart, gradientMiddle, t / 0.56)
-        : mixColor(gradientMiddle, gradientEnd, (t - 0.56) / 0.44);
+      const t = clamp(((svgX - 3) * 18 + (svgY - 1.5) * 21) / (18 * 18 + 21 * 21), 0, 1);
+      let color = t <= 0.5
+        ? mixColor(tileTop, tileMid, t / 0.5)
+        : mixColor(tileMid, tileBottom, (t - 0.5) / 0.5);
+      const glow = clamp(1 - Math.hypot(svgX - 6.5, svgY - 5) / 13, 0, 1);
+      const shade = clamp(1 - Math.hypot(svgX - 17.5, svgY - 18.5) / 11, 0, 1);
+      color = mixColor(color, [255, 255, 255], glow * 0.2);
+      color = mixColor(color, [27, 69, 176], shade * 0.16);
       setPixel(pixels, size, x, y, color[0], color[1], color[2], Math.round(alpha * 255));
     }
   }
@@ -70,40 +88,108 @@ function renderIcon(size) {
   drawRoundedRectStroke(
     pixels,
     size,
-    iconPoint(1.125),
-    iconPoint(1.125),
-    iconPoint(21.75),
-    iconPoint(21.75),
-    iconPoint(5.875),
-    Math.max(iconPoint(0.75), 0.55),
-    [216, 255, 247, 112]
+    iconPoint(1.1),
+    iconPoint(1.1),
+    iconPoint(21.8),
+    iconPoint(21.8),
+    iconPoint(5.85),
+    Math.max(iconPoint(0.65), 0.4),
+    [255, 255, 255, 56]
   );
 
-  const primaryStroke = Math.max(iconPoint(1.75), 1.15);
-  const flowStroke = Math.max(iconPoint(1.75), 1.15);
-  const white = [247, 252, 255, 255];
-  const flow = [102, 216, 193, 255];
-  drawLine(pixels, size, iconPoint(6.75), iconPoint(17.25), iconPoint(12), iconPoint(12), primaryStroke, white);
-  drawLine(pixels, size, iconPoint(12), iconPoint(12), iconPoint(17.25), iconPoint(6.75), primaryStroke, white);
-  drawLine(pixels, size, iconPoint(12), iconPoint(12), iconPoint(14.1), iconPoint(12), flowStroke, flow);
-  drawCubicBezier(
+  // Open ring: gap on the right (±gapDeg). Sweep the long way via the left side.
+  const startAngle = (gapDeg * Math.PI) / 180;
+  const endAngle = ((360 - gapDeg) * Math.PI) / 180;
+  drawArc(pixels, size, iconPoint(gCx), iconPoint(gCy), iconPoint(gR), startAngle, endAngle, stroke, mark);
+
+  // Short spur — starts off-center so the counter stays open (less "dumbbell")
+  drawLine(
     pixels,
     size,
-    [iconPoint(14.1), iconPoint(12)],
-    [iconPoint(15.84), iconPoint(12)],
-    [iconPoint(17.25), iconPoint(13.41)],
-    [iconPoint(17.25), iconPoint(15.15)],
-    flowStroke,
-    flow
+    iconPoint(spurStartX),
+    iconPoint(gCy),
+    iconPoint(spurEndX),
+    iconPoint(gCy),
+    stroke,
+    mark
   );
-  drawLine(pixels, size, iconPoint(17.25), iconPoint(15.15), iconPoint(17.25), iconPoint(17.25), flowStroke, flow);
 
-  drawRingCircle(pixels, size, iconPoint(6.75), iconPoint(17.25), iconPoint(1.8), white, [22, 55, 70, 255], Math.max(iconPoint(0.6), 0.45));
-  drawRingCircle(pixels, size, iconPoint(12), iconPoint(12), iconPoint(1.8), white, [22, 55, 70, 255], Math.max(iconPoint(0.6), 0.45));
-  drawRingCircle(pixels, size, iconPoint(17.25), iconPoint(6.75), iconPoint(1.8), [111, 218, 196, 255], [22, 55, 70, 255], Math.max(iconPoint(0.6), 0.45));
-  drawRingCircle(pixels, size, iconPoint(17.25), iconPoint(17.25), iconPoint(1.8), [111, 218, 196, 255], white, Math.max(iconPoint(0.65), 0.5));
+  // Terminal node
+  drawCircle(pixels, size, iconPoint(nodeX), iconPoint(gCy), nodeRadius, mark);
 
   return pixels;
+}
+
+/**
+ * Distance-field arc stroke from startAngle → endAngle (CCW, radians).
+ * Round caps are added at both endpoints.
+ */
+function drawArc(pixels, size, cx, cy, radius, startAngle, endAngle, width, color) {
+  let sweep = endAngle - startAngle;
+  while (sweep <= 0) {
+    sweep += Math.PI * 2;
+  }
+
+  const half = width / 2;
+  const pad = half + 1.25;
+  const minX = Math.floor(cx - radius - pad);
+  const maxX = Math.ceil(cx + radius + pad);
+  const minY = Math.floor(cy - radius - pad);
+  const maxY = Math.ceil(cy + radius + pad);
+  const twoPi = Math.PI * 2;
+
+  for (let y = minY; y <= maxY; y += 1) {
+    for (let x = minX; x <= maxX; x += 1) {
+      if (x < 0 || y < 0 || x >= size || y >= size) {
+        continue;
+      }
+
+      const dx = x + 0.5 - cx;
+      const dy = y + 0.5 - cy;
+      const dist = Math.hypot(dx, dy);
+      const radial = Math.abs(dist - radius);
+      if (radial > half + 0.85) {
+        continue;
+      }
+
+      let angle = Math.atan2(dy, dx);
+      let delta = angle - startAngle;
+      while (delta < 0) {
+        delta += twoPi;
+      }
+      while (delta >= twoPi) {
+        delta -= twoPi;
+      }
+
+      if (delta > sweep) {
+        continue;
+      }
+
+      const alpha = clamp(half + 0.8 - radial, 0, 1);
+      if (alpha > 0) {
+        blendPixel(pixels, size, x, y, color[0], color[1], color[2], color[3] * alpha);
+      }
+    }
+  }
+
+  // Round caps
+  const capR = half;
+  drawCircle(
+    pixels,
+    size,
+    cx + Math.cos(startAngle) * radius,
+    cy + Math.sin(startAngle) * radius,
+    capR,
+    color
+  );
+  drawCircle(
+    pixels,
+    size,
+    cx + Math.cos(endAngle) * radius,
+    cy + Math.sin(endAngle) * radius,
+    capR,
+    color
+  );
 }
 
 function drawRoundedRectStroke(pixels, size, x, y, width, height, radius, strokeWidth, color) {

@@ -43,7 +43,7 @@ async function createWindow(): Promise<void> {
     height: 920,
     minWidth: 860,
     minHeight: 640,
-    icon: path.join(__dirname, "../build/icon.png"),
+    icon: path.join(__dirname, process.platform === "win32" ? "../build/icon.ico" : "../build/icon.png"),
     frame: false,
     backgroundColor: "#101317",
     title: "Git UI Pro",
