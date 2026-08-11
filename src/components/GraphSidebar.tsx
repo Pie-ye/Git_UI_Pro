@@ -232,6 +232,8 @@ export function GraphSidebar({
       ? { ...operation, label: "合并远程更改", title: `合并 ${project?.status?.upstream ?? "远程分支"} 的新提交`, menuLabel: "合并远程更改", icon: GitPullRequest }
       : operation
   );
+  const primaryGraphOperations = visibleGraphOperations.slice(0, 3);
+  const secondaryGraphOperations = visibleGraphOperations.slice(3);
   const virtualGraphEnabled = filteredCommits.length > GRAPH_VIRTUAL_THRESHOLD && !expandedHash;
   const graphVirtualRange = useMemo(() => {
     if (!virtualGraphEnabled) {
@@ -782,31 +784,7 @@ export function GraphSidebar({
                 <span>{historyFilterLabel}</span>
               </button>
             </PathTooltip>
-            <PathTooltip content="搜索提交" className="graph-toolbar-tooltip">
-              <button
-                ref={searchButtonRef}
-                type="button"
-                className={`icon-button compact-icon ${searchOpen || commitQuery ? "active" : ""}`}
-                aria-label="搜索提交"
-                onClick={() => {
-                  setViewMenuOpen(false);
-                  setSearchOpen((value) => !value);
-                }}
-              >
-                <Search size={GRAPH_TOOLBAR_ICON_SIZE} />
-              </button>
-            </PathTooltip>
-            <PathTooltip content="高级历史筛选与 Blame" className="graph-toolbar-tooltip">
-              <button
-                type="button"
-                className={`icon-button compact-icon ${advancedOpen || advancedActive ? "active" : ""}`}
-                aria-label="高级历史筛选与 Blame"
-                onClick={() => setAdvancedOpen(true)}
-              >
-                <SlidersHorizontal size={GRAPH_TOOLBAR_ICON_SIZE} />
-              </button>
-            </PathTooltip>
-            {visibleGraphOperations.map((operation) => {
+            {primaryGraphOperations.map((operation) => {
               const Icon = operation.icon;
               return (
                 <PathTooltip content={operation.title} className={`graph-toolbar-tooltip graph-operation-shortcut graph-operation-${operation.id}`} key={operation.id}>
@@ -822,6 +800,46 @@ export function GraphSidebar({
                 </PathTooltip>
               );
             })}
+            <PathTooltip content="高级历史筛选与 Blame" className="graph-toolbar-tooltip graph-advanced-shortcut">
+              <button
+                type="button"
+                className={`icon-button compact-icon ${advancedOpen || advancedActive ? "active" : ""}`}
+                aria-label="高级历史筛选与 Blame"
+                onClick={() => setAdvancedOpen(true)}
+              >
+                <SlidersHorizontal size={GRAPH_TOOLBAR_ICON_SIZE} />
+              </button>
+            </PathTooltip>
+            {secondaryGraphOperations.map((operation) => {
+              const Icon = operation.icon;
+              return (
+                <PathTooltip content={operation.title} className={`graph-toolbar-tooltip graph-operation-shortcut graph-operation-${operation.id}`} key={operation.id}>
+                  <button
+                    type="button"
+                    className="icon-button compact-icon"
+                    aria-label={operation.title}
+                    onClick={() => onOperation(operation.label)}
+                    disabled={gitOperationLocked}
+                  >
+                    <Icon size={GRAPH_TOOLBAR_ICON_SIZE} />
+                  </button>
+                </PathTooltip>
+              );
+            })}
+            <PathTooltip content="搜索提交" className="graph-toolbar-tooltip graph-search-shortcut">
+              <button
+                ref={searchButtonRef}
+                type="button"
+                className={`icon-button compact-icon ${searchOpen || commitQuery ? "active" : ""}`}
+                aria-label="搜索提交"
+                onClick={() => {
+                  setViewMenuOpen(false);
+                  setSearchOpen((value) => !value);
+                }}
+              >
+                <Search size={GRAPH_TOOLBAR_ICON_SIZE} />
+              </button>
+            </PathTooltip>
             <PathTooltip content="更多图表操作" className="graph-toolbar-tooltip">
               <button
                 ref={viewMenuButtonRef}

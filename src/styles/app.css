@@ -8883,7 +8883,7 @@ code,
 }
 
 /* Keep the graph command surface usable while the source-control pane narrows. */
-.source-control-pane .graph-section-title .graph-toolbar-tooltip,
+.source-control-pane .graph-section-title .graph-toolbar-tooltip:not(.graph-ref-filter-tooltip),
 .source-control-pane .graph-section-title .graph-toolbar-tooltip .compact-icon {
   flex-basis: 28px;
   width: 28px;
@@ -8892,21 +8892,36 @@ code,
   min-height: 28px;
 }
 
+.source-control-pane .graph-section-title .graph-ref-filter-tooltip {
+  flex: 0 1 auto;
+  width: auto;
+  min-width: 28px;
+  max-width: 128px;
+  height: 28px;
+}
+
 @container (max-width: 430px) {
+  .graph-advanced-shortcut,
   .graph-operation-merge,
   .graph-operation-branch {
     display: none !important;
   }
 }
 
-@container (max-width: 370px) {
-  .graph-operation-push {
+@container (max-width: 380px) {
+  .source-control-pane .graph-section-title .graph-ref-filter-tooltip {
+    flex: 0 0 28px;
+    width: 28px;
+    max-width: 28px;
+  }
+
+  .graph-ref-filter-button span {
     display: none !important;
   }
-}
 
-@container (max-width: 335px) {
-  .graph-operation-pull {
-    display: none !important;
+  .graph-ref-filter-button {
+    width: 28px;
+    justify-content: center;
+    padding: 0;
   }
 }
