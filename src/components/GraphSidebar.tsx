@@ -10,6 +10,7 @@ import {
   GitBranch,
   GitBranchPlus,
   GitCommitHorizontal,
+  Github,
   GitMerge,
   GitPullRequest,
   MessageSquareText,
@@ -59,11 +60,11 @@ interface GraphSidebarProps {
 }
 
 const graphOperations = [
-  { label: "fetch", title: "抓取远程更新", icon: RefreshCw },
-  { label: "pull", title: "拉取当前分支", icon: CloudDownload },
-  { label: "push", title: "推送当前分支", icon: CloudUpload },
-  { label: "合并分支", title: "将当前分支合并到目标分支", icon: GitMerge },
-  { label: "新建分支", title: "新建分支", icon: Plus }
+  { id: "fetch", label: "fetch", title: "抓取远程更新", menuLabel: "抓取远程更新", icon: RefreshCw },
+  { id: "pull", label: "pull", title: "拉取当前分支", menuLabel: "拉取当前分支", icon: CloudDownload },
+  { id: "push", label: "push", title: "推送当前分支", menuLabel: "推送当前分支", icon: CloudUpload },
+  { id: "merge", label: "合并分支", title: "将当前分支合并到目标分支", menuLabel: "合并分支", icon: GitMerge },
+  { id: "branch", label: "新建分支", title: "新建分支", menuLabel: "新建分支", icon: Plus }
 ];
 
 const graphBranchTones = ["branch-rose", "branch-cyan", "branch-violet", "branch-amber", "branch-green"] as const;
@@ -79,6 +80,7 @@ const graphFileLanePadding = 10;
 type GraphBranchTone = (typeof graphBranchTones)[number];
 type GraphTone = "local" | "remote" | "primary" | "secondary" | "synced" | "plain" | GraphBranchTone;
 type GraphFileViewMode = "list" | "tree";
+type RemoteHostingProvider = "github" | "gitee";
 type GraphSegment =
   | {
       type: "line";
@@ -207,6 +209,7 @@ export function GraphSidebar({
   const graphScrollFrameRef = useRef<number | undefined>();
   const [graphListHeight, setGraphListHeight] = useState(0);
   const [graphListScrollTop, setGraphListScrollTop] = useState(0);
+  const [remoteProviders, setRemoteProviders] = useState<Record<string, RemoteHostingProvider>>({});
   const filteredCommits = useMemo(() => {
     const keyword = commitQuery.trim().toLowerCase();
     if (!keyword) {
@@ -226,7 +229,7 @@ export function GraphSidebar({
   const remoteDiverged = (project?.status?.ahead ?? 0) > 0 && (project?.status?.behind ?? 0) > 0;
   const visibleGraphOperations = graphOperations.map((operation) =>
     operation.label === "pull" && remoteDiverged
-      ? { label: "合并远程更改", title: `合并 ${project?.status?.upstream ?? "远程分支"} 的新提交`, icon: GitPullRequest }
+      ? { ...operation, label: "合并远程更改", title: `合并 ${project?.status?.upstream ?? "远程分支"} 的新提交`, menuLabel: "合并远程更改", icon: GitPullRequest }
       : operation
   );
   const virtualGraphEnabled = filteredCommits.length > GRAPH_VIRTUAL_THRESHOLD && !expandedHash;
@@ -263,6 +266,38 @@ export function GraphSidebar({
     },
     []
   );
+
+  useEffect(() => {
+    let active = true;
+    setRemoteProviders({});
+    if (!project) {
+      return () => {
+        active = false;
+      };
+    }
+
+    void apiClient.getRemotes(project).then((remotes) => {
+      if (!active) {
+        return;
+      }
+      const nextProviders: Record<string, RemoteHostingProvider> = {};
+      for (const remote of remotes) {
+        const provider = remoteHostingProvider([...remote.fetchUrls, ...remote.pushUrls]);
+        if (provider) {
+          nextProviders[remote.name.toLowerCase()] = provider;
+        }
+      }
+      setRemoteProviders(nextProviders);
+    }).catch(() => {
+      if (active) {
+        setRemoteProviders({});
+      }
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [project?.id, project?.path, project?.remote?.host, project?.remote?.username, project?.remote?.port, project?.remote?.identityFile, project?.remote?.connectionEnabled]);
 
   useEffect(() => {
     if (advancedOpen) {
@@ -774,7 +809,7 @@ export function GraphSidebar({
             {visibleGraphOperations.map((operation) => {
               const Icon = operation.icon;
               return (
-                <PathTooltip content={operation.title} className="graph-toolbar-tooltip" key={operation.label}>
+                <PathTooltip content={operation.title} className={`graph-toolbar-tooltip graph-operation-shortcut graph-operation-${operation.id}`} key={operation.id}>
                   <button
                     type="button"
                     className="icon-button compact-icon"
@@ -818,6 +853,26 @@ export function GraphSidebar({
             {viewMenuOpen && viewMenuPosition && typeof document !== "undefined"
               ? createPortal(
                   <div className="floating-menu graph-view-menu graph-view-menu-portal" role="menu" style={viewMenuPosition} ref={viewMenuRef}>
+                    {visibleGraphOperations.map((operation) => {
+                      const Icon = operation.icon;
+                      return (
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="graph-view-menu-operation"
+                          disabled={gitOperationLocked}
+                          key={`menu-${operation.id}`}
+                          onClick={() => {
+                            setViewMenuOpen(false);
+                            onOperation(operation.label);
+                          }}
+                        >
+                          <span className="graph-view-menu-check" aria-hidden="true"><Icon size={14} /></span>
+                          {operation.menuLabel}
+                        </button>
+                      );
+                    })}
+                    <div className="menu-separator" role="separator" />
                     <button
                       type="button"
                       role="menuitemradio"
@@ -898,6 +953,7 @@ export function GraphSidebar({
                   key={commit.hash}
                   commit={commit}
                   graphContext={graphContext}
+                  remoteProviders={remoteProviders}
                   graphLayout={graphLayout}
                   tone={tone}
                   selected={commit.hash === selectedHash || commit.hash === hoveredDotHash || commit.hash === expandedHash || commit.hash === commitContextMenu?.commit.hash}
@@ -1164,6 +1220,7 @@ function GraphHistoryRefsMenu({
 function GraphCommitRow({
   commit,
   graphContext,
+  remoteProviders,
   graphLayout,
   tone,
   selected,
@@ -1187,6 +1244,7 @@ function GraphCommitRow({
 }: {
   commit: CommitNode;
   graphContext: GraphBranchContext;
+  remoteProviders: Record<string, RemoteHostingProvider>;
   graphLayout: GraphRowLayout;
   tone: GraphTone;
   selected: boolean;
@@ -1209,6 +1267,9 @@ function GraphCommitRow({
   onHoverEnd: () => void;
 }) {
   const visibleRefs = visibleRefsForCommit(commit, graphContext);
+  const localRefs = visibleRefs.filter((ref) => ref.type !== "remoteBranch" && ref.type !== "tag");
+  const remoteRefs = visibleRefs.filter((ref) => ref.type === "remoteBranch");
+  const tagRefs = visibleRefs.filter((ref) => ref.type === "tag");
   const rowStyle = {
     "--graph-row-gutter": `${graphFileGutter(graphLayout.expansionLines)}px`
   } as CSSProperties;
@@ -1244,17 +1305,20 @@ function GraphCommitRow({
           </span>
           {visibleRefs.length > 0 ? (
             <span className="graph-ref-row">
-              {visibleRefs.map((ref) => (
+              {localRefs.map((ref) => (
                 <span className={refChipClassName(ref, graphContext)} key={`${commit.hash}-${ref.type}-${ref.name}`}>
-                  {ref.type === "remoteBranch" ? (
-                    <Cloud size={10} />
-                  ) : ref.type === "localBranch" ? (
+                  {ref.type === "localBranch" ? (
                     <GitBranch size={10} />
-                  ) : ref.type === "tag" ? (
-                    <Tag size={10} />
                   ) : (
                     <GitCommitHorizontal size={10} />
                   )}
+                  <span className="ref-chip-label">{ref.name}</span>
+                </span>
+              ))}
+              {remoteRefs.length > 0 ? <CompactRemoteRefs refs={remoteRefs} graphContext={graphContext} remoteProviders={remoteProviders} /> : null}
+              {tagRefs.map((ref) => (
+                <span className={refChipClassName(ref, graphContext)} key={`${commit.hash}-${ref.type}-${ref.name}`}>
+                  <Tag size={10} />
                   <span className="ref-chip-label">{ref.name}</span>
                 </span>
               ))}
@@ -1761,6 +1825,59 @@ function graphHistoryFilterLabel(filter: GitHistoryFilter, refs: GitHistoryRef[]
   }
 
   return `${refIds.length} 项`;
+}
+
+function CompactRemoteRefs({
+  refs,
+  graphContext,
+  remoteProviders
+}: {
+  refs: CommitRef[];
+  graphContext: GraphBranchContext;
+  remoteProviders: Record<string, RemoteHostingProvider>;
+}) {
+  const providers = new Set(refs.map((ref) => remoteRefProvider(ref.name, remoteProviders)).filter((provider): provider is RemoteHostingProvider => Boolean(provider)));
+  const selected = refs.some((ref) => graphContext.visibleRefIds.has(commitRefId(ref)));
+
+  return (
+    <span
+      className={`ref-chip remoteBranch remote-ref-summary ${selected ? "selectedRef" : ""}`}
+      title={refs.map((ref) => ref.name).join(" · ")}
+      aria-label={`远程分支：${refs.map((ref) => ref.name).join("、")}`}
+    >
+      <Cloud size={11} />
+      {providers.size > 0 ? (
+        <span className="remote-provider-icons" aria-hidden="true">
+          {providers.has("gitee") ? <span className="remote-provider-gitee">G</span> : null}
+          {providers.has("github") ? <Github size={10} /> : null}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+function remoteRefProvider(refName: string, remoteProviders: Record<string, RemoteHostingProvider>): RemoteHostingProvider | undefined {
+  const remoteName = refName.split("/", 1)[0]?.toLowerCase() ?? "";
+  if (remoteProviders[remoteName]) {
+    return remoteProviders[remoteName];
+  }
+  if (remoteName.includes("github")) {
+    return "github";
+  }
+  if (remoteName.includes("gitee")) {
+    return "gitee";
+  }
+  return undefined;
+}
+
+function remoteHostingProvider(urls: string[]): RemoteHostingProvider | undefined {
+  if (urls.some((url) => url.toLowerCase().includes("github.com"))) {
+    return "github";
+  }
+  if (urls.some((url) => url.toLowerCase().includes("gitee.com"))) {
+    return "gitee";
+  }
+  return undefined;
 }
 
 function hasAdvancedQuery(query: Pick<GitHistoryQuery, "search" | "author" | "after" | "before" | "path">): boolean {

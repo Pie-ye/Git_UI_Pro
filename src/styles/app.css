@@ -6234,6 +6234,7 @@ button {
 
 .graph-panel {
   position: relative;
+  container-type: inline-size;
 }
 
 .source-control-pane .graph-section-title {
@@ -6396,6 +6397,14 @@ button {
 
 .graph-view-menu button:hover {
   background: var(--surface);
+}
+
+.graph-view-menu .graph-view-menu-operation {
+  color: var(--muted-strong);
+}
+
+.graph-view-menu .graph-view-menu-operation .graph-view-menu-check {
+  color: var(--accent);
 }
 
 .graph-refs-dialog-backdrop {
@@ -6656,6 +6665,36 @@ button {
   line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.graph-ref-row .ref-chip.localBranch {
+  flex: 0 0 auto;
+  max-width: 136px;
+}
+
+.graph-ref-row .remote-ref-summary {
+  flex: 0 0 auto;
+  gap: 4px;
+  min-width: 24px;
+  max-width: none;
+  padding-inline: 6px;
+}
+
+.remote-provider-icons {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+}
+
+.remote-provider-gitee {
+  display: inline-grid;
+  width: 10px;
+  height: 10px;
+  place-items: center;
+  font-family: Arial, sans-serif;
+  font-size: 8px;
+  font-weight: 800;
+  line-height: 1;
 }
 
 .graph-commit-expansion {
@@ -7926,7 +7965,8 @@ code,
 }
 
 [data-sonner-toaster] {
-  --width: min(420px, calc(100vw - 40px));
+  --width: min(320px, calc(100vw - 24px));
+  --gap: 8px;
   --normal-bg: color-mix(in srgb, var(--panel) 92%, transparent);
   --normal-border: color-mix(in srgb, var(--border-strong) 76%, transparent);
   --normal-text: var(--text-strong);
@@ -7936,7 +7976,7 @@ code,
   --error-bg: var(--normal-bg);
   --error-border: var(--normal-border);
   --error-text: var(--text-strong);
-  --toast-icon-size: 18px;
+  --toast-icon-size: 16px;
   font-family: var(--app-font);
 }
 
@@ -7944,11 +7984,11 @@ code,
   position: relative;
   width: max-content !important;
   min-width: 0 !important;
-  max-width: min(420px, calc(100vw - 40px)) !important;
+  max-width: min(320px, calc(100vw - 24px)) !important;
   overflow: visible;
-  min-height: 44px !important;
-  border-radius: 8px !important;
-  padding: 11px 14px !important;
+  min-height: 36px !important;
+  border-radius: 10px !important;
+  padding: 7px 10px !important;
   border-color: var(--normal-border) !important;
   background: var(--normal-bg) !important;
   box-shadow:
@@ -7991,8 +8031,8 @@ code,
 
 [data-sonner-toast] [data-icon] svg {
   display: block;
-  width: 17px;
-  height: 17px;
+  width: 15px;
+  height: 15px;
   overflow: visible;
 }
 
@@ -8010,7 +8050,7 @@ code,
 
 [data-sonner-toast] [data-title] {
   width: auto;
-  max-width: 340px;
+  max-width: 250px;
   font-size: 13px;
   font-weight: 600;
   line-height: 1.35;
@@ -8021,8 +8061,8 @@ code,
 }
 
 [data-sonner-toast] [data-description] {
-  max-width: 340px;
-  margin-top: 4px;
+  max-width: 250px;
+  margin-top: 2px;
   font-family: var(--mono-font);
   font-size: 11px;
   line-height: 1.45;
@@ -8839,5 +8879,34 @@ code,
 
   .editor-breadcrumb span:first-child {
     display: none;
+  }
+}
+
+/* Keep the graph command surface usable while the source-control pane narrows. */
+.source-control-pane .graph-section-title .graph-toolbar-tooltip,
+.source-control-pane .graph-section-title .graph-toolbar-tooltip .compact-icon {
+  flex-basis: 28px;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
+}
+
+@container (max-width: 430px) {
+  .graph-operation-merge,
+  .graph-operation-branch {
+    display: none !important;
+  }
+}
+
+@container (max-width: 370px) {
+  .graph-operation-push {
+    display: none !important;
+  }
+}
+
+@container (max-width: 335px) {
+  .graph-operation-pull {
+    display: none !important;
   }
 }
