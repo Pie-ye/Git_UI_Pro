@@ -1974,14 +1974,18 @@ export function App() {
     }
 
     rememberStatus("正在读取分支列表...");
-    const branches = await apiClient.getBranches(project);
-    if (branches.length === 0) {
-      notifyInfo("没有可切换的分支");
-      return;
-    }
+    try {
+      const branches = await apiClient.getBranches(project);
+      if (branches.length === 0) {
+        notifyInfo("没有可切换的分支");
+        return;
+      }
 
-    setBranchDialog({ mode: "switch", project, branches, query: "" });
-    rememberStatus(`已加载 ${branches.length} 个分支。`);
+      setBranchDialog({ mode: "switch", project, branches, query: "" });
+      rememberStatus(`已加载 ${branches.length} 个分支。`);
+    } catch (error) {
+      notifyError(errorText(error, "读取分支列表失败"));
+    }
   }
 
   async function submitSwitchBranch(target: BranchInfo) {
@@ -3238,7 +3242,7 @@ function BranchDialog({
                     <GitBranch size={13} />
                     {branch.name}
                   </span>
-                  <small>{state.mode === "delete" ? "删除" : state.mode === "merge" && state.preview?.targetBranch === branch.name ? "目标" : branch.current ? "当前" : branch.type === "remote" ? "远程" : branch.upstream ? `跟踪 ${branch.upstream}` : "本地"}</small>
+                  <small>{state.mode === "delete" ? "删除" : branch.upstreamMissing ? `${branch.current ? "当前 · " : ""}上游已失效` : state.mode === "merge" && state.preview?.targetBranch === branch.name ? "目标" : branch.current ? "当前" : branch.type === "remote" ? "远程" : branch.upstream ? `跟踪 ${branch.upstream}` : "本地"}</small>
                 </button>
               ))}
               {filteredBranches.length === 0 ? <div className="empty-inline branch-empty">没有匹配分支。</div> : null}

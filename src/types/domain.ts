@@ -153,6 +153,7 @@ export interface BranchInfo {
   type: "local" | "remote";
   current: boolean;
   upstream?: string;
+  upstreamMissing?: boolean;
   headHash: string;
   ahead?: number;
   behind?: number;

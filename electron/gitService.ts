@@ -118,6 +118,7 @@ export interface BranchInfo {
   type: "local" | "remote";
   current: boolean;
   upstream?: string;
+  upstreamMissing?: boolean;
   headHash: string;
   ahead?: number;
   behind?: number;
@@ -1700,6 +1701,8 @@ export class GitService {
     if (!refsResult.ok) {
       throw new Error(refsResult.messageZh ?? "无法读取分支列表。");
     }
+    const refLines = refsResult.stdout.split(/\r?\n/).filter(Boolean);
+    const availableRefNames = new Set(refLines.map((line) => line.split(fieldSeparator)[0]).filter(Boolean));
     let mergedRefs: Set<string> | undefined;
     if (!status.unborn) {
       const mergedResult = await this.run(repositoryPath, ["for-each-ref", "--merged=HEAD", "--format=%(refname)", "refs/heads", "refs/remotes"]);
@@ -1709,9 +1712,7 @@ export class GitService {
       mergedRefs = new Set(mergedResult.stdout.split(/\r?\n/).filter(Boolean));
     }
     type BranchCandidate = BranchInfo & { upstreamFullName?: string };
-    const branches = refsResult.stdout
-      .split(/\r?\n/)
-      .filter(Boolean)
+    const branches = refLines
       .map((line): BranchCandidate | null => {
         const [fullName, shortName, headHash, upstream, upstreamFullName] = line.split(fieldSeparator);
         if (!fullName || !shortName || fullName === "refs/remotes/origin/HEAD" || shortName.endsWith("/HEAD")) {
@@ -1737,8 +1738,11 @@ export class GitService {
       if (branch.type !== "local" || !branch.upstream) {
         return branchInfo;
       }
-      if (!upstreamFullName) {
-        throw new Error(`分支 ${branch.name} 的上游引用不完整。`);
+      if (!upstreamFullName || !availableRefNames.has(upstreamFullName)) {
+        return {
+          ...branchInfo,
+          upstreamMissing: true
+        };
       }
       const divergenceResult = await this.run(repositoryPath, [
         "rev-list",
