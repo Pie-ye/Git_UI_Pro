@@ -129,6 +129,15 @@
   transition: background 160ms ease, color 160ms ease;
 }
 
+/* Two independent rounded cards; compact gap, keep full corner radius. */
+.app-shell {
+  grid-template-columns: var(--sidebar-width) 4px minmax(0, 1fr);
+}
+
+.app-shell.sidebar-right {
+  grid-template-columns: minmax(0, 1fr) 4px var(--sidebar-width);
+}
+
 .project-rail,
 .collapsed-sidebar {
   height: auto;
@@ -308,28 +317,38 @@
   background: transparent;
 }
 
-.sidebar-resize::after,
-.detail-resize::after,
 .source-graph-divider::after,
 .console-resize::after {
   position: absolute;
-  inset: 18% auto 18% 50%;
-  width: 1px;
+  inset: 50% 18% auto;
+  width: auto;
+  height: 1px;
   border-radius: 999px;
   content: "";
   background: var(--border-strong);
   transition: background 150ms ease;
 }
 
-.source-graph-divider::after,
-.console-resize::after {
-  inset: 50% 18% auto;
-  width: auto;
-  height: 1px;
+/* Same hairline style as changes | file viewer (detail-resize) */
+.detail-resize::after {
+  position: absolute;
+  top: 0;
+  right: auto;
+  bottom: 0;
+  left: 50%;
+  display: block;
+  width: 1px;
+  height: auto;
+  border-radius: 0;
+  content: "";
+  background: color-mix(in srgb, var(--border-strong) 90%, transparent);
+  transform: translateX(-50%);
+  pointer-events: none;
+  transition: background 150ms ease;
 }
 
-.sidebar-resize:hover::after,
 .detail-resize:hover::after,
+.detail-resize:active::after,
 .source-graph-divider:hover::after,
 .console-resize:hover::after {
   background: var(--accent);
@@ -338,13 +357,18 @@
 .workspace-shell {
   grid-template-rows: minmax(0, 1fr);
   min-width: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
   background: transparent;
+  box-shadow: none;
+  overflow: hidden;
 }
 
 .top-bar {
   align-self: stretch;
   min-height: 0;
-  margin: 6px 10px 6px 4px;
+  margin: 6px 10px 6px 0;
   padding: 6px 14px;
   border: 1px solid var(--glass-edge);
   border-radius: 20px;
@@ -381,7 +405,7 @@
 .main-grid {
   height: auto;
   min-height: 0;
-  margin: 8px 10px 10px 4px;
+  margin: 8px 10px 10px 0;
   border: 1px solid var(--glass-edge);
   border-radius: 14px;
   background: var(--glass-fill-static);
@@ -389,9 +413,10 @@
   overflow: hidden;
 }
 
+/* Opaque with the card — avoid --bg / translucent mix showing shell gray */
 .source-control-pane {
   min-width: 0;
-  background: color-mix(in srgb, var(--glass-fill-strong) 58%, transparent);
+  background: var(--glass-fill-static);
 }
 
 .detail-stack,
@@ -825,20 +850,30 @@ input[type="radio"]:focus-visible {
   }
 
   .top-bar {
-    margin: 5px 8px 5px 3px;
+    margin: 5px 8px 5px 0;
     padding-inline: 12px;
   }
 
   .main-grid {
-    margin: 8px 8px 8px 3px;
+    margin: 8px 8px 8px 0;
     border-radius: 14px;
+  }
+
+  .app-shell.left-collapsed .main-grid,
+  .app-shell.sidebar-right.left-collapsed .main-grid {
+    margin-left: 8px;
+  }
+
+  .app-shell.left-collapsed .top-bar,
+  .app-shell.sidebar-right.left-collapsed .top-bar {
+    margin-left: 8px;
   }
 }
 
 @media (max-width: 700px) {
   .app-shell,
   .app-shell.left-collapsed {
-    grid-template-columns: 68px 7px minmax(0, 1fr);
+    grid-template-columns: 68px 4px minmax(0, 1fr);
   }
 
   .collapsed-sidebar {
@@ -1131,6 +1166,17 @@ input[type="radio"]:focus-visible {
   grid-column: 1;
 }
 
+/* Sidebar collapsed: restore outer left inset so the card is not flush to the window edge */
+.app-shell.left-collapsed .main-grid,
+.app-shell.sidebar-right.left-collapsed .main-grid {
+  margin-left: 10px;
+}
+
+.app-shell.left-collapsed .top-bar,
+.app-shell.sidebar-right.left-collapsed .top-bar {
+  margin-left: 10px;
+}
+
 @media (max-width: 700px) {
   .app-shell,
   .app-shell.left-collapsed,
@@ -1184,7 +1230,7 @@ input[type="radio"]:focus-visible {
   grid-template-columns: max-content max-content max-content minmax(0, 1fr) max-content;
 }
 
-/* Invisible resize hit areas keep layout adjustment without visual dividers. */
+/* Resize hit areas stay transparent; only detail-resize keeps a hairline. */
 .sidebar-resize,
 .sidebar-resize:hover,
 .sidebar-resize:active,
@@ -1203,12 +1249,33 @@ input[type="radio"]:focus-visible {
 .sidebar-resize::before,
 .sidebar-resize::after,
 .detail-resize::before,
-.detail-resize::after,
 .source-graph-divider::before,
 .source-graph-divider::after,
 .console-resize::before,
 .console-resize::after {
   display: none;
+}
+
+.detail-resize::after {
+  display: block;
+  position: absolute;
+  top: 0;
+  right: auto;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  height: auto;
+  border-radius: 0;
+  content: "";
+  background: color-mix(in srgb, var(--border-strong) 90%, transparent);
+  transform: translateX(-50%);
+  pointer-events: none;
+  transition: background 150ms ease;
+}
+
+.detail-resize:hover::after,
+.detail-resize:active::after {
+  background: var(--accent);
 }
 
 .app-update-control {

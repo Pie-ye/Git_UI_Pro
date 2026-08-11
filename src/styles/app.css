@@ -2806,7 +2806,7 @@ button {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: var(--bg);
+  background: transparent;
 }
 
 .source-graph-divider {
@@ -7393,11 +7393,11 @@ code,
 }
 
 .app-shell {
-  grid-template-columns: var(--sidebar-width) 10px minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-width) 4px minmax(0, 1fr);
 }
 
 .app-shell.left-collapsed {
-  grid-template-columns: var(--sidebar-width) 10px minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-width) 4px minmax(0, 1fr);
 }
 
 .project-rail,
@@ -7465,11 +7465,11 @@ code,
 
 @media (max-width: 900px) {
   .app-shell {
-    grid-template-columns: clamp(180px, 36vw, var(--sidebar-width)) 10px minmax(0, 1fr);
+    grid-template-columns: clamp(180px, 36vw, var(--sidebar-width)) 4px minmax(0, 1fr);
   }
 
   .app-shell.left-collapsed {
-    grid-template-columns: 64px 10px minmax(0, 1fr);
+    grid-template-columns: 64px 4px minmax(0, 1fr);
   }
 
   .main-grid,
@@ -8289,7 +8289,7 @@ code,
 }
 
 .app-shell.sidebar-right {
-  grid-template-columns: minmax(0, 1fr) 6px var(--sidebar-width);
+  grid-template-columns: minmax(0, 1fr) 4px var(--sidebar-width);
 }
 
 .app-shell.sidebar-right.left-collapsed {

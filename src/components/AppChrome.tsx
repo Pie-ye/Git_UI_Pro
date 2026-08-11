@@ -1,4 +1,4 @@
-import { Check, ChevronDown, Copy, Minus, Moon, PanelLeft, Square, Sun, X } from "lucide-react";
+import { Check, ChevronDown, Copy, Minus, Moon, PanelLeftClose, PanelLeftOpen, Square, Sun, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { WindowState } from "../types/electron";
 import { AppUpdateControl } from "./AppUpdateControl";
@@ -91,7 +91,7 @@ export function AppChrome({
           title={sidebarCollapsed ? "展开项目栏" : "收起项目栏"}
           onClick={onToggleSidebar}
         >
-          <PanelLeft size={16} />
+          {sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
         </button>
         <div className="app-chrome-tools" aria-label="应用工具">
           <button type="button" className="app-chrome-settings-button" aria-label="打开设置" onClick={onOpenRepositoryCenter}>
