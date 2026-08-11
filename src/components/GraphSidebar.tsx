@@ -1288,6 +1288,8 @@ function GraphCommitRow({
   const localRefs = visibleRefs.filter((ref) => ref.type !== "remoteBranch" && ref.type !== "tag");
   const remoteRefs = visibleRefs.filter((ref) => ref.type === "remoteBranch");
   const tagRefs = visibleRefs.filter((ref) => ref.type === "tag");
+  const primaryRefs = localRefs.length > 0 ? localRefs.slice(0, 1) : tagRefs.slice(0, 1);
+  const overflowRefs = localRefs.length > 0 ? [...localRefs.slice(1), ...tagRefs] : tagRefs.slice(1);
   const rowStyle = {
     "--graph-row-gutter": `${graphFileGutter(graphLayout.expansionLines)}px`
   } as CSSProperties;
@@ -1323,10 +1325,12 @@ function GraphCommitRow({
           </span>
           {visibleRefs.length > 0 ? (
             <span className="graph-ref-row">
-              {localRefs.map((ref) => (
+              {primaryRefs.map((ref) => (
                 <span className={refChipClassName(ref, graphContext)} key={`${commit.hash}-${ref.type}-${ref.name}`}>
                   {ref.type === "localBranch" ? (
                     <GitBranch size={10} />
+                  ) : ref.type === "tag" ? (
+                    <Tag size={10} />
                   ) : (
                     <GitCommitHorizontal size={10} />
                   )}
@@ -1334,12 +1338,7 @@ function GraphCommitRow({
                 </span>
               ))}
               {remoteRefs.length > 0 ? <CompactRemoteRefs refs={remoteRefs} graphContext={graphContext} remoteProviders={remoteProviders} /> : null}
-              {tagRefs.map((ref) => (
-                <span className={refChipClassName(ref, graphContext)} key={`${commit.hash}-${ref.type}-${ref.name}`}>
-                  <Tag size={10} />
-                  <span className="ref-chip-label">{ref.name}</span>
-                </span>
-              ))}
+              {overflowRefs.length > 0 ? <CompactAdditionalRefs refs={overflowRefs} /> : null}
             </span>
           ) : null}
         </span>
@@ -1856,21 +1855,40 @@ function CompactRemoteRefs({
 }) {
   const providers = new Set(refs.map((ref) => remoteRefProvider(ref.name, remoteProviders)).filter((provider): provider is RemoteHostingProvider => Boolean(provider)));
   const selected = refs.some((ref) => graphContext.visibleRefIds.has(commitRefId(ref)));
+  const tooltipContent = `远程分支：${refs.map((ref) => ref.name).join(" · ")}`;
 
   return (
-    <span
-      className={`ref-chip remoteBranch remote-ref-summary ${selected ? "selectedRef" : ""}`}
-      title={refs.map((ref) => ref.name).join(" · ")}
-      aria-label={`远程分支：${refs.map((ref) => ref.name).join("、")}`}
-    >
-      <Cloud size={11} />
-      {providers.size > 0 ? (
-        <span className="remote-provider-icons" aria-hidden="true">
-          {providers.has("gitee") ? <span className="remote-provider-gitee">G</span> : null}
-          {providers.has("github") ? <Github size={10} /> : null}
-        </span>
-      ) : null}
-    </span>
+    <PathTooltip content={tooltipContent} className="graph-ref-tooltip" placement="control">
+      <span
+        className={`ref-chip remoteBranch remote-ref-summary ${selected ? "selectedRef" : ""}`}
+        aria-label={tooltipContent}
+      >
+        <Cloud size={11} />
+        {providers.size > 0 ? (
+          <span className="remote-provider-icons" aria-hidden="true">
+            {providers.has("gitee") ? <span className="remote-provider-gitee">G</span> : null}
+            {providers.has("github") ? <Github size={10} /> : null}
+          </span>
+        ) : null}
+      </span>
+    </PathTooltip>
+  );
+}
+
+function CompactAdditionalRefs({ refs }: { refs: CommitRef[] }) {
+  const branchNames = refs.filter((ref) => ref.type !== "tag").map((ref) => ref.name);
+  const tagNames = refs.filter((ref) => ref.type === "tag").map((ref) => ref.name);
+  const tooltipParts = [
+    branchNames.length > 0 ? `其他分支：${branchNames.join(" · ")}` : "",
+    tagNames.length > 0 ? `标签：${tagNames.join(" · ")}` : ""
+  ].filter(Boolean);
+
+  return (
+    <PathTooltip content={tooltipParts.join("；")} className="graph-ref-tooltip" placement="control">
+      <span className="ref-chip ref-overflow-summary" aria-label={tooltipParts.join("；")}>
+        +{refs.length}
+      </span>
+    </PathTooltip>
   );
 }
 
