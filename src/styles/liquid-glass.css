@@ -172,7 +172,7 @@
 }
 
 .project-rail-actions {
-  gap: 3px;
+  gap: 0;
   justify-content: flex-end;
   min-width: 0;
 }
@@ -180,11 +180,25 @@
 .project-rail-header .project-action-tooltip,
 .project-rail-header .compact-icon,
 .project-rail-header .project-status-filter {
-  flex: 0 0 32px;
-  width: 32px;
-  min-width: 32px;
-  height: 32px;
-  min-height: 32px;
+  flex: 0 0 26px;
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  min-height: 26px;
+}
+
+.project-rail-header .compact-icon,
+.project-rail-header .project-rail-search,
+.project-rail-header .project-status-filter-button,
+.project-rail-header .compact-icon:hover,
+.project-rail-header .project-rail-search:hover,
+.project-rail-header .project-status-filter-button:hover,
+.project-rail-header .project-status-filter-button.active,
+.project-rail-header .project-status-filter-button[aria-expanded="true"] {
+  border-color: transparent;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .project-rail-header strong,
@@ -270,8 +284,8 @@
 
 .project-rail-item,
 .collapsed-project-button {
-  min-height: 58px;
-  margin-bottom: 4px;
+  min-height: 54px;
+  margin-bottom: 2px;
   border: 1px solid transparent;
   border-radius: 14px;
   transition: background 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
@@ -2013,6 +2027,7 @@ select:not([disabled]):focus {
 @container project-rail (max-width: 240px) {
   .project-rail-header {
     grid-template-columns: minmax(0, 1fr);
+    padding-inline: 6px;
   }
 
   .project-rail-header > strong {
@@ -2020,7 +2035,10 @@ select:not([disabled]):focus {
   }
 
   .project-rail-actions {
-    justify-content: space-between;
+    justify-content: center;
+    justify-self: center;
+    width: max-content;
+    max-width: 100%;
   }
 }
 
@@ -3020,7 +3038,11 @@ select:not([disabled]):focus {
 }
 
 .app-chrome-titlebar:has([aria-expanded="true"]),
-.app-chrome-titlebar:has([aria-expanded="true"]) .app-chrome-drag-region {
+.app-chrome-titlebar:has([aria-expanded="true"]) .app-chrome-drag-region,
+.app-shell:has(.floating-menu) .app-chrome-titlebar,
+.app-shell:has(.floating-menu) .app-chrome-drag-region,
+.app-shell:has(.project-rail-search:focus-within) .app-chrome-titlebar,
+.app-shell:has(.project-rail-search:focus-within) .app-chrome-drag-region {
   -webkit-app-region: no-drag;
 }
 

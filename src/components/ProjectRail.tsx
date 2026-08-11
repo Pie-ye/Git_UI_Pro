@@ -1,4 +1,4 @@
-import { Check, ChevronDown, ChevronRight, Filter, Folder, FolderOpen, FolderPlus, FolderSearch, GitBranch, Pin, PinOff, Search, Server, Trash2 } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Filter, FolderClosed, FolderOpen, FolderPlus, FolderSearch, GitBranch, Pin, PinOff, Search, Server, Trash2 } from "lucide-react";
 import {
   useEffect,
   useMemo,
@@ -421,7 +421,7 @@ export function ProjectRail({
         <span className="project-rail-icon">
           {project.id === selectedProjectId
             ? <FolderOpen size={16} strokeWidth={1.65} />
-            : <Folder size={16} strokeWidth={1.65} />}
+            : <FolderClosed size={16} strokeWidth={1.65} />}
         </span>
         <span className="project-rail-main">
           <span className="project-rail-heading">
