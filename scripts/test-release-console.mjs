@@ -256,7 +256,7 @@ test("当前环境解析出的 npm 调用可以正常启动", () => {
   assert.match(result.stdout.trim(), /^\d+\.\d+\.\d+/);
 });
 
-test("收集 Windows 正式版自动更新所需的三项产物", async () => {
+test("收集 Windows 安装版与 Portable 正式发布所需的四项产物", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "git-ui-pro-release-"));
   const version = "0.1.13";
   const expected = expectedWindowsUpdateArtifacts(version);
@@ -265,7 +265,7 @@ test("收集 Windows 正式版自动更新所需的三项产物", async () => {
       writeFile(path.join(directory, expected.installer), "installer"),
       writeFile(path.join(directory, expected.blockmap), "blockmap"),
       writeFile(path.join(directory, expected.metadata), "version: 0.1.13"),
-      writeFile(path.join(directory, "Git-UI-Pro-Portable-0.1.13-x64.exe"), "portable"),
+      writeFile(path.join(directory, expected.portable), "portable"),
       writeFile(path.join(directory, "Git-UI-Pro-Setup-0.1.12-x64.exe"), "stale")
     ]);
 
@@ -285,20 +285,26 @@ test("Gitee 镜像清单固定绑定标签、安装包名称、大小与 SHA-256
   const nested = path.join(directory, "windows-x64");
   const version = "0.1.26";
   const installer = `Git-UI-Pro-Setup-${version}-x64.exe`;
+  const portable = `Git-UI-Pro-Portable-${version}-x64.exe`;
   try {
     await mkdir(nested, { recursive: true });
     await Promise.all([
       writeFile(path.join(nested, installer), "installer"),
       writeFile(path.join(nested, `${installer}.blockmap`), "blockmap"),
+      writeFile(path.join(nested, portable), "portable"),
       writeFile(path.join(nested, "latest.yml"), `version: ${version}`)
     ]);
     const files = await collectWindowsUpdateFiles(directory, `v${version}`);
-    assert.deepEqual([...files.keys()], [installer, `${installer}.blockmap`, "latest.yml"]);
+    assert.deepEqual([...files.keys()], [installer, `${installer}.blockmap`, portable, "latest.yml"]);
 
     const manifest = createGiteeUpdateManifest(`v${version}`, {
       name: installer,
       size: 82_000_000,
       sha256: "B".repeat(64)
+    }, {
+      name: portable,
+      size: 80_000_000,
+      sha256: "C".repeat(64)
     });
     assert.deepEqual(manifest, {
       schemaVersion: 1,
@@ -308,10 +314,19 @@ test("Gitee 镜像清单固定绑定标签、安装包名称、大小与 SHA-256
         name: installer,
         size: 82_000_000,
         sha256: "b".repeat(64)
+      },
+      portable: {
+        name: portable,
+        size: 80_000_000,
+        sha256: "c".repeat(64)
       }
     });
     assert.throws(
-      () => createGiteeUpdateManifest(`v${version}`, { name: "foreign.exe", size: 1, sha256: "a".repeat(64) }),
+      () => createGiteeUpdateManifest(
+        `v${version}`,
+        { name: "foreign.exe", size: 1, sha256: "a".repeat(64) },
+        { name: portable, size: 1, sha256: "b".repeat(64) }
+      ),
       /安装包信息无效/
     );
   } finally {
@@ -324,6 +339,7 @@ test("Gitee 镜像发布时先创建发行版并最后上传校验清单", async
   const version = "0.1.26";
   const tagName = `v${version}`;
   const installer = `Git-UI-Pro-Setup-${version}-x64.exe`;
+  const portable = `Git-UI-Pro-Portable-${version}-x64.exe`;
   const uploads = [];
   const requests = [];
   const uploadedAssets = [];
@@ -331,6 +347,7 @@ test("Gitee 镜像发布时先创建发行版并最后上传校验清单", async
     await Promise.all([
       writeFile(path.join(directory, installer), "installer"),
       writeFile(path.join(directory, `${installer}.blockmap`), "blockmap"),
+      writeFile(path.join(directory, portable), "portable"),
       writeFile(path.join(directory, "latest.yml"), `version: ${version}`)
     ]);
     const fetchImpl = async (requestUrl, options = {}) => {
@@ -379,16 +396,16 @@ test("Gitee 镜像发布时先创建发行版并最后上传校验清单", async
       uploadImpl
     });
 
-    assert.deepEqual(uploads, [installer, `${installer}.blockmap`, "latest.yml", "update-manifest.json"]);
+    assert.deepEqual(uploads, [installer, `${installer}.blockmap`, portable, "latest.yml", "update-manifest.json"]);
     assert.equal(result.releaseUrl, `https://gitee.com/zjx_master/git-ui-pro/releases/tag/${tagName}`);
     assert.equal(requests.filter((request) => request.method === "POST").length, 1);
-    assert.equal(requests.filter((request) => request.path.endsWith("/attach_files")).length, 5);
+    assert.equal(requests.filter((request) => request.path.endsWith("/attach_files")).length, 6);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });
 
-test("缺少 blockmap 或 latest.yml 时拒绝发布 Windows 正式版", () => {
+test("缺少 blockmap、Portable 或 latest.yml 时拒绝发布 Windows 正式版", () => {
   const version = "0.1.13";
   const expected = expectedWindowsUpdateArtifacts(version);
   const validation = validateWindowsUpdateArtifacts(version, [
@@ -396,7 +413,7 @@ test("缺少 blockmap 或 latest.yml 时拒绝发布 Windows 正式版", () => {
   ]);
 
   assert.equal(validation.valid, false);
-  assert.deepEqual(validation.missing, [expected.blockmap, expected.metadata]);
+  assert.deepEqual(validation.missing, [expected.blockmap, expected.portable, expected.metadata]);
 });
 
 test("等待 GitHub 安装包与最新版指针全部就绪后才完成发布", async () => {
@@ -434,6 +451,12 @@ test("等待 GitHub 安装包与最新版指针全部就绪后才完成发布", 
             status: 302,
             headers: { location: "https://objects.githubusercontent.com/blockmap" }
           });
+    }
+    if (url.pathname.endsWith(`/${expected.portable}`)) {
+      return new Response(null, {
+        status: 302,
+        headers: { location: "https://objects.githubusercontent.com/portable" }
+      });
     }
     if (url.pathname.endsWith("/releases/latest")) {
       latestCalls += 1;

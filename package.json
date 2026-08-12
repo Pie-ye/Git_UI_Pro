@@ -121,6 +121,12 @@
           "arch": [
             "x64"
           ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "build/icon.ico",
@@ -142,6 +148,11 @@
       "createStartMenuShortcut": true,
       "shortcutName": "Git UI Pro",
       "artifactName": "Git-UI-Pro-Setup-${version}-${arch}.${ext}"
+    },
+    "portable": {
+      "artifactName": "Git-UI-Pro-Portable-${version}-${arch}.${ext}",
+      "requestExecutionLevel": "user",
+      "unpackDirName": false
     },
     "mac": {
       "target": [

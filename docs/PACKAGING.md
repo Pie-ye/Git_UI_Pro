@@ -5,7 +5,7 @@
 - `npm run release:win`: 启动本地发布控制台，在浏览器中完成版本更新、Windows 打包、版本提交、tag 和 GitHub/Gitee 双远端推送。
 - `npm run icons`: 生成 `build/icon.ico`、`build/icon.png` 和 Linux PNG 图标集。
 - `npm run dist:dir`: 生成未安装目录包到 `release/win-unpacked`，用于快速验证打包内容。
-- `npm run dist:win`: 生成未签名 Windows NSIS 安装包到 `release/`。
+- `npm run dist:win`: 生成未签名 Windows NSIS 安装包和 Portable 便携版到 `release/`。
 - `npm run dist:linux`: 生成 Linux AppImage 和 deb 包到 `release/`。
 - `npm run dist:mac`: 生成 macOS dmg 和 zip 包到 `release/`，建议在 macOS 环境执行。
 - `npm run dist:win:signed`: 生成签名 Windows 包，需先配置代码签名证书环境变量。
@@ -24,7 +24,7 @@ npm run release:win
 
 1. 检查当前分支、Git 身份、进行中的 Git 操作、目标 tag 和双远端分支状态。
 2. 使用 `npm version --no-git-tag-version` 同步更新 `package.json` 与 `package-lock.json`。
-3. 执行 `npm run dist:win -- --publish never`，确认 `release/` 中已生成对应版本的 NSIS 安装包、blockmap 和 `latest.yml`。
+3. 执行 `npm run dist:win -- --publish never`，确认 `release/` 中已生成对应版本的 NSIS 安装包、blockmap、Portable 和 `latest.yml`。
 4. 按项目提交规范提交当前全部改动，创建带说明的 `v*` tag。
 5. 分别向 Gitee 和 GitHub 原子推送当前分支与 tag。GitHub 收到 tag 后会触发 Actions，创建 GitHub Release，并将 Windows 更新资产镜像到 Gitee Release。
 
@@ -32,23 +32,30 @@ npm run release:win
 
 发布前必须显式勾选确认项。构建失败且尚未暂存时，脚本会恢复两个版本文件；本地提交或 tag 已生成后不会自动回滚，远端推送失败时可在当前页面重试。
 
-Windows 安装包使用辅助安装向导，默认按当前用户安装，并允许用户选择安装目录。
+Windows 安装包使用辅助安装向导，默认按当前用户安装，并允许用户选择安装目录；Portable 可以直接运行，不创建快捷方式、卸载项或系统级安装记录。
 
-Windows 正式版只发布 NSIS x64 安装包，不再生成 Portable 版本。发布控制台会校验下面三项产物全部存在，任一缺失都会停止提交和推送：
+Windows 正式版同时发布 NSIS x64 安装版和 Portable x64 便携版。发布控制台会校验下面四项产物全部存在，任一缺失都会停止提交和推送：
 
 - `Git-UI-Pro-Setup-<version>-x64.exe`: NSIS 正式版安装包。
 - `Git-UI-Pro-Setup-<version>-x64.exe.blockmap`: 增量下载索引。
+- `Git-UI-Pro-Portable-<version>-x64.exe`: 无需安装的 Windows x64 便携版。
 - `latest.yml`: electron-updater 更新元数据；文件名固定，不包含版本号。
 
 ## Windows 应用内更新
 
-应用内更新仅在通过 NSIS 安装的 Windows x64 正式版中启用。Portable、开发环境、网页预览和其他操作系统不检查在线更新源。
+应用内更新同时支持 Windows x64 NSIS 安装版和 Portable 便携版。开发环境、网页预览和其他操作系统不检查 Windows 在线更新源。
 
-已安装应用启动后会静默检查 Gitee 国内更新源，Gitee 不可用或镜像尚未同步完整时自动回退到 GitHub。发现比当前版本更高的稳定版时，左上角显示更新入口。用户打开更新面板后手动开始下载，下载完成后再确认安装；应用不会在后台自动下载，也不会未经确认退出并安装。
+Windows 正式版启动后会静默检查 Gitee 国内更新源，Gitee 不可用或镜像尚未同步完整时自动回退到 GitHub。发现比当前版本更高的稳定版时，左上角显示更新入口。用户打开更新面板后手动开始下载，下载完成后再确认更新；应用不会在后台自动下载，也不会未经确认退出并替换程序。
 
 首次启用时需要先发布并手动安装一个包含双更新源逻辑的基线版本。更早、尚未集成该更新器的旧版本不会自动切换到国内源；从基线版本开始，后续 Gitee 或 GitHub Release 均可完成应用内升级。
 
-GitHub Release 必须同时上传同一版本的 NSIS `.exe`、对应 `.exe.blockmap` 和 `latest.yml`。Gitee Release 除这三项外还会上传 `update-manifest.json`，客户端会严格核对版本、文件名、下载域名和 SHA-256，并优先使用 blockmap 做差分下载；差分条件不满足时 electron-updater 会自动回退到完整安装包。镜像缺项或摘要不匹配时不会下载该安装包，而会尝试 GitHub 备用源。发布后应至少在一台未开启代理、已安装旧正式版的 Windows x64 设备上验证检查、下载、退出安装和重启后的版本号。
+GitHub Release 必须同时上传同一版本的 NSIS `.exe`、对应 `.exe.blockmap`、Portable `.exe` 和 `latest.yml`。Gitee Release 除这四项外还会上传 `update-manifest.json`，清单分别记录安装版与 Portable 的文件名、大小和 SHA-256。镜像缺项或摘要不匹配时，客户端不会下载可疑资产，而会尝试 GitHub 备用源。
+
+安装版继续通过 electron-updater 和 blockmap 完成差分下载，差分条件不满足时回退到完整安装包。Portable 使用独立下载与替换流程：更新包流式写入当前 Portable 所在磁盘，严格校验大小和 SHA-256，用户确认后由独立 PowerShell 辅助进程等待应用及外层启动器退出，再替换 Portable 可执行文件并启动新版本。新版本窗口成功加载并写入健康标记后才删除上一版本；若 90 秒内未通过健康检查，则自动恢复旧文件并重新启动。
+
+Portable 默认把项目列表、分组、偏好设置、终端历史和更新状态保存在程序旁边的 `Git-UI-Pro-Data` 目录，与安装版数据隔离。目录不可写时会回退到 `%APPDATA%/Git UI Pro Portable` 并显示中文提示。托管平台令牌继续使用 Windows `safeStorage` 加密；把 Portable 移动到其他电脑或 Windows 账号后，无法解密的令牌需要重新授权，不会以明文方式迁移。
+
+发布后应至少在一台未开启代理的 Windows x64 设备上分别验证安装版与 Portable 的检查、下载、退出更新、重启和版本号，并使用两个连续正式版本验证 Portable 的文件替换及配置保留。
 
 安装向导会在开始安装前显示桌面快捷方式选项，默认勾选“创建桌面快捷方式”，用户可以取消。
 
@@ -104,11 +111,11 @@ GitHub Release 必须同时上传同一版本的 NSIS `.exe`、对应 `.exe.bloc
 - `git-ui-pro-windows-x64`
 - `git-ui-pro-linux-x64`
 
-Actions 只上传安装包、必要的 blockmap 和 Windows `latest.yml`，不上传 `win-unpacked`、`linux-unpacked` 等解包目录，避免 Release 阶段上传过多文件触发 GitHub secondary rate limit。
+Actions 只上传安装包、Portable、必要的 blockmap 和 Windows `latest.yml`，不上传 `win-unpacked`、`linux-unpacked` 等解包目录，避免 Release 阶段上传过多文件触发 GitHub secondary rate limit。
 
-当工作流由 `v*` 格式 tag 触发时，会在 Windows 和 Linux 构建完成后自动创建 GitHub Release，并把安装包上传到该 Release。随后工作流使用 `scripts/sync-gitee-release.mjs` 创建或更新同标签的 Gitee Release，上传 Windows 安装包、blockmap、`latest.yml` 和最后生成的 SHA-256 更新清单。
+当工作流由 `v*` 格式 tag 触发时，会在 Windows 和 Linux 构建完成后自动创建 GitHub Release，并把安装包和 Portable 上传到该 Release。随后工作流使用 `scripts/sync-gitee-release.mjs` 创建或更新同标签的 Gitee Release，上传 Windows 安装包、blockmap、Portable、`latest.yml` 和最后生成的 SHA-256 更新清单。
 
-Gitee 附件采用文件流上传，避免将约 80 MB 的 Windows 安装包整体载入 Actions 的 Node.js 内存。上传时先发布体积较小的 blockmap 和 `latest.yml`，再以最长 30 分钟上传安装包，并输出每 10% 的传输进度；全部上传完成后还会重新读取附件列表，只有安装包、blockmap、`latest.yml` 和 `update-manifest.json` 均存在时才视为同步成功。
+Gitee 附件采用文件流上传，避免将 Windows 安装版或 Portable 整体载入 Actions 的 Node.js 内存。上传过程中会输出每 10% 的传输进度；全部上传完成后还会重新读取附件列表，只有安装包、blockmap、Portable、`latest.yml` 和 `update-manifest.json` 均存在且大小一致时才视为同步成功。
 
 首次启用国内镜像前，需要在 GitHub 仓库 `Settings -> Secrets and variables -> Actions` 中新增仓库密钥 `GITEE_TOKEN`。令牌由 Gitee 个人访问令牌页面创建，并需具备当前公开仓库的发行版创建、修改与附件上传权限。令牌只提供给 Actions，不写入代码、安装包或客户端。未配置该密钥时 GitHub Release 仍会正常发布，但工作流会给出警告，Gitee 国内更新源不会推进到新版本。
 

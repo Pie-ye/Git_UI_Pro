@@ -45,8 +45,8 @@ Git UI Pro 不重新实现 Git 内核，所有仓库操作都调用用户本机�
 - 分支操作：查看、新建、切换、合并和删除本地分支，并支持从指定提交创建分支。
 - 远程同步：支持 fetch、pull、push，以及无 upstream 分支的推送引导。
 - 控制台：在当前项目目录中打开辅助终端。
-- 发布控制台：规划语义化版本、记录发布说明、构建 Windows 安装包，并跟踪 Gitee 与 GitHub 双远端发布进度。
-- 版本更新：支持检查和下载新版本，并可查看历史版本和选择安全回退目标。
+- 发布控制台：规划语义化版本、记录发布说明、构建 Windows 安装版与 Portable，并跟踪 Gitee 与 GitHub 双远端发布进度。
+- 版本更新：Windows 安装版与 Portable 均支持检查、下载和应用新版本，并可查看历史版本和选择安全回退目标。
 - 外观主题：支持明亮、深色主题和完全收起的项目侧栏。
 - 中文反馈：Git 操作成功、失败、危险操作确认和原始输出查看都使用中文界面。
 
@@ -62,6 +62,13 @@ Git UI Pro 不重新实现 Git 内核，所有仓库操作都调用用户本机�
 
 - GitHub: <https://github.com/zjx150504-lgtm/Git_UI_Pro/releases>
 - Gitee（国内下载）: <https://gitee.com/zjx_master/git-ui-pro/releases>
+
+Windows x64 发行版提供两种形式：
+
+- `Git-UI-Pro-Setup-<版本号>-x64.exe`：安装版，带安装向导、快捷方式和卸载入口。
+- `Git-UI-Pro-Portable-<版本号>-x64.exe`：便携版，无需安装，项目配置默认保存在程序旁边的 `Git-UI-Pro-Data` 目录。
+
+两种 Windows 正式版都支持应用内更新，并优先使用 Gitee 国内更新源、失败后回退 GitHub。Portable 更新会在退出后替换自身；新版本未能正常启动时会自动恢复上一版本。
 
 当前项目仍处于早期版本。如果 Releases 中还没有安装包，可以在 GitHub Actions 的 `Build Installers` 工作流中下载对应系统的 artifacts。
 

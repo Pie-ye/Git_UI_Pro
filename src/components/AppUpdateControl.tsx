@@ -445,11 +445,11 @@ export function AppUpdateControl() {
             ) : null}
 
             <section className="app-update-history" data-expanded={historyExpanded}>
-              <PathTooltip content="仅显示带 SHA-256 校验的正式安装版" className="app-update-history-tooltip">
+              <PathTooltip content="仅显示带 SHA-256 校验的同类型正式版本" className="app-update-history-tooltip">
                 <button
                   type="button"
                   className="app-update-history-toggle"
-                  aria-label="历史版本，仅显示带 SHA-256 校验的正式安装版"
+                  aria-label="历史版本，仅显示带 SHA-256 校验的同类型正式版本"
                   aria-expanded={historyExpanded}
                   aria-controls="app-update-history-body"
                   onClick={() => setHistoryExpanded((current) => !current)}
@@ -534,7 +534,7 @@ function phaseLabel(state: UpdateState): string {
   const rollback = state.operation === "rollback";
   switch (state.phase) {
     case "unsupported":
-      return "仅支持 Windows 安装版";
+      return "仅支持 Windows 正式版";
     case "idle":
       return "正式版";
     case "checking":
@@ -546,7 +546,7 @@ function phaseLabel(state: UpdateState): string {
     case "downloaded":
       return rollback ? "回退版本已就绪" : "更新已就绪";
     case "installing":
-      return "正在启动安装";
+      return "正在应用更新";
     case "error":
       return rollback ? "回退未完成" : "更新未完成";
     default:
@@ -562,10 +562,10 @@ function primaryActionLabel(state: UpdateState, actionPending: boolean): string 
     return "正在下载";
   }
   if (state.phase === "downloaded") {
-    return actionPending ? "正在启动" : state.operation === "rollback" ? "回退并重启" : "安装并重启";
+    return actionPending ? "正在启动" : state.operation === "rollback" ? "回退并重启" : "更新并重启";
   }
   if (state.phase === "installing") {
-    return "正在启动安装";
+    return "正在应用更新";
   }
   if (state.phase === "error") {
     return actionPending ? "正在重试" : state.operation === "rollback" ? "重新下载回退包" : "重新下载";

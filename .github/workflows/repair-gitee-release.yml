@@ -45,6 +45,7 @@ jobs:
             --dir release-artifacts \
             --pattern "Git-UI-Pro-Setup-*-x64.exe" \
             --pattern "Git-UI-Pro-Setup-*-x64.exe.blockmap" \
+            --pattern "Git-UI-Pro-Portable-*-x64.exe" \
             --pattern "latest.yml"
 
       - name: Repair Gitee release assets

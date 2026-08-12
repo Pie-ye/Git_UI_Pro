@@ -61,6 +61,7 @@ jobs:
           path: |
             release/Git-UI-Pro-Setup-*.exe
             release/Git-UI-Pro-Setup-*.exe.blockmap
+            release/Git-UI-Pro-Portable-*.exe
             release/latest.yml
             release/*.AppImage
             release/*.deb

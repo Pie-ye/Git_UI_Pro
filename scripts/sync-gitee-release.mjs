@@ -15,9 +15,10 @@ const UPLOAD_MAX_ATTEMPTS = 2;
 const UPLOAD_RETRY_DELAY_MS = 15_000;
 const STABLE_TAG_PATTERN = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
-export function createGiteeUpdateManifest(tagName, installer) {
+export function createGiteeUpdateManifest(tagName, installer, portable) {
   const version = stableVersionFromTag(tagName);
   const expectedName = `Git-UI-Pro-Setup-${version}-x64.exe`;
+  const expectedPortableName = `Git-UI-Pro-Portable-${version}-x64.exe`;
   if (
     installer?.name !== expectedName ||
     !Number.isSafeInteger(installer.size) ||
@@ -27,6 +28,15 @@ export function createGiteeUpdateManifest(tagName, installer) {
   ) {
     throw new Error("Windows 安装包信息无效，无法生成 Gitee 更新清单。");
   }
+  if (
+    portable?.name !== expectedPortableName ||
+    !Number.isSafeInteger(portable.size) ||
+    portable.size <= 0 ||
+    typeof portable.sha256 !== "string" ||
+    !/^[a-f\d]{64}$/i.test(portable.sha256)
+  ) {
+    throw new Error("Windows Portable 信息无效，无法生成 Gitee 更新清单。");
+  }
   return Object.freeze({
     schemaVersion: 1,
     version,
@@ -35,6 +45,11 @@ export function createGiteeUpdateManifest(tagName, installer) {
       name: expectedName,
       size: installer.size,
       sha256: installer.sha256.toLowerCase()
+    }),
+    portable: Object.freeze({
+      name: expectedPortableName,
+      size: portable.size,
+      sha256: portable.sha256.toLowerCase()
     })
   });
 }
@@ -44,6 +59,7 @@ export async function collectWindowsUpdateFiles(rootDirectory, tagName) {
   const expectedNames = [
     `Git-UI-Pro-Setup-${version}-x64.exe`,
     `Git-UI-Pro-Setup-${version}-x64.exe.blockmap`,
+    `Git-UI-Pro-Portable-${version}-x64.exe`,
     "latest.yml"
   ];
   const files = await listFilesRecursively(path.resolve(rootDirectory));
@@ -72,13 +88,23 @@ export async function syncGiteeRelease(options = {}) {
   const version = stableVersionFromTag(tagName);
   const files = await collectWindowsUpdateFiles(artifactsDirectory, tagName);
   const installerName = `Git-UI-Pro-Setup-${version}-x64.exe`;
+  const portableName = `Git-UI-Pro-Portable-${version}-x64.exe`;
   const installerPath = files.get(installerName);
-  const installerStat = await stat(installerPath);
-  const installerSha256 = await sha256File(installerPath);
+  const portablePath = files.get(portableName);
+  const [installerStat, portableStat, installerSha256, portableSha256] = await Promise.all([
+    stat(installerPath),
+    stat(portablePath),
+    sha256File(installerPath),
+    sha256File(portablePath)
+  ]);
   const manifest = createGiteeUpdateManifest(tagName, {
     name: installerName,
     size: installerStat.size,
     sha256: installerSha256
+  }, {
+    name: portableName,
+    size: portableStat.size,
+    sha256: portableSha256
   });
   const githubRelease = await fetchGithubRelease(githubRepository, tagName, githubToken, options.fetchImpl);
   const gitee = createGiteeClient({
@@ -102,6 +128,7 @@ export async function syncGiteeRelease(options = {}) {
   const uploadEntries = [
     installerName,
     `${installerName}.blockmap`,
+    portableName,
     "latest.yml"
   ].map((name) => [name, files.get(name)]);
   const expectedAssets = new Map();

@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 import giteeUpdateSource from "../dist-electron/giteeUpdateSource.js";
 import releaseHistory from "../dist-electron/releaseHistory.js";
 import updateService from "../dist-electron/updateService.js";
 import updateUtils from "../dist-electron/updateUtils.js";
+import portableRuntime from "../dist-electron/portableRuntime.js";
+import portableUpdate from "../dist-electron/portableUpdate.js";
 
 const { buildReleaseHistoryCatalog, createRollbackUpdaterOptions } = releaseHistory;
 const {
@@ -21,6 +26,23 @@ const {
   startFreshUpgradeDownload
 } = updateService;
 const { githubReleaseUrl, normalizeReleaseNotes, updateErrorMessage } = updateUtils;
+const {
+  completePortableUpdateHealthCheck,
+  resolvePortableDataPath,
+  resolvePortableExecutablePath
+} = portableRuntime;
+const {
+  buildPortableGiteeReleaseHistoryCatalog,
+  buildPortableGithubReleaseHistoryCatalog,
+  buildPortableUpdatePowerShellScript,
+  comparePortableVersions,
+  parseLatestPortableGiteeRelease,
+  parseLatestPortableGithubRelease,
+  parsePortableGiteeReleaseSummary,
+  portableArtifactName,
+  selectPortableGiteeHistoryCandidates,
+  verifyPortableGiteeRelease
+} = portableUpdate;
 
 const SHA256 = "a".repeat(64);
 
@@ -146,6 +168,66 @@ function giteeManifest(version, overrides = {}) {
       size: 82_000_000,
       sha256: SHA256,
       ...installerOverrides
+    }
+  };
+}
+
+function portableGithubRelease(version, overrides = {}) {
+  const tagName = overrides.tag_name ?? `v${version}`;
+  const artifactName = `Git-UI-Pro-Portable-${version}-x64.exe`;
+  return {
+    tag_name: tagName,
+    name: `Git UI Pro v${version}`,
+    body: `Portable ${version} 说明`,
+    draft: false,
+    prerelease: false,
+    published_at: "2026-07-23T08:05:52Z",
+    ...overrides,
+    assets: overrides.assets ?? [{
+      name: artifactName,
+      state: "uploaded",
+      digest: `sha256:${SHA256}`,
+      size: 80_000_000,
+      browser_download_url: `https://github.com/zjx150504-lgtm/Git_UI_Pro/releases/download/${tagName}/${artifactName}`
+    }]
+  };
+}
+
+function portableGiteeRelease(version, overrides = {}) {
+  const tagName = overrides.tag_name ?? `v${version}`;
+  const artifactName = `Git-UI-Pro-Portable-${version}-x64.exe`;
+  return {
+    tag_name: tagName,
+    name: `Git UI Pro v${version}`,
+    body: `Portable ${version} 说明`,
+    prerelease: false,
+    created_at: "2026-07-23T08:05:52Z",
+    ...overrides,
+    assets: overrides.assets ?? [
+      {
+        name: artifactName,
+        browser_download_url: `https://gitee.com/zjx_master/git-ui-pro/releases/download/${tagName}/${artifactName}`
+      },
+      {
+        name: "update-manifest.json",
+        browser_download_url: `https://gitee.com/zjx_master/git-ui-pro/releases/download/${tagName}/update-manifest.json`
+      }
+    ]
+  };
+}
+
+function portableManifest(version, overrides = {}) {
+  const { portable: portableOverrides = {}, ...manifestOverrides } = overrides;
+  return {
+    schemaVersion: 1,
+    version,
+    tagName: `v${version}`,
+    ...manifestOverrides,
+    portable: {
+      name: `Git-UI-Pro-Portable-${version}-x64.exe`,
+      size: 80_000_000,
+      sha256: SHA256,
+      ...portableOverrides
     }
   };
 }
@@ -379,6 +461,110 @@ test("Gitee 历史版本按版本筛选并生成可校验的回退目标", () =>
   const catalog = buildGiteeReleaseHistoryCatalog(releases, "0.1.25");
   assert.deepEqual(catalog.entries.map((entry) => entry.version), ["0.1.24", "0.1.23"]);
   assert.match(catalog.resolveTarget("0.1.24")?.downloadUrl ?? "", /^https:\/\/gitee\.com\//);
+});
+
+test("Portable GitHub 正式版严格匹配专属资产、版本、大小与 SHA-256", () => {
+  const latest = parseLatestPortableGithubRelease(portableGithubRelease("0.1.32"));
+  assert.equal(latest.version, "0.1.32");
+  assert.equal(latest.target.artifactName, "Git-UI-Pro-Portable-0.1.32-x64.exe");
+  assert.equal(latest.target.size, 80_000_000);
+  assert.equal(latest.target.sha256, SHA256);
+  assert.equal(
+    latest.target.downloadUrl,
+    "https://github.com/zjx150504-lgtm/Git_UI_Pro/releases/download/v0.1.32/Git-UI-Pro-Portable-0.1.32-x64.exe"
+  );
+  assert.throws(
+    () => parseLatestPortableGithubRelease(portableGithubRelease("0.1.32", {
+      assets: [{
+        name: "Git-UI-Pro-Setup-0.1.32-x64.exe",
+        state: "uploaded",
+        digest: `sha256:${SHA256}`,
+        size: 80_000_000,
+        browser_download_url: "https://github.com/zjx150504-lgtm/Git_UI_Pro/releases/download/v0.1.32/Git-UI-Pro-Setup-0.1.32-x64.exe"
+      }]
+    })),
+    /Portable 正式版本/
+  );
+
+  const catalog = buildPortableGithubReleaseHistoryCatalog([
+    portableGithubRelease("0.1.30"),
+    portableGithubRelease("0.1.29"),
+    portableGithubRelease("0.1.28"),
+    portableGithubRelease("0.1.27")
+  ], "0.1.31");
+  assert.deepEqual(catalog.entries.map((entry) => entry.version), ["0.1.30", "0.1.29", "0.1.28"]);
+  assert.equal(catalog.resolveTarget("v0.1.30")?.artifactName, "Git-UI-Pro-Portable-0.1.30-x64.exe");
+});
+
+test("Portable Gitee 双源清单仅接受对应便携资产", () => {
+  const release = portableGiteeRelease("0.1.32");
+  const latest = parseLatestPortableGiteeRelease(release, portableManifest("0.1.32", {
+    portable: { sha256: "B".repeat(64) }
+  }));
+  assert.equal(latest.target.sha256, "b".repeat(64));
+  assert.equal(
+    latest.target.downloadUrl,
+    "https://gitee.com/zjx_master/git-ui-pro/releases/download/v0.1.32/Git-UI-Pro-Portable-0.1.32-x64.exe"
+  );
+  assert.throws(
+    () => parseLatestPortableGiteeRelease(release, portableManifest("0.1.32", {
+      portable: { name: "Git-UI-Pro-Setup-0.1.32-x64.exe" }
+    })),
+    /Portable 更新清单与发行版不匹配/
+  );
+
+  const candidates = selectPortableGiteeHistoryCandidates([
+    portableGiteeRelease("0.1.30"),
+    portableGiteeRelease("0.1.29"),
+    portableGiteeRelease("0.1.32")
+  ], "0.1.31");
+  const targets = candidates.map((candidate) => verifyPortableGiteeRelease(candidate, portableManifest(candidate.version)));
+  const catalog = buildPortableGiteeReleaseHistoryCatalog(targets, "0.1.31");
+  assert.deepEqual(catalog.entries.map((entry) => entry.version), ["0.1.30", "0.1.29"]);
+  assert.ok(parsePortableGiteeReleaseSummary(release));
+});
+
+test("Portable 运行时识别外层程序并使用独立数据目录", () => {
+  const environment = {
+    PORTABLE_EXECUTABLE_DIR: "E:\\Tools\\Git UI Pro",
+    PORTABLE_EXECUTABLE_FILE: "E:\\Tools\\Git UI Pro\\Git-UI-Pro-Portable-0.1.32-x64.exe"
+  };
+  const executable = resolvePortableExecutablePath(environment, "win32");
+  assert.equal(executable, environment.PORTABLE_EXECUTABLE_FILE);
+  assert.equal(resolvePortableDataPath(executable), "E:\\Tools\\Git UI Pro\\Git-UI-Pro-Data");
+  assert.equal(resolvePortableExecutablePath({ ...environment, PORTABLE_EXECUTABLE_DIR: "D:\\Other" }, "win32"), null);
+  assert.equal(portableArtifactName("v0.1.32"), "Git-UI-Pro-Portable-0.1.32-x64.exe");
+  assert.ok(comparePortableVersions("0.1.32", "0.1.31") > 0);
+});
+
+test("Portable 新版本只有在窗口成功加载后才写入健康标记", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "git-ui-pro-portable-health-"));
+  const token = "a".repeat(32);
+  const updateDirectory = path.join(directory, "updates");
+  const markerPath = path.join(updateDirectory, `portable-health-${token}.ok`);
+  try {
+    await mkdir(updateDirectory, { recursive: true });
+    assert.equal(completePortableUpdateHealthCheck(directory, {
+      GIT_UI_PRO_PORTABLE_UPDATE_TOKEN: token,
+      GIT_UI_PRO_PORTABLE_UPDATE_MARKER: markerPath
+    }), true);
+    assert.equal((await readFile(markerPath, "utf8")).trim(), token);
+    assert.equal(completePortableUpdateHealthCheck(directory, {
+      GIT_UI_PRO_PORTABLE_UPDATE_TOKEN: token,
+      GIT_UI_PRO_PORTABLE_UPDATE_MARKER: path.join(directory, "outside.ok")
+    }), false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Portable 替换脚本包含退出等待、健康检查与失败回退", () => {
+  const script = buildPortableUpdatePowerShellScript();
+  assert.match(script, /Wait-ForExit \$ApplicationPid/);
+  assert.match(script, /Wait-ForExit \$LauncherPid/);
+  assert.match(script, /PORTABLE_UPDATE_TOKEN/);
+  assert.match(script, /Move-Item -LiteralPath \$BackupPath -Destination \$CurrentPath/);
+  assert.match(script, /新版本健康检查通过/);
 });
 
 test("权威 latest 与 updater 元数据不一致时拒绝旧候选", async () => {

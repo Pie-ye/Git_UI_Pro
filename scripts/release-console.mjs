@@ -888,6 +888,7 @@ export function expectedWindowsUpdateArtifacts(version) {
   return {
     installer: baseName,
     blockmap: `${baseName}.blockmap`,
+    portable: `Git-UI-Pro-Portable-${version}-x64.exe`,
     metadata: "latest.yml"
   };
 }
@@ -1229,12 +1230,13 @@ export async function waitForGitHubReleaseReady(repositoryInfo, tag, version, op
       } else if (!releaseMetadataHasVersion(metadata, version) || !metadata.includes(expected.installer)) {
         report("waiting-metadata", "warning", "GitHub 已生成 latest.yml，但版本或安装包信息尚未同步完成");
       } else {
-        const [installerReady, blockmapReady] = await Promise.all([
+        const [installerReady, blockmapReady, portableReady] = await Promise.all([
           isGitHubReleaseAssetReady(`${downloadBaseUrl}/${encodeURIComponent(expected.installer)}`, requestOptions),
-          isGitHubReleaseAssetReady(`${downloadBaseUrl}/${encodeURIComponent(expected.blockmap)}`, requestOptions)
+          isGitHubReleaseAssetReady(`${downloadBaseUrl}/${encodeURIComponent(expected.blockmap)}`, requestOptions),
+          isGitHubReleaseAssetReady(`${downloadBaseUrl}/${encodeURIComponent(expected.portable)}`, requestOptions)
         ]);
-        if (!installerReady || !blockmapReady) {
-          report("waiting-assets", "info", `${tag} 的版本元数据已生成，等待 Windows 安装包上传完成`);
+        if (!installerReady || !blockmapReady || !portableReady) {
+          report("waiting-assets", "info", `${tag} 的版本元数据已生成，等待 Windows 安装版和 Portable 上传完成`);
         } else {
           const latestTag = await readGitHubLatestTag(latestReleaseUrl, requestOptions);
           if (latestTag === tag) {
@@ -1382,7 +1384,7 @@ async function executeRelease(job) {
     job.artifacts = await collectArtifacts(job.version);
     const artifactValidation = validateWindowsUpdateArtifacts(job.version, job.artifacts);
     if (!artifactValidation.valid) {
-      throw new Error(`打包完成，但 release/ 缺少 Windows 正式版更新产物：${artifactValidation.missing.join("、")}`);
+      throw new Error(`打包完成，但 release/ 缺少 Windows 安装版或 Portable 正式产物：${artifactValidation.missing.join("、")}`);
     }
     for (const artifact of job.artifacts) {
       addLog(job, "success", `产物：${artifact.name}`);

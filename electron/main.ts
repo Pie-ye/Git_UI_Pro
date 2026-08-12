@@ -8,6 +8,7 @@ import { buildSshArgs, GitService, normalizeRepositoryTarget, shellQuote, sshDes
 import { HostingService, type HostingCreateChangeInput, type HostingMergeInput, type HostingProvider, type HostingReviewInput } from "./hostingService";
 import { inspectSshHost, trustScannedSshHost, type ScannedSshHost } from "./sshHostTrust";
 import { UpdateService, type UpdateState } from "./updateService";
+import { completePortableUpdateHealthCheck, initializePortableRuntime } from "./portableRuntime";
 
 let mainWindow: BrowserWindow | null = null;
 let configStore: ConfigStore;
@@ -35,6 +36,8 @@ type GitPushRequest = { forceWithLease?: boolean; operationId?: string };
 // Avoid packaged Windows installs exiting when Chromium's GPU sandbox cannot start.
 app.commandLine.appendSwitch("disable-gpu-sandbox");
 
+const portableRuntime = initializePortableRuntime(app);
+const isPortableSmokeTest = portableRuntime.isPortable && process.env.GIT_UI_PRO_PORTABLE_SMOKE_TEST === "1";
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
 async function createWindow(): Promise<void> {
@@ -656,10 +659,24 @@ if (!hasSingleInstanceLock) {
     const userDataPath = app.getPath("userData");
     configStore = new ConfigStore(userDataPath);
     hostingService = new HostingService(userDataPath);
-    updateService = new UpdateService(emitUpdateState);
+    if (isPortableSmokeTest) {
+      await configStore.read();
+      app.exit(0);
+      return;
+    }
+    updateService = new UpdateService(emitUpdateState, portableRuntime);
     configureApplicationMenu();
     registerIpc();
     await createWindow();
+    completePortableUpdateHealthCheck(userDataPath);
+    if (portableRuntime.warning) {
+      void dialog.showMessageBox(mainWindow!, {
+        type: "warning",
+        title: "便携数据目录不可写",
+        message: "Git UI Pro Portable 已切换到备用数据目录",
+        detail: portableRuntime.warning
+      });
+    }
     updateService.start();
 
     app.on("activate", () => {
