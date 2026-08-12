@@ -2276,11 +2276,13 @@ select:not([disabled]):focus {
 }
 
 .app-chrome-tools .app-update-trigger[data-update-notice="true"] {
-  --update-notice-color: var(--blue);
-  min-width: 48px;
-  padding-right: 12px;
+  --update-notice-color: var(--success);
+  --update-notice-cycle: 3.8s;
+  min-width: 44px;
+  padding: 0 8px;
   color: var(--text-strong);
-  background: color-mix(in srgb, var(--update-notice-color) 8%, transparent);
+  background: transparent;
+  box-shadow: none;
 }
 
 .app-chrome-tools .app-update-trigger[data-update-notice="true"][data-phase="downloaded"] {
@@ -2315,17 +2317,54 @@ select:not([disabled]):focus {
 }
 
 .app-update-trigger-dot {
+  position: absolute;
   top: 3px;
-  right: 4px;
-  width: 6px;
-  height: 6px;
-  border-color: color-mix(in srgb, var(--glass-fill-static) 88%, transparent);
-  background: var(--update-notice-color, var(--blue));
+  left: calc(50% + 12px);
+  width: 5px;
+  height: 5px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--update-notice-color, var(--success));
+  box-shadow: none;
+  isolation: isolate;
 }
 
 .app-update-trigger[data-update-notice="true"] .app-update-trigger-dot {
   transform-origin: center;
-  animation: app-update-attention-dot 2.8s cubic-bezier(0.45, 0, 0.2, 1) infinite;
+  animation: app-update-beacon-core var(--update-notice-cycle) cubic-bezier(0.45, 0, 0.25, 1) infinite;
+}
+
+.app-update-trigger[data-update-notice="true"] .app-update-trigger-dot::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: -4px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--update-notice-color, var(--success)) 28%, transparent) 0 24%,
+    color-mix(in srgb, var(--update-notice-color, var(--success)) 12%, transparent) 44%,
+    transparent 72%
+  );
+  opacity: 0.14;
+  transform: scale(0.62);
+  pointer-events: none;
+  animation: app-update-beacon-halo var(--update-notice-cycle) cubic-bezier(0.45, 0, 0.25, 1) infinite;
+}
+
+.app-chrome-tools .app-update-trigger[data-update-notice="true"]:hover .app-update-trigger-dot,
+.app-chrome-tools .app-update-trigger[data-update-notice="true"][aria-expanded="true"] .app-update-trigger-dot,
+.app-chrome-tools .app-update-trigger[data-update-notice="true"]:hover .app-update-trigger-dot::after,
+.app-chrome-tools .app-update-trigger[data-update-notice="true"][aria-expanded="true"] .app-update-trigger-dot::after {
+  animation: none;
+  opacity: 1;
+  transform: scale(1);
+}
+
+.app-chrome-tools .app-update-trigger[data-update-notice="true"]:hover .app-update-trigger-dot::after,
+.app-chrome-tools .app-update-trigger[data-update-notice="true"][aria-expanded="true"] .app-update-trigger-dot::after {
+  opacity: 0.3;
+  transform: scale(0.86);
 }
 
 .app-update-popover {
@@ -2977,17 +3016,29 @@ select:not([disabled]):focus {
   -webkit-backdrop-filter: blur(22px) saturate(150%);
 }
 
-@keyframes app-update-attention-dot {
+@keyframes app-update-beacon-core {
   0%,
   100% {
-    opacity: 0.7;
-    box-shadow: 0 0 0 1px color-mix(in srgb, var(--update-notice-color, var(--blue)) 10%, transparent);
-    transform: scale(0.82);
+    filter: brightness(0.96) saturate(0.96);
+    opacity: 0.9;
+    transform: scale(0.9);
   }
   50% {
+    filter: brightness(1.06) saturate(1.04);
     opacity: 1;
-    box-shadow: 0 0 0 5px color-mix(in srgb, var(--update-notice-color, var(--blue)) 14%, transparent), 0 0 9px color-mix(in srgb, var(--update-notice-color, var(--blue)) 34%, transparent);
-    transform: scale(1.06);
+    transform: scale(1);
+  }
+}
+
+@keyframes app-update-beacon-halo {
+  0%,
+  100% {
+    opacity: 0.12;
+    transform: scale(0.62);
+  }
+  50% {
+    opacity: 0.58;
+    transform: scale(1.08);
   }
 }
 
@@ -3043,15 +3094,19 @@ select:not([disabled]):focus {
 
   .app-update-trigger[data-update-notice="true"] .app-update-trigger-dot {
     animation: none !important;
-    transform: none;
+    filter: none;
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  .app-update-trigger[data-update-notice="true"] .app-update-trigger-dot::after {
+    animation: none !important;
+    opacity: 0.28;
+    transform: scale(0.86);
   }
 }
 
 /* Compact About / update popover, aligned with the titlebar control. */
-.app-chrome-tools .app-update-trigger[data-update-notice="true"] {
-  animation: app-update-about-breathe 2.35s ease-in-out infinite;
-}
-
 .app-chrome-titlebar:has([aria-expanded="true"]),
 .app-chrome-titlebar:has([aria-expanded="true"]) .app-chrome-drag-region,
 .app-shell:has(.floating-menu) .app-chrome-titlebar,
@@ -3246,17 +3301,6 @@ select:not([disabled]):focus {
   flex: 1 1 auto;
 }
 
-@keyframes app-update-about-breathe {
-  0%,
-  100% {
-    box-shadow: 0 0 0 1px color-mix(in srgb, var(--update-notice-color, var(--blue)) 18%, transparent);
-  }
-  50% {
-    background: color-mix(in srgb, var(--update-notice-color, var(--blue)) 15%, transparent);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--update-notice-color, var(--blue)) 17%, transparent), 0 0 15px color-mix(in srgb, var(--update-notice-color, var(--blue)) 30%, transparent);
-  }
-}
-
 @media (max-width: 520px) {
   .app-update-popover {
     position: fixed;
@@ -3265,12 +3309,5 @@ select:not([disabled]):focus {
     left: 8px;
     width: auto;
     max-height: calc(100vh - 44px);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .app-chrome-tools .app-update-trigger[data-update-notice="true"] {
-    animation: none !important;
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--update-notice-color, var(--blue)) 24%, transparent);
   }
 }
