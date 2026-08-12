@@ -110,8 +110,8 @@
       "node_modules/@homebridge/node-pty-prebuilt-multiarch/third_party/**/*"
     ],
     "asarUnpack": [
+      "node_modules/@homebridge/node-pty-prebuilt-multiarch/lib/**/*",
       "node_modules/@homebridge/node-pty-prebuilt-multiarch/build/Release/**/*",
-      "node_modules/@homebridge/node-pty-prebuilt-multiarch/prebuilds/**/*",
       "node_modules/@homebridge/node-pty-prebuilt-multiarch/prebuilds/**/*",
       "node_modules/@homebridge/node-pty-prebuilt-multiarch/third_party/**/*"
     ],
