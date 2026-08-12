@@ -49,6 +49,10 @@ const MAX_RELEASE_HISTORY_RESPONSE_LENGTH = 5_000_000;
 const MAX_UPDATE_MANIFEST_RESPONSE_LENGTH = 64_000;
 const GITEE_REQUEST_TIMEOUT_MS = 8_000;
 const RELEASE_HISTORY_REQUEST_TIMEOUT_MS = 20_000;
+const INSTALLER_LOW_SPEED_THRESHOLD_BYTES_PER_SECOND = 192 * 1024;
+const INSTALLER_LOW_SPEED_GRACE_MS = 10_000;
+const INSTALLER_LOW_SPEED_WINDOW_MS = 8_000;
+const INSTALLER_STALL_TIMEOUT_MS = 20_000;
 const SHA256_DIGEST_PATTERN = /^sha256:([a-f\d]{64})$/i;
 
 export type UpdatePhase =
@@ -103,6 +107,12 @@ export type LatestStableRelease = {
 };
 
 type UpdateReleaseCatalog = ReleaseHistoryCatalog | PortableReleaseCatalog;
+
+type InstallerDownloadSource = Readonly<{
+  id: "github" | "gitee";
+  label: string;
+  target: RollbackTarget;
+}>;
 
 export type FreshUpgradeDownload = {
   info: UpdateInfo;
@@ -291,9 +301,16 @@ export class UpdateService {
   private upgradeUpdater: NsisUpdater | null = null;
   private upgradeCancellationToken: CancellationToken | null = null;
   private upgradeGeneration = 0;
+  private upgradeSource: InstallerDownloadSource | null = null;
+  private upgradeFallbackSource: InstallerDownloadSource | null = null;
+  private upgradeSourceStartedAt = 0;
+  private upgradeLastProgressAt = 0;
+  private upgradeLowSpeedSince = 0;
+  private upgradeWatchdogTimer: NodeJS.Timeout | null = null;
   private rollbackUpdater: NsisUpdater | null = null;
   private rollbackCancellationToken: CancellationToken | null = null;
   private rollbackGeneration = 0;
+  private rollbackTarget: RollbackTarget | null = null;
   private portableAbortController: AbortController | null = null;
   private portableTarget: PortableUpdateTarget | null = null;
   private portableStagedPath: string | null = null;
@@ -421,7 +438,7 @@ export class UpdateService {
     let checkUpdater: NsisUpdater | null = null;
     try {
       const latestRelease = await this.fetchLatestStableRelease();
-      const target = requireRollbackTarget(latestRelease.target);
+      const target = installerDownloadSources(requireRollbackTarget(latestRelease.target))[0].target;
       checkUpdater = this.createUpgradeUpdater(target);
       const result = await resolveFreshUpgradeCheck(checkUpdater, async () => ({ ...latestRelease, target }));
       if (result.isUpdateAvailable) {
@@ -485,7 +502,10 @@ export class UpdateService {
     }
 
     this.disposeRollbackUpdater();
-    const updater = this.createRollbackUpdater(target as RollbackTarget);
+    const rollbackSources = installerDownloadSources(target as RollbackTarget);
+    const primaryTarget = rollbackSources[0].target;
+    this.rollbackTarget = primaryTarget;
+    const updater = this.createRollbackUpdater(primaryTarget);
     const generation = ++this.rollbackGeneration;
     this.rollbackUpdater = updater;
     this.bindRollbackUpdater(updater, generation);
@@ -493,11 +513,11 @@ export class UpdateService {
       phase: "checking",
       operation: "rollback",
       currentVersion: this.state.currentVersion,
-      availableVersion: target.version,
-      releaseName: target.releaseName,
-      releaseNotes: target.releaseNotes,
-      releaseDate: target.releaseDate,
-      releaseUrl: target.releaseUrl
+      availableVersion: primaryTarget.version,
+      releaseName: primaryTarget.releaseName,
+      releaseNotes: primaryTarget.releaseNotes,
+      releaseDate: primaryTarget.releaseDate,
+      releaseUrl: primaryTarget.releaseUrl
     });
 
     try {
@@ -505,7 +525,7 @@ export class UpdateService {
       if (this.rollbackUpdater !== updater || generation !== this.rollbackGeneration) {
         return this.getState();
       }
-      if (!result?.isUpdateAvailable || result.updateInfo.version !== target.version) {
+      if (!result?.isUpdateAvailable || result.updateInfo.version !== primaryTarget.version) {
         throw new Error("无法确认所选回退版本，操作已停止。");
       }
       this.rollbackCancellationToken = result.cancellationToken ?? null;
@@ -516,11 +536,11 @@ export class UpdateService {
           phase: "error",
           operation: "rollback",
           currentVersion: this.state.currentVersion,
-          availableVersion: target.version,
-          releaseName: target.releaseName,
-          releaseNotes: target.releaseNotes,
-          releaseDate: target.releaseDate,
-          releaseUrl: target.releaseUrl,
+          availableVersion: primaryTarget.version,
+          releaseName: primaryTarget.releaseName,
+          releaseNotes: primaryTarget.releaseNotes,
+          releaseDate: primaryTarget.releaseDate,
+          releaseUrl: primaryTarget.releaseUrl,
           error: updateErrorMessage(error)
         });
       }
@@ -535,12 +555,40 @@ export class UpdateService {
     }
 
     this.disposeRollbackUpdater();
+    this.rollbackTarget = null;
     this.disposePortableDownload();
     this.setState({
       phase: this.supported ? "idle" : "unsupported",
       operation: "upgrade",
       currentVersion: this.state.currentVersion
     });
+    return this.getState();
+  }
+
+  cancelDownload(): UpdateState {
+    if (!this.supported || this.state.phase !== "downloading") {
+      return this.getState();
+    }
+
+    const cancelledState: UpdateStateInput = {
+      ...this.state,
+      phase: "available",
+      progress: undefined,
+      error: undefined
+    };
+    if (this.portable) {
+      const target = this.portableTarget;
+      this.portableGeneration += 1;
+      this.portableAbortController?.abort();
+      this.portableAbortController = null;
+      this.portableStagedPath = null;
+      this.portableTarget = target;
+    } else if (this.state.operation === "rollback") {
+      this.disposeRollbackUpdater();
+    } else {
+      this.disposeUpgradeUpdater();
+    }
+    this.setState(cancelledState);
     return this.getState();
   }
 
@@ -564,9 +612,17 @@ export class UpdateService {
       return this.downloadLatestUpgrade();
     }
 
-    if (!this.state.availableVersion || !this.rollbackUpdater) {
+    if (!this.state.availableVersion || !this.rollbackTarget) {
       this.setError(new Error("回退版本尚未通过校验，请重新选择该版本。"), "rollback");
       return this.getState();
+    }
+
+    if (!this.rollbackUpdater) {
+      const selectedVersion = this.rollbackTarget.version;
+      await this.prepareRollback(selectedVersion);
+      if (!this.rollbackUpdater || this.state.phase !== "available") {
+        return this.getState();
+      }
     }
 
     this.setState({
@@ -637,31 +693,187 @@ export class UpdateService {
     return updater;
   }
 
-  private bindUpgradeUpdater(updater: NsisUpdater, generation: number): void {
+  private bindUpgradeUpdater(
+    updater: NsisUpdater,
+    generation: number,
+    source: InstallerDownloadSource,
+    fallbackSource: InstallerDownloadSource | null
+  ): void {
     const isActive = () => this.upgradeUpdater === updater && this.upgradeGeneration === generation;
     updater.on("download-progress", (progress) => {
       if (isActive()) {
-        this.setState({ ...this.state, phase: "downloading", progress: normalizeProgress(progress), error: undefined });
+        this.recordUpgradeProgress(updater, generation, progress);
+        if (!isActive()) {
+          return;
+        }
+        this.setState({
+          ...this.state,
+          phase: "downloading",
+          releaseUrl: source.target.releaseUrl,
+          progress: normalizeProgress(progress, source),
+          error: undefined
+        });
       }
     });
     updater.on("update-downloaded", (info) => {
       if (isActive()) {
+        this.clearUpgradeWatchdog();
         this.setState({
-          ...this.stateFromInfo("downloaded", info, "upgrade", this.state.releaseUrl),
+          ...this.stateFromInfo("downloaded", info, "upgrade", source.target.releaseUrl),
           progress: this.state.progress
         });
       }
     });
     updater.on("update-cancelled", () => {
       if (isActive()) {
-        this.setError(new Error("更新下载已取消"), "upgrade");
+        void this.handleUpgradeSourceFailure(updater, generation, fallbackSource, new Error(`${source.label}下载被中断。`));
       }
     });
     updater.on("error", (error) => {
       if (isActive()) {
-        this.setError(error, "upgrade");
+        void this.handleUpgradeSourceFailure(updater, generation, fallbackSource, error);
       }
     });
+  }
+
+  private async startUpgradeDownloadAttempt(
+    source: InstallerDownloadSource,
+    fallbackSource: InstallerDownloadSource | null,
+    expectedVersion: string
+  ): Promise<void> {
+    const updater = this.createUpgradeUpdater(source.target);
+    const generation = ++this.upgradeGeneration;
+    this.upgradeUpdater = updater;
+    this.upgradeSource = source;
+    this.upgradeFallbackSource = fallbackSource;
+    this.bindUpgradeUpdater(updater, generation, source, fallbackSource);
+
+    try {
+      const freshDownload = await startFreshUpgradeDownload(
+        updater,
+        async () => ({ version: expectedVersion, tagName: `v${expectedVersion}`, target: source.target }),
+        (info) => {
+          if (this.upgradeUpdater !== updater || this.upgradeGeneration !== generation) {
+            return;
+          }
+          this.upgradeSourceStartedAt = Date.now();
+          this.upgradeLastProgressAt = this.upgradeSourceStartedAt;
+          this.upgradeLowSpeedSince = 0;
+          this.armUpgradeWatchdog(updater, generation, fallbackSource);
+          this.setState({
+            ...this.stateFromInfo("available", info, "upgrade", source.target.releaseUrl),
+            phase: "downloading",
+            progress: emptyInstallerProgress(source),
+            error: undefined
+          });
+        }
+      );
+      if (this.upgradeUpdater !== updater || this.upgradeGeneration !== generation) {
+        return;
+      }
+      this.upgradeCancellationToken = freshDownload.cancellationToken;
+      if (!freshDownload.downloadPromise) {
+        this.disposeUpgradeUpdater();
+        this.setState({
+          phase: "up-to-date",
+          operation: "upgrade",
+          currentVersion: this.state.currentVersion,
+          availableVersion: freshDownload.info.version,
+          releaseDate: freshDownload.info.releaseDate,
+          releaseUrl: source.target.releaseUrl
+        });
+        return;
+      }
+      void freshDownload.downloadPromise.catch((error) => {
+        void this.handleUpgradeSourceFailure(updater, generation, fallbackSource, error);
+      });
+    } catch (error) {
+      await this.handleUpgradeSourceFailure(updater, generation, fallbackSource, error);
+    }
+  }
+
+  private async handleUpgradeSourceFailure(
+    updater: NsisUpdater,
+    generation: number,
+    fallbackSource: InstallerDownloadSource | null,
+    error: unknown
+  ): Promise<void> {
+    if (this.upgradeUpdater !== updater || this.upgradeGeneration !== generation) {
+      return;
+    }
+    this.disposeUpgradeUpdater();
+    if (!fallbackSource) {
+      this.setError(error, "upgrade");
+      return;
+    }
+    this.setState({
+      ...this.state,
+      phase: "downloading",
+      releaseUrl: fallbackSource.target.releaseUrl,
+      progress: emptyInstallerProgress(fallbackSource),
+      error: undefined
+    });
+    await this.startUpgradeDownloadAttempt(fallbackSource, null, fallbackSource.target.version);
+  }
+
+  private recordUpgradeProgress(updater: NsisUpdater, generation: number, progress: ProgressInfo): void {
+    if (!this.upgradeFallbackSource || this.upgradeUpdater !== updater || this.upgradeGeneration !== generation) {
+      return;
+    }
+    const now = Date.now();
+    this.upgradeLastProgressAt = now;
+    if (now - this.upgradeSourceStartedAt < INSTALLER_LOW_SPEED_GRACE_MS) {
+      return;
+    }
+    if (progress.bytesPerSecond >= INSTALLER_LOW_SPEED_THRESHOLD_BYTES_PER_SECOND) {
+      this.upgradeLowSpeedSince = 0;
+      return;
+    }
+    if (this.upgradeLowSpeedSince === 0) {
+      this.upgradeLowSpeedSince = now;
+      return;
+    }
+    if (now - this.upgradeLowSpeedSince >= INSTALLER_LOW_SPEED_WINDOW_MS) {
+      void this.handleUpgradeSourceFailure(
+        updater,
+        generation,
+        this.upgradeFallbackSource,
+        new Error(`${this.upgradeSource?.label ?? "当前更新源"}持续低速，已自动切换备用源。`)
+      );
+    }
+  }
+
+  private armUpgradeWatchdog(
+    updater: NsisUpdater,
+    generation: number,
+    fallbackSource: InstallerDownloadSource | null
+  ): void {
+    this.clearUpgradeWatchdog();
+    if (!fallbackSource) {
+      return;
+    }
+    this.upgradeWatchdogTimer = setInterval(() => {
+      if (
+        this.upgradeUpdater === updater &&
+        this.upgradeGeneration === generation &&
+        Date.now() - this.upgradeLastProgressAt >= INSTALLER_STALL_TIMEOUT_MS
+      ) {
+        void this.handleUpgradeSourceFailure(
+          updater,
+          generation,
+          fallbackSource,
+          new Error(`${this.upgradeSource?.label ?? "当前更新源"}长时间没有下载进度，已自动切换备用源。`)
+        );
+      }
+    }, 2_000);
+    this.upgradeWatchdogTimer.unref();
+  }
+
+  private clearUpgradeWatchdog(): void {
+    if (this.upgradeWatchdogTimer) {
+      clearInterval(this.upgradeWatchdogTimer);
+      this.upgradeWatchdogTimer = null;
+    }
   }
 
   private async downloadLatestUpgrade(): Promise<UpdateState> {
@@ -674,42 +886,8 @@ export class UpdateService {
     try {
       this.disposeUpgradeUpdater();
       const latestRelease = await this.fetchLatestStableRelease();
-      const target = requireRollbackTarget(latestRelease.target);
-      const updater = this.createUpgradeUpdater(target);
-      const generation = ++this.upgradeGeneration;
-      this.upgradeUpdater = updater;
-      this.bindUpgradeUpdater(updater, generation);
-      const freshDownload = await startFreshUpgradeDownload(
-        updater,
-        async () => ({ ...latestRelease, target }),
-        (info) => {
-          this.setState({
-            ...this.stateFromInfo("available", info, "upgrade", target.releaseUrl),
-            phase: "downloading",
-            progress: { percent: 0, transferred: 0, total: 0, bytesPerSecond: 0 },
-            error: undefined
-          });
-        }
-      );
-      this.upgradeCancellationToken = freshDownload.cancellationToken;
-      if (!freshDownload.downloadPromise) {
-        this.disposeUpgradeUpdater();
-        this.setState({
-          phase: "up-to-date",
-          operation: "upgrade",
-          currentVersion: this.state.currentVersion,
-          availableVersion: freshDownload.info.version,
-          releaseDate: freshDownload.info.releaseDate,
-          releaseUrl: target.releaseUrl
-        });
-        return this.getState();
-      }
-
-      void freshDownload.downloadPromise.catch((error) => {
-        if (this.upgradeUpdater === updater && this.upgradeGeneration === generation) {
-          this.setError(error, "upgrade");
-        }
-      });
+      const sources = installerDownloadSources(requireRollbackTarget(latestRelease.target));
+      await this.startUpgradeDownloadAttempt(sources[0], sources[1] ?? null, latestRelease.version);
     } catch (error) {
       this.disposeUpgradeUpdater();
       this.setError(error, "upgrade");
@@ -877,10 +1055,16 @@ export class UpdateService {
 
   private disposeUpgradeUpdater(): void {
     this.upgradeGeneration += 1;
+    this.clearUpgradeWatchdog();
     this.upgradeCancellationToken?.cancel();
     this.upgradeCancellationToken = null;
     this.upgradeUpdater?.removeAllListeners();
     this.upgradeUpdater = null;
+    this.upgradeSource = null;
+    this.upgradeFallbackSource = null;
+    this.upgradeSourceStartedAt = 0;
+    this.upgradeLastProgressAt = 0;
+    this.upgradeLowSpeedSince = 0;
   }
 
   private disposeRollbackUpdater(): void {
@@ -918,14 +1102,14 @@ export class UpdateService {
 
   private async fetchLatestStableRelease(): Promise<LatestStableRelease> {
     try {
-      return await this.fetchLatestStableGiteeRelease();
-    } catch (giteeError) {
-      console.warn("Gitee 更新源不可用，尝试 GitHub 备用源", giteeError);
+      return await this.fetchLatestStableGithubRelease();
+    } catch (githubError) {
+      console.warn("GitHub 更新源不可用，尝试 Gitee 国内源", githubError);
       try {
-        return await this.fetchLatestStableGithubRelease();
-      } catch (githubError) {
+        return await this.fetchLatestStableGiteeRelease();
+      } catch (giteeError) {
         throw new Error(
-          `国内更新源不可用：${errorText(giteeError)}；GitHub 备用源也不可用：${errorText(githubError)}`
+          `GitHub 更新源不可用：${errorText(githubError)}；Gitee 国内源也不可用：${errorText(giteeError)}`
         );
       }
     }
@@ -991,18 +1175,18 @@ export class UpdateService {
 
   private async fetchReleaseHistory(): Promise<UpdateReleaseCatalog> {
     try {
-      const catalog = await this.fetchGiteeReleaseHistory();
+      const catalog = await this.fetchGithubReleaseHistory();
       if (catalog.entries.length > 0) {
         return this.cacheReleaseHistory(catalog);
       }
-      throw new Error("Gitee 暂无可校验的历史版本。");
-    } catch (giteeError) {
-      console.warn("Gitee 历史版本源不可用，尝试 GitHub 备用源", giteeError);
+      throw new Error("GitHub 暂无可校验的历史版本。");
+    } catch (githubError) {
+      console.warn("GitHub 历史版本源不可用，尝试 Gitee 国内源", githubError);
       try {
-        return this.cacheReleaseHistory(await this.fetchGithubReleaseHistory());
-      } catch (githubError) {
+        return this.cacheReleaseHistory(await this.fetchGiteeReleaseHistory());
+      } catch (giteeError) {
         throw new Error(
-          `国内历史版本源不可用：${errorText(giteeError)}；GitHub 备用源也不可用：${errorText(githubError)}`
+          `GitHub 历史版本源不可用：${errorText(githubError)}；Gitee 国内源也不可用：${errorText(giteeError)}`
         );
       }
     }
@@ -1163,12 +1347,28 @@ export class UpdateService {
   }
 }
 
-function normalizeProgress(progress: ProgressInfo): UpdateProgress {
+function normalizeProgress(progress: ProgressInfo, source?: InstallerDownloadSource): UpdateProgress {
   return {
     percent: Math.max(0, Math.min(100, progress.percent)),
     transferred: Math.max(0, progress.transferred),
     total: Math.max(0, progress.total),
-    bytesPerSecond: Math.max(0, progress.bytesPerSecond)
+    bytesPerSecond: Math.max(0, progress.bytesPerSecond),
+    sourceId: source?.id,
+    sourceLabel: source?.label,
+    sourceReleaseUrl: source?.target.releaseUrl
+  };
+}
+
+function emptyInstallerProgress(source: InstallerDownloadSource): UpdateProgress {
+  return {
+    percent: 0,
+    transferred: 0,
+    total: 0,
+    bytesPerSecond: 0,
+    sourceId: source.id,
+    sourceLabel: source.label,
+    sourceReleaseUrl: source.target.releaseUrl,
+    resumed: false
   };
 }
 
@@ -1203,6 +1403,42 @@ function requireRollbackTarget(value: RollbackTarget | PortableUpdateTarget | nu
     return value;
   }
   throw new Error("当前发行版缺少 Windows 安装版更新资产。");
+}
+
+function installerDownloadSources(target: RollbackTarget): readonly InstallerDownloadSource[] {
+  const version = normalizeStableVersion(target.version);
+  if (!version) {
+    throw new Error("Windows 安装版更新目标版本无效。");
+  }
+  const tagName = `v${version}`;
+  const artifactName = `Git-UI-Pro-Setup-${version}-x64.exe`;
+  const shared = {
+    version,
+    releaseName: target.releaseName,
+    releaseNotes: target.releaseNotes,
+    releaseDate: target.releaseDate,
+    sha256: target.sha256
+  };
+  return Object.freeze([
+    Object.freeze({
+      id: "github" as const,
+      label: "GitHub 优先源",
+      target: Object.freeze({
+        ...shared,
+        releaseUrl: `https://github.com/zjx150504-lgtm/Git_UI_Pro/releases/tag/${tagName}`,
+        downloadUrl: `https://github.com/zjx150504-lgtm/Git_UI_Pro/releases/download/${tagName}/${artifactName}`
+      })
+    }),
+    Object.freeze({
+      id: "gitee" as const,
+      label: "Gitee 国内源",
+      target: Object.freeze({
+        ...shared,
+        releaseUrl: `https://gitee.com/zjx_master/git-ui-pro/releases/tag/${tagName}`,
+        downloadUrl: `https://gitee.com/zjx_master/git-ui-pro/releases/download/${tagName}/${artifactName}`
+      })
+    })
+  ]);
 }
 
 type JsonResourceOptions = {

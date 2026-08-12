@@ -255,6 +255,7 @@ export function AppUpdateControl() {
         mockTimerRef.current = undefined;
       }
       setState({ revision: state.revision + 1, phase: "idle", operation: "upgrade", currentVersion: state.currentVersion });
+      setSelectedHistoryVersion("");
       setActionPending(false);
       return;
     }
@@ -265,6 +266,7 @@ export function AppUpdateControl() {
       }
       const nextState = await window.gitUI.cancelRollback();
       setState((current) => acceptAuthoritativeUpdateState(current, nextState));
+      setSelectedHistoryVersion("");
     } catch (error) {
       setRecoverableError(error, "rollback");
     } finally {
@@ -303,6 +305,41 @@ export function AppUpdateControl() {
         throw new Error(UPDATE_BRIDGE_UNAVAILABLE);
       }
       const nextState = await window.gitUI.downloadUpdate();
+      setState((current) => acceptAuthoritativeUpdateState(current, nextState));
+    } catch (error) {
+      setRecoverableError(error, state.operation);
+    } finally {
+      setActionPending(false);
+    }
+  }
+
+  async function cancelUpdateDownload() {
+    if (actionPending || state.phase !== "downloading") {
+      return;
+    }
+
+    setActionPending(true);
+    if (isMock) {
+      if (mockTimerRef.current !== undefined) {
+        window.clearTimeout(mockTimerRef.current);
+        mockTimerRef.current = undefined;
+      }
+      setState((current) => ({
+        ...current,
+        revision: current.revision + 1,
+        phase: "available",
+        progress: undefined,
+        error: undefined
+      }));
+      setActionPending(false);
+      return;
+    }
+
+    try {
+      if (!window.gitUI?.cancelUpdateDownload) {
+        throw new Error(UPDATE_BRIDGE_UNAVAILABLE);
+      }
+      const nextState = await window.gitUI.cancelUpdateDownload();
       setState((current) => acceptAuthoritativeUpdateState(current, nextState));
     } catch (error) {
       setRecoverableError(error, state.operation);
@@ -514,7 +551,11 @@ export function AppUpdateControl() {
 
           {hasTarget || state.operation === "rollback" ? (
             <div className="app-update-actions">
-              {state.operation === "rollback" ? (
+              {state.phase === "downloading" ? (
+                <button type="button" className="app-update-secondary" disabled={actionPending} onClick={() => void cancelUpdateDownload()}>
+                  <X size={14} />取消下载
+                </button>
+              ) : state.operation === "rollback" ? (
                 <button type="button" className="app-update-secondary" disabled={actionPending || state.phase === "installing"} onClick={() => void cancelRollback()}>
                   <X size={14} />取消
                 </button>

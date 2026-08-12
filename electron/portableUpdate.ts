@@ -397,24 +397,21 @@ export function withPortableFallbackSource(target: PortableUpdateTarget): Portab
   if (target.tagName !== `v${target.version}` || target.artifactName !== normalizedArtifactName) {
     throw new Error("Portable 更新目标的版本、标签与文件名不一致。");
   }
-  const primary = portablePrimaryDownloadSource(target);
-  const fallback = primary.id === "gitee"
-    ? createPortableDownloadSource(
-      "github",
-      `https://github.com/${GITHUB_RELEASE_OWNER}/${GITHUB_RELEASE_REPOSITORY}/releases/download/${target.tagName}/${target.artifactName}`,
-      githubReleaseUrl(target.version)
-    )
-    : createPortableDownloadSource(
-      "gitee",
-      `https://gitee.com/${GITEE_RELEASE_OWNER}/${GITEE_RELEASE_REPOSITORY}/releases/download/${target.tagName}/${target.artifactName}`,
-      `https://gitee.com/${GITEE_RELEASE_OWNER}/${GITEE_RELEASE_REPOSITORY}/releases/tag/${target.tagName}`
-    );
+  const githubSource = createPortableDownloadSource(
+    "github",
+    `https://github.com/${GITHUB_RELEASE_OWNER}/${GITHUB_RELEASE_REPOSITORY}/releases/download/${target.tagName}/${target.artifactName}`,
+    githubReleaseUrl(target.version)
+  );
+  const giteeSource = createPortableDownloadSource(
+    "gitee",
+    `https://gitee.com/${GITEE_RELEASE_OWNER}/${GITEE_RELEASE_REPOSITORY}/releases/download/${target.tagName}/${target.artifactName}`,
+    `https://gitee.com/${GITEE_RELEASE_OWNER}/${GITEE_RELEASE_REPOSITORY}/releases/tag/${target.tagName}`
+  );
   return Object.freeze({
     ...target,
-    downloadSources: Object.freeze(uniquePortableDownloadSources([
-      ...portableDownloadSources(target),
-      fallback
-    ]))
+    downloadUrl: githubSource.downloadUrl,
+    releaseUrl: githubSource.releaseUrl,
+    downloadSources: Object.freeze(uniquePortableDownloadSources([githubSource, giteeSource]))
   });
 }
 

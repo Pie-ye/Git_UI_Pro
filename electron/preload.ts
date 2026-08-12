@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld("gitUI", {
   prepareRollback: (version: string): Promise<UpdateState> => ipcRenderer.invoke("update:prepareRollback", version),
   cancelRollback: (): Promise<UpdateState> => ipcRenderer.invoke("update:cancelRollback"),
   downloadUpdate: (): Promise<UpdateState> => ipcRenderer.invoke("update:download"),
+  cancelUpdateDownload: (): Promise<UpdateState> => ipcRenderer.invoke("update:cancelDownload"),
   installUpdate: (): Promise<boolean> => ipcRenderer.invoke("update:install"),
   onUpdateState: (callback: (state: UpdateState) => void) => {
     const listener = (_event: IpcRendererEvent, state: UpdateState) => callback(state);

@@ -113,6 +113,7 @@ function registerIpc(): void {
   ipcMain.handle("update:prepareRollback", (_event, version: string) => updateService.prepareRollback(version));
   ipcMain.handle("update:cancelRollback", () => updateService.cancelRollback());
   ipcMain.handle("update:download", () => updateService.downloadUpdate());
+  ipcMain.handle("update:cancelDownload", () => updateService.cancelDownload());
   ipcMain.handle("update:install", () => updateService.installUpdate());
   ipcMain.handle("terminal:start", (event, repositoryPath: RepositoryLocation) => startTerminalSession(event.sender, repositoryPath));
   ipcMain.handle("terminal:write", (_event, sessionId: string, data: string) => writeTerminalSession(sessionId, data));

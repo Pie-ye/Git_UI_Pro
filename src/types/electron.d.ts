@@ -134,6 +134,7 @@ export interface GitUIBridge {
   prepareRollback: (version: string) => Promise<UpdateState>;
   cancelRollback: () => Promise<UpdateState>;
   downloadUpdate: () => Promise<UpdateState>;
+  cancelUpdateDownload: () => Promise<UpdateState>;
   installUpdate: () => Promise<boolean>;
   onUpdateState: (callback: (state: UpdateState) => void) => () => void;
   getGitVersion: () => Promise<GitOperationResult>;
