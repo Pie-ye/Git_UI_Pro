@@ -130,3 +130,7 @@ Git UI Pro 默认只读取和操作用户主动添加的本地 Git 仓库。远�
 ## 许可证
 
 本项目基于 [MIT License](LICENSE) 开源。
+
+## 社区致谢
+
+本项目认可并感谢 [LINUX DO](https://linux.do/) 开源社区为开发者提供交流、分享和互助的平台。
