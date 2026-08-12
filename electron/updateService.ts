@@ -27,6 +27,7 @@ import {
   launchPortableUpdateHelper,
   parseLatestPortableGiteeRelease,
   parseLatestPortableGithubRelease,
+  parsePortableGiteeReleaseIdentity,
   parsePortableGiteeReleaseSummary,
   PortableReleaseCatalog,
   selectPortableGiteeHistoryCandidates,
@@ -92,7 +93,7 @@ type UpgradeDownloadUpdater = {
 export type LatestStableRelease = {
   version: string;
   tagName: string;
-  target: RollbackTarget | PortableUpdateTarget;
+  target: RollbackTarget | PortableUpdateTarget | null;
 };
 
 type UpdateReleaseCatalog = ReleaseHistoryCatalog | PortableReleaseCatalog;
@@ -385,21 +386,24 @@ export class UpdateService {
     if (this.portable) {
       try {
         const latestRelease = await this.fetchLatestStableRelease();
-        const target = requirePortableTarget(latestRelease.target);
-        if (comparePortableVersions(target.version, this.state.currentVersion) > 0) {
+        if (comparePortableVersions(latestRelease.version, this.state.currentVersion) > 0) {
+          const target = requirePortableTarget(latestRelease.target);
           this.portableTarget = target;
           this.portableStagedPath = null;
           this.setState(this.stateFromPortableTarget("available", target, "upgrade"));
         } else {
+          const target = latestRelease.target && "artifactName" in latestRelease.target
+            ? latestRelease.target
+            : null;
           this.portableTarget = null;
           this.portableStagedPath = null;
           this.setState({
             phase: "up-to-date",
             operation: "upgrade",
             currentVersion: this.state.currentVersion,
-            availableVersion: target.version,
-            releaseDate: target.releaseDate,
-            releaseUrl: target.releaseUrl
+            availableVersion: latestRelease.version,
+            releaseDate: target?.releaseDate,
+            releaseUrl: target?.releaseUrl
           });
         }
       } catch (error) {
@@ -411,10 +415,11 @@ export class UpdateService {
     let checkUpdater: NsisUpdater | null = null;
     try {
       const latestRelease = await this.fetchLatestStableRelease();
-      checkUpdater = this.createUpgradeUpdater(latestRelease.target as RollbackTarget);
-      const result = await resolveFreshUpgradeCheck(checkUpdater, async () => latestRelease);
+      const target = requireRollbackTarget(latestRelease.target);
+      checkUpdater = this.createUpgradeUpdater(target);
+      const result = await resolveFreshUpgradeCheck(checkUpdater, async () => ({ ...latestRelease, target }));
       if (result.isUpdateAvailable) {
-        this.setState(this.stateFromInfo("available", result.updateInfo, "upgrade", latestRelease.target.releaseUrl));
+        this.setState(this.stateFromInfo("available", result.updateInfo, "upgrade", target.releaseUrl));
       } else {
         this.setState({
           phase: "up-to-date",
@@ -422,7 +427,7 @@ export class UpdateService {
           currentVersion: this.state.currentVersion,
           availableVersion: result.updateInfo.version,
           releaseDate: result.updateInfo.releaseDate,
-          releaseUrl: latestRelease.target.releaseUrl
+          releaseUrl: target.releaseUrl
         });
       }
     } catch (error) {
@@ -663,16 +668,17 @@ export class UpdateService {
     try {
       this.disposeUpgradeUpdater();
       const latestRelease = await this.fetchLatestStableRelease();
-      const updater = this.createUpgradeUpdater(latestRelease.target as RollbackTarget);
+      const target = requireRollbackTarget(latestRelease.target);
+      const updater = this.createUpgradeUpdater(target);
       const generation = ++this.upgradeGeneration;
       this.upgradeUpdater = updater;
       this.bindUpgradeUpdater(updater, generation);
       const freshDownload = await startFreshUpgradeDownload(
         updater,
-        async () => latestRelease,
+        async () => ({ ...latestRelease, target }),
         (info) => {
           this.setState({
-            ...this.stateFromInfo("available", info, "upgrade", latestRelease.target.releaseUrl),
+            ...this.stateFromInfo("available", info, "upgrade", target.releaseUrl),
             phase: "downloading",
             progress: { percent: 0, transferred: 0, total: 0, bytesPerSecond: 0 },
             error: undefined
@@ -688,7 +694,7 @@ export class UpdateService {
           currentVersion: this.state.currentVersion,
           availableVersion: freshDownload.info.version,
           releaseDate: freshDownload.info.releaseDate,
-          releaseUrl: latestRelease.target.releaseUrl
+          releaseUrl: target.releaseUrl
         });
         return this.getState();
       }
@@ -714,18 +720,21 @@ export class UpdateService {
     try {
       this.disposePortableDownload();
       const latestRelease = await this.fetchLatestStableRelease();
-      const target = requirePortableTarget(latestRelease.target);
-      if (comparePortableVersions(target.version, this.state.currentVersion) <= 0) {
+      if (comparePortableVersions(latestRelease.version, this.state.currentVersion) <= 0) {
+        const target = latestRelease.target && "artifactName" in latestRelease.target
+          ? latestRelease.target
+          : null;
         this.setState({
           phase: "up-to-date",
           operation: "upgrade",
           currentVersion: this.state.currentVersion,
-          availableVersion: target.version,
-          releaseDate: target.releaseDate,
-          releaseUrl: target.releaseUrl
+          availableVersion: latestRelease.version,
+          releaseDate: target?.releaseDate,
+          releaseUrl: target?.releaseUrl
         });
         return this.getState();
       }
+      const target = requirePortableTarget(latestRelease.target);
       return this.startPortableDownload(target, "upgrade");
     } catch (error) {
       this.setError(error, "upgrade");
@@ -895,17 +904,28 @@ export class UpdateService {
       headers: this.giteeHeaders()
     });
     if (this.portable) {
+      const identity = parsePortableGiteeReleaseIdentity(rawRelease);
+      if (!identity) {
+        throw new Error("Gitee latest 不是可用的 Portable 正式版本。");
+      }
       const summary = parsePortableGiteeReleaseSummary(rawRelease);
       if (!summary) {
-        throw new Error("Gitee 最新正式版尚未同步完整的 Windows Portable 更新资产。");
+        return parseLatestPortableGiteeRelease(rawRelease, undefined, this.state.currentVersion);
       }
-      const rawManifest = await fetchJsonResource(this.cacheBustedUrl(summary.manifestUrl), {
-        sourceLabel: `Gitee v${summary.version} Portable 更新清单`,
-        timeoutMs: GITEE_REQUEST_TIMEOUT_MS,
-        maxLength: MAX_UPDATE_MANIFEST_RESPONSE_LENGTH,
-        headers: this.giteeHeaders()
-      });
-      return parseLatestPortableGiteeRelease(rawRelease, rawManifest);
+      try {
+        const rawManifest = await fetchJsonResource(this.cacheBustedUrl(summary.manifestUrl), {
+          sourceLabel: `Gitee v${summary.version} Portable 更新清单`,
+          timeoutMs: GITEE_REQUEST_TIMEOUT_MS,
+          maxLength: MAX_UPDATE_MANIFEST_RESPONSE_LENGTH,
+          headers: this.giteeHeaders()
+        });
+        return parseLatestPortableGiteeRelease(rawRelease, rawManifest, this.state.currentVersion);
+      } catch (error) {
+        if (comparePortableVersions(identity.version, this.state.currentVersion) <= 0) {
+          return parseLatestPortableGiteeRelease(rawRelease, undefined, this.state.currentVersion);
+        }
+        throw error;
+      }
     }
 
     const summary = parseGiteeReleaseSummary(rawRelease);
@@ -929,7 +949,7 @@ export class UpdateService {
       headers: this.githubHeaders()
     });
     return this.portable
-      ? parseLatestPortableGithubRelease(rawRelease)
+      ? parseLatestPortableGithubRelease(rawRelease, this.state.currentVersion)
       : parseLatestStableGithubRelease(rawRelease);
   }
 
@@ -1128,8 +1148,9 @@ function normalizeStableVersion(value: string): string | null {
   return match ? `${match[1]}.${match[2]}.${match[3]}` : null;
 }
 
-function requirePortableTarget(value: RollbackTarget | PortableUpdateTarget): PortableUpdateTarget {
+function requirePortableTarget(value: RollbackTarget | PortableUpdateTarget | null): PortableUpdateTarget {
   if (
+    value !== null &&
     "artifactName" in value &&
     typeof value.artifactName === "string" &&
     typeof value.size === "number" &&
@@ -1139,6 +1160,13 @@ function requirePortableTarget(value: RollbackTarget | PortableUpdateTarget): Po
     return value;
   }
   throw new Error("当前发行版缺少 Windows Portable 更新资产。");
+}
+
+function requireRollbackTarget(value: RollbackTarget | PortableUpdateTarget | null): RollbackTarget {
+  if (value && !("artifactName" in value)) {
+    return value;
+  }
+  throw new Error("当前发行版缺少 Windows 安装版更新资产。");
 }
 
 type JsonResourceOptions = {

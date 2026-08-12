@@ -485,6 +485,16 @@ test("Portable GitHub 正式版严格匹配专属资产、版本、大小与 SHA
     })),
     /Portable 正式版本/
   );
+  const currentWithoutPortable = parseLatestPortableGithubRelease(
+    portableGithubRelease("0.1.31", { assets: [] }),
+    "0.1.31"
+  );
+  assert.equal(currentWithoutPortable.version, "0.1.31");
+  assert.equal(currentWithoutPortable.target, null);
+  assert.throws(
+    () => parseLatestPortableGithubRelease(portableGithubRelease("0.1.32", { assets: [] }), "0.1.31"),
+    /便携版资产尚未就绪/
+  );
 
   const catalog = buildPortableGithubReleaseHistoryCatalog([
     portableGithubRelease("0.1.30"),
@@ -511,6 +521,21 @@ test("Portable Gitee 双源清单仅接受对应便携资产", () => {
       portable: { name: "Git-UI-Pro-Setup-0.1.32-x64.exe" }
     })),
     /Portable 更新清单与发行版不匹配/
+  );
+  const currentWithoutPortable = parseLatestPortableGiteeRelease(
+    portableGiteeRelease("0.1.31", { assets: [] }),
+    undefined,
+    "0.1.31"
+  );
+  assert.equal(currentWithoutPortable.version, "0.1.31");
+  assert.equal(currentWithoutPortable.target, null);
+  assert.throws(
+    () => parseLatestPortableGiteeRelease(
+      portableGiteeRelease("0.1.32", { assets: [] }),
+      undefined,
+      "0.1.31"
+    ),
+    /便携版资产尚未同步完成/
   );
 
   const candidates = selectPortableGiteeHistoryCandidates([

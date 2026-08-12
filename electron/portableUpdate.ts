@@ -44,7 +44,16 @@ export type PortableUpdateTarget = Readonly<{
 export type PortableLatestStableRelease = Readonly<{
   version: string;
   tagName: string;
-  target: PortableUpdateTarget;
+  target: PortableUpdateTarget | null;
+}>;
+
+export type PortableReleaseIdentity = Readonly<{
+  version: string;
+  tagName: string;
+  releaseName: string;
+  releaseNotes: string;
+  releaseDate: string;
+  releaseUrl: string;
 }>;
 
 export type PortableGiteeReleaseSummary = Readonly<{
@@ -90,12 +99,42 @@ export function portableArtifactName(version: string): string {
   return `Git-UI-Pro-Portable-${parsed.value}-x64.exe`;
 }
 
-export function parseLatestPortableGithubRelease(value: unknown): PortableLatestStableRelease {
+export function parseLatestPortableGithubRelease(
+  value: unknown,
+  currentVersion?: string
+): PortableLatestStableRelease {
+  const identity = parsePortableGithubReleaseIdentity(value);
+  if (!identity) {
+    throw new Error("GitHub latest 不是可用的 Portable 正式版本。");
+  }
   const target = parsePortableGithubRelease(value);
   if (!target) {
+    if (currentVersion && comparePortableVersions(identity.version, currentVersion) <= 0) {
+      return Object.freeze({ version: identity.version, tagName: identity.tagName, target: null });
+    }
     throw new Error("GitHub latest 不是可用的 Portable 正式版本，或便携版资产尚未就绪。");
   }
   return Object.freeze({ version: target.version, tagName: target.tagName, target });
+}
+
+export function parsePortableGithubReleaseIdentity(value: unknown): PortableReleaseIdentity | null {
+  if (!isRecord(value) || value.draft !== false || value.prerelease !== false || typeof value.tag_name !== "string") {
+    return null;
+  }
+  const tagMatch = /^v(.+)$/.exec(value.tag_name);
+  const version = tagMatch ? parseStableVersion(tagMatch[1]) : null;
+  const releaseDate = normalizeDate(value.published_at);
+  if (!version || !releaseDate) {
+    return null;
+  }
+  return Object.freeze({
+    version: version.value,
+    tagName: value.tag_name,
+    releaseName: normalizeText(value.name) || `Git UI Pro v${version.value}`,
+    releaseNotes: normalizeReleaseNotes(normalizeText(value.body)).slice(0, MAX_RELEASE_NOTES_LENGTH),
+    releaseDate,
+    releaseUrl: githubReleaseUrl(version.value)
+  });
 }
 
 export function buildPortableGithubReleaseHistoryCatalog(
@@ -119,20 +158,14 @@ export function buildPortableGithubReleaseHistoryCatalog(
 }
 
 export function parsePortableGiteeReleaseSummary(value: unknown): PortableGiteeReleaseSummary | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-  const tagName = typeof value.tag_name === "string" ? value.tag_name : "";
-  const tagMatch = /^v(.+)$/.exec(tagName);
-  const version = tagMatch ? parseStableVersion(tagMatch[1]) : null;
-  const releaseDate = normalizeDate(value.created_at);
-  if (!version || value.prerelease !== false || !releaseDate || !Array.isArray(value.assets)) {
+  const identity = parsePortableGiteeReleaseIdentity(value);
+  if (!identity || !isRecord(value) || !Array.isArray(value.assets)) {
     return null;
   }
 
-  const artifactName = portableArtifactName(version.value);
-  const artifactPath = giteeDownloadPath(tagName, artifactName);
-  const manifestPath = giteeDownloadPath(tagName, UPDATE_MANIFEST_NAME);
+  const artifactName = portableArtifactName(identity.version);
+  const artifactPath = giteeDownloadPath(identity.tagName, artifactName);
+  const manifestPath = giteeDownloadPath(identity.tagName, UPDATE_MANIFEST_NAME);
   let artifactUrl: string | null = null;
   let manifestUrl: string | null = null;
   for (const item of value.assets) {
@@ -151,15 +184,35 @@ export function parsePortableGiteeReleaseSummary(value: unknown): PortableGiteeR
   }
 
   return Object.freeze({
-    version: version.value,
-    tagName,
-    releaseName: normalizeText(value.name) || `Git UI Pro v${version.value}`,
-    releaseNotes: normalizeText(value.body).slice(0, MAX_RELEASE_NOTES_LENGTH),
-    releaseDate,
-    releaseUrl: `https://gitee.com/${GITEE_RELEASE_OWNER}/${GITEE_RELEASE_REPOSITORY}/releases/tag/${tagName}`,
+    version: identity.version,
+    tagName: identity.tagName,
+    releaseName: identity.releaseName,
+    releaseNotes: identity.releaseNotes,
+    releaseDate: identity.releaseDate,
+    releaseUrl: identity.releaseUrl,
     artifactName,
     artifactUrl,
     manifestUrl
+  });
+}
+
+export function parsePortableGiteeReleaseIdentity(value: unknown): PortableReleaseIdentity | null {
+  if (!isRecord(value) || value.prerelease !== false || typeof value.tag_name !== "string") {
+    return null;
+  }
+  const tagMatch = /^v(.+)$/.exec(value.tag_name);
+  const version = tagMatch ? parseStableVersion(tagMatch[1]) : null;
+  const releaseDate = normalizeDate(value.created_at);
+  if (!version || !releaseDate) {
+    return null;
+  }
+  return Object.freeze({
+    version: version.value,
+    tagName: value.tag_name,
+    releaseName: normalizeText(value.name) || `Git UI Pro v${version.value}`,
+    releaseNotes: normalizeText(value.body).slice(0, MAX_RELEASE_NOTES_LENGTH),
+    releaseDate,
+    releaseUrl: `https://gitee.com/${GITEE_RELEASE_OWNER}/${GITEE_RELEASE_REPOSITORY}/releases/tag/${value.tag_name}`
   });
 }
 
@@ -200,13 +253,29 @@ export function verifyPortableGiteeRelease(
 
 export function parseLatestPortableGiteeRelease(
   rawRelease: unknown,
-  rawManifest: unknown
+  rawManifest: unknown,
+  currentVersion?: string
 ): PortableLatestStableRelease {
+  const identity = parsePortableGiteeReleaseIdentity(rawRelease);
+  if (!identity) {
+    throw new Error("Gitee latest 不是可用的 Portable 正式版本。");
+  }
   const summary = parsePortableGiteeReleaseSummary(rawRelease);
   if (!summary) {
+    if (currentVersion && comparePortableVersions(identity.version, currentVersion) <= 0) {
+      return Object.freeze({ version: identity.version, tagName: identity.tagName, target: null });
+    }
     throw new Error("Gitee latest 不是可用的 Portable 正式版本，或便携版资产尚未同步完成。");
   }
-  const target = verifyPortableGiteeRelease(summary, rawManifest);
+  let target: PortableUpdateTarget;
+  try {
+    target = verifyPortableGiteeRelease(summary, rawManifest);
+  } catch (error) {
+    if (currentVersion && comparePortableVersions(identity.version, currentVersion) <= 0) {
+      return Object.freeze({ version: identity.version, tagName: identity.tagName, target: null });
+    }
+    throw error;
+  }
   return Object.freeze({ version: target.version, tagName: target.tagName, target });
 }
 
@@ -491,17 +560,12 @@ function requirePortableExecutable(runtime: PortableRuntime): string {
 }
 
 function parsePortableGithubRelease(value: unknown): PortableUpdateTarget | null {
-  if (!isRecord(value) || value.draft !== false || value.prerelease !== false || typeof value.tag_name !== "string") {
+  const identity = parsePortableGithubReleaseIdentity(value);
+  if (!identity || !isRecord(value) || !Array.isArray(value.assets)) {
     return null;
   }
-  const tagMatch = /^v(.+)$/.exec(value.tag_name);
-  const version = tagMatch ? parseStableVersion(tagMatch[1]) : null;
-  const releaseDate = normalizeDate(value.published_at);
-  if (!version || !releaseDate || !Array.isArray(value.assets)) {
-    return null;
-  }
-  const artifactName = portableArtifactName(version.value);
-  const expectedPath = `/${GITHUB_RELEASE_OWNER}/${GITHUB_RELEASE_REPOSITORY}/releases/download/${value.tag_name}/${artifactName}`;
+  const artifactName = portableArtifactName(identity.version);
+  const expectedPath = `/${GITHUB_RELEASE_OWNER}/${GITHUB_RELEASE_REPOSITORY}/releases/download/${identity.tagName}/${artifactName}`;
   for (const item of value.assets) {
     if (!isRecord(item) || item.name !== artifactName || item.state !== "uploaded") {
       continue;
@@ -520,12 +584,12 @@ function parsePortableGithubRelease(value: unknown): PortableUpdateTarget | null
       continue;
     }
     return Object.freeze({
-      version: version.value,
-      tagName: value.tag_name,
-      releaseName: normalizeText(value.name) || `Git UI Pro v${version.value}`,
-      releaseNotes: normalizeReleaseNotes(normalizeText(value.body)).slice(0, MAX_RELEASE_NOTES_LENGTH),
-      releaseDate,
-      releaseUrl: githubReleaseUrl(version.value),
+      version: identity.version,
+      tagName: identity.tagName,
+      releaseName: identity.releaseName,
+      releaseNotes: identity.releaseNotes,
+      releaseDate: identity.releaseDate,
+      releaseUrl: identity.releaseUrl,
       artifactName,
       downloadUrl,
       size: item.size,
