@@ -6,35 +6,48 @@ Git UI Pro 不重新实现 Git 内核，所有仓库操作都调用用户本机�
 
 ## 界面预览
 
-### 项目管理、提交图与文件差异
+### 主工作区：项目、提交图与文件差异
 
-![Git UI Pro 主界面：项目管理、提交图与文件差异](docs/images/screenshots/main-interface.png)
+![Git UI Pro 主工作区，展示多项目管理、提交图和文件差异](docs/images/screenshots/workspace-overview.png)
 
-### 分支切换
+### 提交图与 Git 操作
 
-![Git UI Pro 分支切换界面](docs/images/screenshots/branch-switcher.png)
+![Git UI Pro 提交图操作菜单与文件内容预览](docs/images/screenshots/commit-graph-actions.png)
 
-### 分支合并
+### 远程仓库连接
 
-![Git UI Pro 分支合并界面](docs/images/screenshots/branch-merge.png)
+![Git UI Pro 通过 SSH 添加远程服务器仓库](docs/images/screenshots/remote-repository-connection.png)
 
-### 提交图与内置控制台
+### 版本更新与安全回退
 
-![Git UI Pro 提交图与内置控制台界面](docs/images/screenshots/commit-graph-console.png)
+![Git UI Pro 版本更新、历史版本与安全回退界面](docs/images/screenshots/version-update-and-rollback.png)
 
-### 源代码管理与图片预览
+### 发布控制台
 
-![Git UI Pro 提交图与内置控制台界面](docs/images/screenshots/source-control-image-preview.png)
+![Git UI Pro 发布控制台，展示版本规划、双远端发布进度、实时日志和历史版本](docs/images/screenshots/release-console.png)
+
+### 仓库中心与分支管理
+
+![Git UI Pro 仓库中心的分支管理界面](docs/images/screenshots/repository-center-branches.png)
+
+### 深色主题与提交详情
+
+![Git UI Pro 深色主题下的提交图、提交详情和文件差异](docs/images/screenshots/dark-theme-commit-details.png)
 
 ## 功能特性
 
-- 多项目管理：添加、扫描、搜索、收藏和切换本地 Git 仓库。
+- 多项目管理：添加、扫描、搜索、收藏、分组和切换本地 Git 仓库。
+- 远程项目：通过 SSH 连接服务器仓库，并可按项目暂停远程连接。
 - 源代码管理：查看暂存区和未暂存改动，支持 stage、unstage、discard、commit 和 amend。
 - 提交图：展示提交历史、主线、合并线、本地分支、远程分支、tag 和 HEAD。
 - 提交详情：查看提交元信息、变更文件列表和 inline diff。
-- 分支操作：查看、新建、切换、删除本地分支，并支持从指定提交创建分支。
+- 仓库中心：集中管理分支、远程仓库、标签、工作树、子模块、Git LFS 和项目设置。
+- 分支操作：查看、新建、切换、合并和删除本地分支，并支持从指定提交创建分支。
 - 远程同步：支持 fetch、pull、push，以及无 upstream 分支的推送引导。
 - 控制台：在当前项目目录中打开辅助终端。
+- 发布控制台：规划语义化版本、记录发布说明、构建 Windows 安装包，并跟踪 Gitee 与 GitHub 双远端发布进度。
+- 版本更新：支持检查和下载新版本，并可查看历史版本和选择安全回退目标。
+- 外观主题：支持明亮、深色主题和完全收起的项目侧栏。
 - 中文反馈：Git 操作成功、失败、危险操作确认和原始输出查看都使用中文界面。
 
 ## 系统要求
