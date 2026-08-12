@@ -426,7 +426,7 @@ export async function launchPortableUpdateHelper(input: {
   const logPath = path.join(updateDirectory, "portable-update.log");
   await Promise.all([
     rm(markerPath, { force: true }),
-    writeFile(helperPath, `${buildPortableUpdatePowerShellScript()}\n`, { encoding: "utf8", mode: 0o600 })
+    writeFile(helperPath, encodePortableUpdatePowerShellScript(), { mode: 0o600 })
   ]);
 
   const child = spawn("powershell.exe", [
@@ -539,6 +539,13 @@ export function buildPortableUpdatePowerShellScript(): string {
     "  exit 1",
     "}"
   ].join("\r\n");
+}
+
+export function encodePortableUpdatePowerShellScript(): Buffer {
+  // Windows PowerShell 5.1 treats UTF-8 files without a BOM as the active ANSI
+  // code page. The helper contains Chinese log messages, so an explicit BOM is
+  // required to keep quoted strings parseable on every Windows locale.
+  return Buffer.from(`\uFEFF${buildPortableUpdatePowerShellScript()}\r\n`, "utf8");
 }
 
 async function ensureDirectoryWritable(directory: string): Promise<void> {

@@ -36,6 +36,7 @@ const {
   buildPortableGithubReleaseHistoryCatalog,
   buildPortableUpdatePowerShellScript,
   comparePortableVersions,
+  encodePortableUpdatePowerShellScript,
   parseLatestPortableGiteeRelease,
   parseLatestPortableGithubRelease,
   parsePortableGiteeReleaseSummary,
@@ -585,11 +586,15 @@ test("Portable 新版本只有在窗口成功加载后才写入健康标记", as
 
 test("Portable 替换脚本包含退出等待、健康检查与失败回退", () => {
   const script = buildPortableUpdatePowerShellScript();
+  const encoded = encodePortableUpdatePowerShellScript();
   assert.match(script, /Wait-ForExit \$ApplicationPid/);
   assert.match(script, /Wait-ForExit \$LauncherPid/);
   assert.match(script, /PORTABLE_UPDATE_TOKEN/);
   assert.match(script, /Move-Item -LiteralPath \$BackupPath -Destination \$CurrentPath/);
   assert.match(script, /新版本健康检查通过/);
+  assert.deepEqual([...encoded.subarray(0, 3)], [0xef, 0xbb, 0xbf]);
+  assert.equal(encoded.toString("utf8").charCodeAt(0), 0xfeff);
+  assert.match(encoded.toString("utf8"), /新版本健康检查通过/);
 });
 
 test("权威 latest 与 updater 元数据不一致时拒绝旧候选", async () => {

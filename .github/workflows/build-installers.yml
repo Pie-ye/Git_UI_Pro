@@ -94,20 +94,3 @@ jobs:
           prerelease: false
           generate_release_notes: true
           files: release-artifacts/**/*
-
-      - name: Publish Gitee update mirror
-        timeout-minutes: 250
-        env:
-          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
-          GITHUB_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
-          RELEASE_ARTIFACTS_DIR: release-artifacts
-          GITEE_OWNER: zjx_master
-          GITEE_REPOSITORY: git-ui-pro
-        run: |
-          if [ -z "$GITEE_TOKEN" ]; then
-            echo "::warning::未配置 GITEE_TOKEN，本次发行版只发布到 GitHub，国内在线升级源不会更新。"
-            exit 0
-          fi
-          node scripts/sync-gitee-release.mjs

@@ -1,13 +1,17 @@
-import { randomBytes, randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
-import { access, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createReadStream, createWriteStream, existsSync } from "node:fs";
+import { access, copyFile, mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { Readable } from "node:stream";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ProxyAgent, fetch as undiciFetch } from "undici";
+import { syncGiteeRelease } from "./sync-gitee-release.mjs";
 import {
   Check,
   CheckCircle2,
@@ -67,6 +71,8 @@ const iconComponents = {
 
 const jobs = new Map();
 let activeJobId = null;
+let latestGiteeMirrorJob = null;
+let activeGiteeMirrorController = null;
 
 export function parseVersion(version) {
   const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(String(version).trim());
@@ -195,6 +201,38 @@ export function parseGitHubRepository(remoteUrl) {
     return null;
   }
 
+  return { owner, repository };
+}
+
+export function parseGiteeRepository(remoteUrl) {
+  const value = stripGitPrefix(String(remoteUrl || "").trim());
+  const scpMatch = /^(?:[^@/:\s]+@)?gitee\.com:([^/\s]+)\/([^/\s]+?)\/?$/i.exec(value);
+  let owner;
+  let repository;
+
+  if (scpMatch) {
+    owner = scpMatch[1];
+    repository = scpMatch[2];
+  } else {
+    try {
+      const parsed = new URL(value);
+      if (parsed.hostname.toLowerCase() !== "gitee.com") {
+        return null;
+      }
+      const segments = parsed.pathname.split("/").filter(Boolean);
+      if (segments.length !== 2) {
+        return null;
+      }
+      [owner, repository] = segments;
+    } catch {
+      return null;
+    }
+  }
+
+  repository = repository.replace(/\.git$/i, "");
+  if (!/^[A-Za-z0-9_.-]+$/.test(owner) || !/^[A-Za-z0-9_.-]+$/.test(repository)) {
+    return null;
+  }
   return { owner, repository };
 }
 
@@ -646,6 +684,10 @@ async function collectStatus() {
     gitIdentity: {
       name: userName.stdout.trim(),
       email: userEmail.stdout.trim()
+    },
+    giteeMirror: {
+      tokenConfigured: Boolean(String(process.env.GITEE_TOKEN || "").trim()),
+      defaultTag: history[0]?.tag || `v${packageJson.version}`
     },
     blockers,
     ready: blockers.length === 0
@@ -1299,6 +1341,425 @@ export async function collectArtifacts(version, directory = releaseDir) {
   return artifacts.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+function stableVersionFromReleaseTag(tag) {
+  const match = /^v(.+)$/.exec(String(tag || "").trim());
+  const version = match ? parseVersion(match[1]) : null;
+  if (!version) {
+    throw new Error("Gitee 镜像标签必须使用 v加x.y.z 格式，例如 v0.1.32");
+  }
+  return version.text;
+}
+
+function createGiteeMirrorJob(tag) {
+  const version = stableVersionFromReleaseTag(tag);
+  return {
+    id: randomUUID(),
+    tag: `v${version}`,
+    version,
+    state: "queued",
+    createdAt: new Date().toISOString(),
+    completedAt: null,
+    progress: {
+      phase: "queued",
+      percent: 0,
+      message: "等待开始同步",
+      assetName: null,
+      uploadedBytes: 0,
+      totalBytes: 0
+    },
+    files: [],
+    logs: [],
+    error: null,
+    releaseUrl: null
+  };
+}
+
+function publicGiteeMirrorJob(job) {
+  return job ? {
+    id: job.id,
+    tag: job.tag,
+    version: job.version,
+    state: job.state,
+    createdAt: job.createdAt,
+    completedAt: job.completedAt,
+    progress: job.progress,
+    files: job.files,
+    logs: job.logs,
+    error: job.error,
+    releaseUrl: job.releaseUrl
+  } : null;
+}
+
+function updateGiteeMirrorProgress(job, event) {
+  const eventTotalBytes = Number(event.overallTotalBytes) || 0;
+  const overallTotalBytes = eventTotalBytes || job.progress.totalBytes || 0;
+  const overallUploadedBytes = Number(event.overallUploadedBytes) || 0;
+  const percent = eventTotalBytes > 0
+    ? Math.max(30, Math.min(100, 30 + Math.round((overallUploadedBytes / eventTotalBytes) * 70)))
+    : job.progress.percent;
+  job.progress = {
+    phase: event.phase || job.progress.phase,
+    percent,
+    message: event.message || job.progress.message,
+    assetName: event.assetName || null,
+    uploadedBytes: overallUploadedBytes,
+    totalBytes: overallTotalBytes
+  };
+
+  if (event.assetName) {
+    let file = job.files.find((entry) => entry.name === event.assetName);
+    if (!file) {
+      file = { name: event.assetName, size: Number(event.assetSize) || 0, status: "pending", percent: 0 };
+      job.files.push(file);
+    }
+    file.status = event.status || file.status;
+    file.size = Number(event.assetSize) || file.size;
+    file.percent = file.size > 0
+      ? Math.max(0, Math.min(100, Math.round(((Number(event.uploadedBytes) || 0) / file.size) * 100)))
+      : file.percent;
+    if (["uploaded", "skipped"].includes(file.status)) {
+      file.percent = 100;
+    }
+  }
+  if (event.message) {
+    addLog(job, event.status === "skipped" ? "info" : "output", event.message);
+  }
+}
+
+function githubReleaseHeaders(accept = "application/vnd.github+json") {
+  const headers = {
+    Accept: accept,
+    "Cache-Control": "no-cache",
+    "User-Agent": "Git-UI-Pro-Release-Console",
+    "X-GitHub-Api-Version": "2022-11-28"
+  };
+  if (String(process.env.GITHUB_TOKEN || "").trim()) {
+    headers.Authorization = `Bearer ${String(process.env.GITHUB_TOKEN).trim()}`;
+  }
+  return headers;
+}
+
+function mirrorAbortError() {
+  const error = new Error("Gitee 国内镜像同步已取消。");
+  error.name = "AbortError";
+  return error;
+}
+
+function throwIfMirrorAborted(signal) {
+  if (signal?.aborted) {
+    throw mirrorAbortError();
+  }
+}
+
+async function readGitHubReleaseForMirror(repositoryInfo, tag, fetchImpl, signal) {
+  throwIfMirrorAborted(signal);
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, githubReleaseRequestTimeoutMs);
+  const handleAbort = () => controller.abort();
+  signal?.addEventListener("abort", handleAbort, { once: true });
+  try {
+    const response = await fetchImpl(
+      `https://api.github.com/repos/${repositoryInfo.owner}/${repositoryInfo.repository}/releases/tags/${encodeURIComponent(tag)}`,
+      { headers: githubReleaseHeaders(), signal: controller.signal }
+    );
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => {});
+      throw new Error(`读取 GitHub ${tag} 正式版附件失败（HTTP ${response.status}）`);
+    }
+    const release = await response.json();
+    if (release?.tag_name !== tag || release.draft === true || release.prerelease === true) {
+      throw new Error(`GitHub ${tag} 不是可同步的正式发行版`);
+    }
+    return release;
+  } catch (error) {
+    if (signal?.aborted) {
+      throw mirrorAbortError();
+    }
+    if (timedOut) {
+      throw new Error(`读取 GitHub ${tag} 正式版附件超过 ${githubReleaseRequestTimeoutMs / 1_000} 秒`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+    signal?.removeEventListener("abort", handleAbort);
+  }
+}
+
+async function sha256LocalFile(filename, signal) {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(filename)) {
+    throwIfMirrorAborted(signal);
+    hash.update(chunk);
+  }
+  return hash.digest("hex");
+}
+
+async function localFileMatchesGitHubAsset(filename, asset, signal) {
+  try {
+    const fileStat = await stat(filename);
+    if (!fileStat.isFile() || fileStat.size !== Number(asset.size)) {
+      return false;
+    }
+    const digestMatch = /^sha256:([a-f\d]{64})$/i.exec(String(asset.digest || ""));
+    if (!digestMatch) {
+      return true;
+    }
+    return (await sha256LocalFile(filename, signal)) === digestMatch[1].toLowerCase();
+  } catch (error) {
+    throwIfMirrorAborted(signal);
+    return false;
+  }
+}
+
+async function downloadGitHubReleaseAsset(asset, destination, fetchImpl, signal, onProgress) {
+  const downloadUrl = new URL(String(asset.browser_download_url || ""));
+  if (downloadUrl.protocol !== "https:" || downloadUrl.hostname.toLowerCase() !== "github.com") {
+    throw new Error(`GitHub 附件 ${asset.name} 的下载地址无效`);
+  }
+  const partialPath = `${destination}.part`;
+  await unlink(partialPath).catch(() => {});
+  const controller = new AbortController();
+  let timedOut = false;
+  let idleTimeoutId = null;
+  const totalTimeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, 25 * 60_000);
+  const resetIdleTimeout = () => {
+    clearTimeout(idleTimeoutId);
+    idleTimeoutId = setTimeout(() => controller.abort(), 2 * 60_000);
+  };
+  const handleAbort = () => controller.abort();
+  signal?.addEventListener("abort", handleAbort, { once: true });
+  let output;
+  try {
+    resetIdleTimeout();
+    const response = await fetchImpl(downloadUrl, {
+      redirect: "follow",
+      headers: githubReleaseHeaders("application/octet-stream"),
+      signal: controller.signal
+    });
+    if (!response.ok || !response.body) {
+      await response.body?.cancel().catch(() => {});
+      throw new Error(`下载 GitHub 附件 ${asset.name} 失败（HTTP ${response.status}）`);
+    }
+    output = createWriteStream(partialPath, { flags: "wx" });
+    let downloadedBytes = 0;
+    for await (const chunk of Readable.fromWeb(response.body)) {
+      throwIfMirrorAborted(signal);
+      if (!output.write(chunk)) {
+        await once(output, "drain");
+      }
+      downloadedBytes += chunk.length;
+      resetIdleTimeout();
+      onProgress(downloadedBytes, Number(asset.size) || 0);
+    }
+    output.end();
+    await once(output, "finish");
+    output = null;
+    if (!await localFileMatchesGitHubAsset(partialPath, asset, signal)) {
+      throw new Error(`GitHub 附件 ${asset.name} 下载后大小或 SHA-256 校验失败`);
+    }
+    await unlink(destination).catch(() => {});
+    await rename(partialPath, destination);
+  } catch (error) {
+    output?.destroy();
+    await unlink(partialPath).catch(() => {});
+    if (signal?.aborted) {
+      throw mirrorAbortError();
+    }
+    if (timedOut) {
+      throw new Error(`下载 GitHub 附件 ${asset.name} 超过 25 分钟`);
+    }
+    if (controller.signal.aborted) {
+      throw new Error(`下载 GitHub 附件 ${asset.name} 连续 2 分钟无网络进度`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(totalTimeoutId);
+    clearTimeout(idleTimeoutId);
+    signal?.removeEventListener("abort", handleAbort);
+  }
+}
+
+async function prepareGitHubMirrorArtifacts(job, repositoryInfo, fetchImpl, signal) {
+  addLog(job, "info", `核对 GitHub ${job.tag} 的正式发布附件`);
+  const release = await readGitHubReleaseForMirror(repositoryInfo, job.tag, fetchImpl, signal);
+  const expected = expectedWindowsUpdateArtifacts(job.version);
+  const assetsByName = new Map(
+    Array.isArray(release.assets) ? release.assets.map((asset) => [asset?.name, asset]) : []
+  );
+  const assets = Object.values(expected).map((name) => {
+    const asset = assetsByName.get(name);
+    if (!asset || !Number.isSafeInteger(Number(asset.size)) || Number(asset.size) <= 0) {
+      throw new Error(`GitHub ${job.tag} 缺少正式附件：${name}`);
+    }
+    return asset;
+  });
+  const cacheDirectory = path.join(
+    tmpdir(),
+    "git-ui-pro-release-cache",
+    `${repositoryInfo.owner}-${repositoryInfo.repository}`,
+    job.tag
+  );
+  await mkdir(cacheDirectory, { recursive: true });
+  const totalBytes = assets.reduce((total, asset) => total + Number(asset.size), 0);
+  let preparedBytes = 0;
+  job.files = assets.map((asset) => ({ name: asset.name, size: Number(asset.size), status: "pending", percent: 0 }));
+
+  for (const asset of assets) {
+    throwIfMirrorAborted(signal);
+    const targetPath = path.join(cacheDirectory, asset.name);
+    const localPath = path.join(releaseDir, asset.name);
+    const file = job.files.find((entry) => entry.name === asset.name);
+    if (await localFileMatchesGitHubAsset(targetPath, asset, signal)) {
+      file.status = "prepared";
+      file.percent = 100;
+      preparedBytes += Number(asset.size);
+      addLog(job, "info", `复用已校验的 GitHub 缓存：${asset.name}`);
+      continue;
+    }
+    if (await localFileMatchesGitHubAsset(localPath, asset, signal)) {
+      await copyFile(localPath, targetPath);
+      file.status = "prepared";
+      file.percent = 100;
+      preparedBytes += Number(asset.size);
+      addLog(job, "info", `本地正式产物与 GitHub 一致：${asset.name}`);
+      continue;
+    }
+
+    file.status = "downloading";
+    addLog(job, "info", `从 GitHub 下载正式附件到本机缓存：${asset.name}`);
+    await downloadGitHubReleaseAsset(asset, targetPath, fetchImpl, signal, (downloadedBytes, assetSize) => {
+      file.percent = assetSize > 0 ? Math.round((downloadedBytes / assetSize) * 100) : 0;
+      job.progress = {
+        phase: "downloading",
+        percent: totalBytes > 0 ? Math.round(((preparedBytes + downloadedBytes) / totalBytes) * 30) : 0,
+        message: `下载 GitHub 正式附件：${asset.name}`,
+        assetName: asset.name,
+        uploadedBytes: preparedBytes + downloadedBytes,
+        totalBytes
+      };
+    });
+    file.status = "prepared";
+    file.percent = 100;
+    preparedBytes += Number(asset.size);
+  }
+  job.progress = {
+    phase: "prepared",
+    percent: 30,
+    message: "GitHub 正式附件已完成本地准备，开始校验 Gitee 现有附件",
+    assetName: null,
+    uploadedBytes: preparedBytes,
+    totalBytes
+  };
+  addLog(job, "success", "GitHub 正式附件已在本机完成大小与 SHA-256 校验");
+  return { directory: cacheDirectory, release };
+}
+
+async function executeGiteeMirror(job, giteeToken, options = {}) {
+  const controller = options.controller ?? new AbortController();
+  activeGiteeMirrorController = controller;
+  job.state = "running";
+  job.error = null;
+  job.completedAt = null;
+  addLog(job, "info", `从本机开始同步 ${job.tag} 到 Gitee 国内镜像`);
+  let githubTransport = null;
+  try {
+    const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
+    const remotes = await getRemotes(packageJson);
+    const githubRepository = parseGitHubRepository(remotes.github?.pushUrl);
+    const giteeRepository = parseGiteeRepository(remotes.gitee?.pushUrl);
+    if (!githubRepository) {
+      throw new Error("无法从 GitHub 远端识别公开仓库地址，不能读取正式版说明");
+    }
+    if (!giteeRepository) {
+      throw new Error("无法从 Gitee 远端识别仓库地址，不能同步国内镜像");
+    }
+
+    const githubReleaseUrl = `https://github.com/${githubRepository.owner}/${githubRepository.repository}/releases/tag/${job.tag}`;
+    const proxyUrl = await resolveGitHubProxy(githubReleaseUrl);
+    if (proxyUrl) {
+      githubTransport = createGitHubProxyTransport(proxyUrl);
+      addLog(job, "info", "GitHub 发行说明读取使用 Git 配置中的代理；Gitee 大文件保持国内直连");
+    } else {
+      addLog(job, "info", "GitHub 与 Gitee 均使用本机直连网络");
+    }
+
+    const prepared = await prepareGitHubMirrorArtifacts(
+      job,
+      githubRepository,
+      githubTransport?.fetchImpl ?? globalThis.fetch,
+      controller.signal
+    );
+
+    const result = await syncGiteeRelease({
+      giteeToken,
+      githubToken: process.env.GITHUB_TOKEN,
+      githubRepository: `${githubRepository.owner}/${githubRepository.repository}`,
+      tagName: job.tag,
+      artifactsDirectory: prepared.directory,
+      giteeOwner: giteeRepository.owner,
+      giteeRepository: giteeRepository.repository,
+      githubRelease: prepared.release,
+      githubFetchImpl: githubTransport?.fetchImpl,
+      signal: controller.signal,
+      onProgress: (event) => updateGiteeMirrorProgress(job, event)
+    });
+    job.releaseUrl = result.releaseUrl;
+    job.state = "completed";
+    job.progress = { ...job.progress, phase: "completed", percent: 100, message: `${job.tag} 国内镜像已完整就绪` };
+    job.completedAt = new Date().toISOString();
+    addLog(
+      job,
+      "success",
+      `Gitee 镜像同步完成：上传 ${result.uploadedAssets.length} 项，复用 ${result.skippedAssets.length} 项`
+    );
+  } catch (error) {
+    const cancelled = controller.signal.aborted || error?.name === "AbortError";
+    job.state = cancelled ? "cancelled" : "failed";
+    job.error = cancelled ? "同步已由用户取消，可稍后继续；已完整上传的文件会自动跳过。" : (error instanceof Error ? error.message : String(error));
+    job.progress = { ...job.progress, phase: job.state, message: job.error };
+    job.completedAt = new Date().toISOString();
+    addLog(job, cancelled ? "warning" : "error", job.error);
+  } finally {
+    await githubTransport?.close();
+    if (activeGiteeMirrorController === controller) {
+      activeGiteeMirrorController = null;
+    }
+  }
+}
+
+function startGiteeMirror(payload = {}) {
+  if (activeGiteeMirrorController) {
+    throw new Error("已有 Gitee 国内镜像同步正在执行");
+  }
+  if (activeJobId) {
+    throw new Error("正式版发布任务正在执行，请等待发布完成后再手动同步镜像");
+  }
+  const giteeToken = String(payload.giteeToken || process.env.GITEE_TOKEN || "").trim();
+  if (!giteeToken) {
+    throw new Error("请输入 Gitee 私人令牌，或在启动发布控制台前设置 GITEE_TOKEN");
+  }
+  const job = createGiteeMirrorJob(payload.tag);
+  latestGiteeMirrorJob = job;
+  void executeGiteeMirror(job, giteeToken);
+  return job;
+}
+
+function cancelGiteeMirror() {
+  if (!activeGiteeMirrorController || latestGiteeMirrorJob?.state !== "running") {
+    throw new Error("当前没有正在执行的 Gitee 国内镜像同步");
+  }
+  addLog(latestGiteeMirrorJob, "warning", "正在安全取消上传，请稍候");
+  activeGiteeMirrorController.abort();
+  return latestGiteeMirrorJob;
+}
+
 async function pushRelease(remote, context, job) {
   const atomicResult = await runGit([
     "push",
@@ -1349,7 +1810,7 @@ async function confirmGitHubReleaseReady(job) {
   }
 }
 
-async function executeRelease(job) {
+async function executeRelease(job, options = {}) {
   activeJobId = job.id;
   job.state = "running";
   let originalPackage = null;
@@ -1461,6 +1922,18 @@ async function executeRelease(job) {
     }
   } finally {
     activeJobId = null;
+    if (job.state === "completed" && job.payload.syncGiteeMirror === true) {
+      try {
+        startGiteeMirror({ tag: job.tag, giteeToken: options.giteeToken });
+        addLog(job, "info", "GitHub 正式版已完成，Gitee 国内镜像已转入独立的本地同步任务");
+      } catch (error) {
+        addLog(
+          job,
+          "warning",
+          `GitHub 正式版不受影响；Gitee 国内镜像未自动启动：${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
   }
 }
 
@@ -1640,6 +2113,10 @@ export async function startReleaseConsole(options = {}) {
         sendJson(response, 200, job ? publicJob(job) : null);
         return;
       }
+      if (request.method === "GET" && url.pathname === "/api/gitee-mirror") {
+        sendJson(response, 200, publicGiteeMirrorJob(latestGiteeMirrorJob));
+        return;
+      }
       if (request.method === "GET" && url.pathname.startsWith("/api/jobs/")) {
         const jobId = url.pathname.split("/")[3];
         const job = jobs.get(jobId);
@@ -1655,9 +2132,26 @@ export async function startReleaseConsole(options = {}) {
           sendJson(response, 409, { error: "已有发布任务正在执行" });
           return;
         }
-        const job = createJob(await readJsonBody(request));
-        void executeRelease(job);
+        if (activeGiteeMirrorController) {
+          sendJson(response, 409, { error: "Gitee 国内镜像正在同步，请完成或取消后再发布新版本" });
+          return;
+        }
+        const payload = await readJsonBody(request);
+        const giteeToken = String(payload.giteeToken || "").trim();
+        delete payload.giteeToken;
+        const job = createJob(payload);
+        void executeRelease(job, { giteeToken });
         sendJson(response, 202, publicJob(job));
+        return;
+      }
+      if (request.method === "POST" && url.pathname === "/api/gitee-mirror") {
+        const job = startGiteeMirror(await readJsonBody(request));
+        sendJson(response, 202, publicGiteeMirrorJob(job));
+        return;
+      }
+      if (request.method === "POST" && url.pathname === "/api/gitee-mirror/cancel") {
+        const job = cancelGiteeMirror();
+        sendJson(response, 202, publicGiteeMirrorJob(job));
         return;
       }
       const retryMatch = /^\/api\/jobs\/([^/]+)\/retry$/.exec(url.pathname);

@@ -26,11 +26,14 @@ npm run release:win
 2. 使用 `npm version --no-git-tag-version` 同步更新 `package.json` 与 `package-lock.json`。
 3. 执行 `npm run dist:win -- --publish never`，确认 `release/` 中已生成对应版本的 NSIS 安装包、blockmap、Portable 和 `latest.yml`。
 4. 按项目提交规范提交当前全部改动，创建带说明的 `v*` tag。
-5. 分别向 Gitee 和 GitHub 原子推送当前分支与 tag。GitHub 收到 tag 后会触发 Actions，创建 GitHub Release，并将 Windows 更新资产镜像到 Gitee Release。
+5. 分别向 Gitee 和 GitHub 原子推送当前分支与 tag。GitHub 收到 tag 后会触发 Actions，并独立创建 GitHub Release。
+6. 若在控制台启用“GitHub 正式版完成后自动启动本地镜像同步”，GitHub Release 就绪后会启动单独的 Gitee 国内镜像任务；镜像失败不会改变正式版发布结果。
 
-发布控制台默认识别指向 `gitee.com` 的现有远端。若尚未配置 GitHub 远端，会使用 `package.json` 的 `repository.url` 添加名为 `github` 的远端。HTTPS 远端需要提前通过 Git Credential Manager 配置凭据；脚本不会读取或保存访问令牌。
+发布控制台默认识别指向 `gitee.com` 的现有远端。若尚未配置 GitHub 远端，会使用 `package.json` 的 `repository.url` 添加名为 `github` 的远端。HTTPS Git 远端需要提前通过 Git Credential Manager 配置凭据。
 
-发布前必须显式勾选确认项。构建失败且尚未暂存时，脚本会恢复两个版本文件；本地提交或 tag 已生成后不会自动回滚，远端推送失败时可在当前页面重试。
+Gitee 国内镜像使用单独的私人令牌。可以在发布控制台中临时输入，也可以在启动控制台前设置 `GITEE_TOKEN`；令牌只保留在本机发布进程内，不写入仓库、浏览器存储或安装包。控制台读取 GitHub 正式附件时复用 Git 配置中的 GitHub 代理，而 Gitee API 和大文件上传保持国内直连。
+
+发布前必须显式勾选确认项。构建失败且尚未暂存时，脚本会恢复两个版本文件；本地提交或 tag 已生成后不会自动回滚，远端推送失败时可在当前页面重试。Gitee 镜像可按任意已有稳定标签单独执行“同步 / 修复”，不需要重新发布版本。
 
 Windows 安装包使用辅助安装向导，默认按当前用户安装，并允许用户选择安装目录；Portable 可以直接运行，不创建快捷方式、卸载项或系统级安装记录。
 
@@ -113,13 +116,13 @@ Portable 默认把项目列表、分组、偏好设置、终端历史和更新�
 
 Actions 只上传安装包、Portable、必要的 blockmap 和 Windows `latest.yml`，不上传 `win-unpacked`、`linux-unpacked` 等解包目录，避免 Release 阶段上传过多文件触发 GitHub secondary rate limit。
 
-当工作流由 `v*` 格式 tag 触发时，会在 Windows 和 Linux 构建完成后自动创建 GitHub Release，并把安装包和 Portable 上传到该 Release。随后工作流使用 `scripts/sync-gitee-release.mjs` 创建或更新同标签的 Gitee Release，上传 Windows 安装包、blockmap、Portable、`latest.yml` 和最后生成的 SHA-256 更新清单。
+当工作流由 `v*` 格式 tag 触发时，会在 Windows 和 Linux 构建完成后自动创建 GitHub Release，并把安装包和 Portable 上传到该 Release。主工作流到此即视为正式发布完成，不再从 GitHub Actions 直接向 Gitee 上传大文件。
 
-Gitee 附件采用文件流上传，避免将 Windows 安装版或 Portable 整体载入 Actions 的 Node.js 内存。上传过程中会输出每 10% 的传输进度；全部上传完成后还会重新读取附件列表，只有安装包、blockmap、Portable、`latest.yml` 和 `update-manifest.json` 均存在且大小一致时才视为同步成功。
+Gitee 国内镜像由本地发布控制台执行。控制台会先从 GitHub Release 读取权威附件清单：本地产物或缓存与 GitHub 的大小、SHA-256 一致时直接复用，否则通过本机 GitHub 代理下载到系统临时缓存。随后从本机国内网络依次上传安装包、blockmap、Portable、`latest.yml`，最后上传 `update-manifest.json`。
 
-首次启用国内镜像前，需要在 GitHub 仓库 `Settings -> Secrets and variables -> Actions` 中新增仓库密钥 `GITEE_TOKEN`。令牌由 Gitee 个人访问令牌页面创建，并需具备当前公开仓库的发行版创建、修改与附件上传权限。令牌只提供给 Actions，不写入代码、安装包或客户端。未配置该密钥时 GitHub Release 仍会正常发布，但工作流会给出警告，Gitee 国内更新源不会推进到新版本。
+上传过程中会显示总进度、当前文件和逐文件状态，并支持安全取消。单文件上传总时限为 25 分钟，连续 2 分钟没有传输进度会终止；文件全部发送后，Gitee 服务器必须在 3 分钟内返回结果。失败后重新执行会先校验 Gitee 已有附件的文件大小，完整附件直接跳过，避免再次上传整个文件。只有五项附件均存在且大小一致时才会把镜像标记为就绪。
 
-如果 GitHub Release 已发布，但 Gitee 页面只显示自动生成的 `Source code`，说明 Gitee 自定义附件同步失败。提交修复后可进入 GitHub 仓库 `Actions` -> `Repair Gitee Release Mirror` -> `Run workflow`，输入已有标签（例如 `v0.1.26`）重新下载 GitHub Release 资产并修复同标签的 Gitee Release，无需重新创建 tag。该工作流会替换同名附件，不会删除源码归档。
+如果 GitHub Release 已发布，但 Gitee 页面缺少自定义附件，在本地运行 `npm run release:win`，在“Gitee 国内镜像”中填写已有标签和令牌并点击“同步 / 修复”即可，无需重新创建 tag。GitHub 仓库中的 `Repair Gitee Release Mirror` 仍作为无人值守的备用修复入口；只有使用该备用工作流时才需要在 Actions Secrets 中配置 `GITEE_TOKEN`。
 
 尚未包含双更新源逻辑的 v0.1.25 及更早客户端仍只会访问 GitHub，无法通过服务端配置让旧程序自动改用 Gitee。需要开启代理完成一次升级，或在 Gitee 附件修复后手动下载并覆盖安装基线版本；从包含双更新源逻辑的版本开始，后续检查会优先直连 Gitee。
 
@@ -150,4 +153,4 @@ git push github v0.1.0
 git push origin v0.1.0
 ```
 
-GitHub 会通过 Actions 自动生成 Release；配置 `GITEE_TOKEN` 后，同一工作流会自动维护 Gitee 发行版，无需再手动上传更新安装包。
+GitHub 会通过 Actions 自动生成 Release；Gitee 安装包由本地发布控制台作为独立任务同步，避免 GitHub Actions 到 Gitee 的大文件链路阻塞正式发布。

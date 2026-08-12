@@ -153,9 +153,51 @@
             <li data-stage="version"><i></i><span>更新版本</span><small>等待</small></li>
             <li data-stage="build"><i></i><span>Windows 打包</span><small>等待</small></li>
             <li data-stage="commit"><i></i><span>提交与标签</span><small>等待</small></li>
-            <li data-stage="gitee"><i></i><span>推送 Gitee</span><small>等待</small></li>
+            <li data-stage="gitee"><i></i><span>Gitee 代码标签</span><small>等待</small></li>
             <li data-stage="github"><i></i><span>GitHub 正式版</span><small>等待</small></li>
           </ol>
+
+          <section class="mirror-panel" aria-labelledby="mirrorHeading">
+            <div class="mirror-heading">
+              <div>
+                <span class="mirror-kicker">独立任务 · 本机直传</span>
+                <h3 id="mirrorHeading">Gitee 国内镜像</h3>
+              </div>
+              <span id="mirrorState" class="job-state idle">未同步</span>
+            </div>
+            <p class="mirror-description">同步失败不会影响 GitHub 正式版；再次执行会校验并跳过完整附件。</p>
+            <div class="mirror-fields">
+              <label>
+                <span>版本标签</span>
+                <input id="mirrorTagInput" type="text" autocomplete="off" spellcheck="false" placeholder="v0.1.32" />
+              </label>
+              <label>
+                <span>Gitee 私人令牌</span>
+                <span class="mirror-token-input">
+                  <input id="mirrorTokenInput" type="password" autocomplete="new-password" spellcheck="false" placeholder="仅在本机进程内使用" />
+                  <button id="mirrorTokenToggle" type="button" aria-label="显示 Gitee 私人令牌">显示</button>
+                </span>
+              </label>
+            </div>
+            <div id="mirrorTokenHint" class="mirror-token-hint">令牌不会写入仓库或安装包</div>
+            <label class="mirror-auto-option">
+              <input id="mirrorAfterRelease" type="checkbox" />
+              <span>GitHub 正式版完成后自动启动本地镜像同步</span>
+            </label>
+            <div class="mirror-progress" role="progressbar" aria-label="Gitee 镜像同步进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <span id="mirrorProgressBar"></span>
+            </div>
+            <div class="mirror-progress-meta" aria-live="polite">
+              <span id="mirrorProgressText">等待同步</span>
+              <strong id="mirrorProgressPercent">0%</strong>
+            </div>
+            <ul id="mirrorFileList" class="mirror-file-list" hidden></ul>
+            <div class="mirror-actions">
+              <button id="mirrorSyncButton" class="mirror-sync-button" type="button">{{icon:RefreshCw}} 同步 / 修复</button>
+              <button id="mirrorCancelButton" class="mirror-cancel-button" type="button" hidden>{{icon:X}} 取消</button>
+              <a id="mirrorReleaseLink" href="#" target="_blank" rel="noreferrer" hidden>查看 Gitee 发行版</a>
+            </div>
+          </section>
 
           <div class="console-heading">
             <span>{{icon:SquareTerminal}} 实时日志</span>
@@ -210,7 +252,8 @@
         <dl>
           <div><dt>分支</dt><dd id="dialogBranch">--</dd></div>
           <div><dt>构建</dt><dd id="dialogBuild">Windows 常规包</dd></div>
-          <div><dt>远端</dt><dd>Gitee + GitHub</dd></div>
+          <div><dt>正式发布</dt><dd>GitHub Release</dd></div>
+          <div><dt>国内镜像</dt><dd>独立同步，不阻断发布</dd></div>
         </dl>
         <p>发布开始后将生成版本提交和标签，推送前不会再次暂停。</p>
         <div class="dialog-actions">

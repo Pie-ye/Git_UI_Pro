@@ -9,10 +9,10 @@ const DEFAULT_GITEE_OWNER = "zjx_master";
 const DEFAULT_GITEE_REPOSITORY = "git-ui-pro";
 const UPDATE_MANIFEST_NAME = "update-manifest.json";
 const REQUEST_TIMEOUT_MS = 30_000;
-const UPLOAD_TIMEOUT_MS = 120 * 60_000;
-const UPLOAD_IDLE_TIMEOUT_MS = 10 * 60_000;
-const UPLOAD_MAX_ATTEMPTS = 2;
-const UPLOAD_RETRY_DELAY_MS = 15_000;
+const ASSET_PROBE_TIMEOUT_MS = 20_000;
+const UPLOAD_TIMEOUT_MS = 25 * 60_000;
+const UPLOAD_IDLE_TIMEOUT_MS = 2 * 60_000;
+const UPLOAD_RESPONSE_TIMEOUT_MS = 3 * 60_000;
 const STABLE_TAG_PATTERN = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 export function createGiteeUpdateManifest(tagName, installer, portable) {
@@ -76,7 +76,7 @@ export async function collectWindowsUpdateFiles(rootDirectory, tagName) {
 
 export async function syncGiteeRelease(options = {}) {
   const token = requiredValue(options.giteeToken ?? process.env.GITEE_TOKEN, "GITEE_TOKEN");
-  const githubToken = requiredValue(options.githubToken ?? process.env.GITHUB_TOKEN, "GITHUB_TOKEN");
+  const githubToken = normalizeText(options.githubToken ?? process.env.GITHUB_TOKEN);
   const githubRepository = requiredValue(options.githubRepository ?? process.env.GITHUB_REPOSITORY, "GITHUB_REPOSITORY");
   const tagName = requiredValue(options.tagName ?? process.env.RELEASE_TAG, "RELEASE_TAG");
   const artifactsDirectory = requiredValue(
@@ -85,17 +85,28 @@ export async function syncGiteeRelease(options = {}) {
   );
   const owner = options.giteeOwner ?? process.env.GITEE_OWNER ?? DEFAULT_GITEE_OWNER;
   const repository = options.giteeRepository ?? process.env.GITEE_REPOSITORY ?? DEFAULT_GITEE_REPOSITORY;
+  const signal = options.signal;
+  const onProgress = typeof options.onProgress === "function" ? options.onProgress : () => {};
+  throwIfAborted(signal);
   const version = stableVersionFromTag(tagName);
+  reportProgress(onProgress, {
+    phase: "preparing",
+    message: `检查 ${tagName} 的本地 Windows 正式产物`
+  });
   const files = await collectWindowsUpdateFiles(artifactsDirectory, tagName);
   const installerName = `Git-UI-Pro-Setup-${version}-x64.exe`;
   const portableName = `Git-UI-Pro-Portable-${version}-x64.exe`;
   const installerPath = files.get(installerName);
   const portablePath = files.get(portableName);
+  reportProgress(onProgress, {
+    phase: "hashing",
+    message: "计算安装版与 Portable 的 SHA-256 完整性摘要"
+  });
   const [installerStat, portableStat, installerSha256, portableSha256] = await Promise.all([
     stat(installerPath),
     stat(portablePath),
-    sha256File(installerPath),
-    sha256File(portablePath)
+    sha256File(installerPath, signal),
+    sha256File(portablePath, signal)
   ]);
   const manifest = createGiteeUpdateManifest(tagName, {
     name: installerName,
@@ -106,13 +117,29 @@ export async function syncGiteeRelease(options = {}) {
     size: portableStat.size,
     sha256: portableSha256
   });
-  const githubRelease = await fetchGithubRelease(githubRepository, tagName, githubToken, options.fetchImpl);
+  throwIfAborted(signal);
+  reportProgress(onProgress, {
+    phase: "release",
+    message: `读取 GitHub ${tagName} 正式版说明`
+  });
+  const githubRelease = options.githubRelease ?? await fetchGithubRelease(
+    githubRepository,
+    tagName,
+    githubToken,
+    options.githubFetchImpl ?? options.fetchImpl,
+    signal
+  );
   const gitee = createGiteeClient({
     owner,
     repository,
     token,
-    fetchImpl: options.fetchImpl,
-    uploadImpl: options.uploadImpl
+    fetchImpl: options.giteeFetchImpl ?? options.fetchImpl,
+    uploadImpl: options.uploadImpl,
+    signal
+  });
+  reportProgress(onProgress, {
+    phase: "release",
+    message: `创建或更新 Gitee ${tagName} 发行版`
   });
   const release = await gitee.ensureRelease({
     tagName,
@@ -125,40 +152,97 @@ export async function syncGiteeRelease(options = {}) {
   }
 
   const uploadNames = [...files.keys(), UPDATE_MANIFEST_NAME];
+  const manifestBuffer = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   const uploadEntries = [
     installerName,
     `${installerName}.blockmap`,
     portableName,
     "latest.yml"
-  ].map((name) => [name, files.get(name)]);
+  ].map((name) => [name, { filePath: files.get(name) }]);
+  uploadEntries.push([UPDATE_MANIFEST_NAME, { data: manifestBuffer }]);
+  const entrySizes = await Promise.all(uploadEntries.map(([name, source]) => assetSourceSize(name, source)));
+  const overallTotalBytes = entrySizes.reduce((total, size) => total + size, 0);
   const expectedAssets = new Map();
-  for (const [name, filename] of uploadEntries) {
-    console.log(`正在上传 Gitee Release 附件：${name}`);
-    const size = await gitee.ensureAsset(release.id, name, { filePath: filename });
-    expectedAssets.set(name, size);
+  const uploadedAssets = [];
+  const skippedAssets = [];
+  let completedBytes = 0;
+  for (let index = 0; index < uploadEntries.length; index += 1) {
+    throwIfAborted(signal);
+    const [name, source] = uploadEntries[index];
+    const expectedSize = entrySizes[index];
+    const progressBase = {
+      phase: "asset",
+      assetName: name,
+      assetIndex: index + 1,
+      assetCount: uploadEntries.length,
+      assetSize: expectedSize,
+      overallTotalBytes
+    };
+    reportProgress(onProgress, {
+      ...progressBase,
+      status: "checking",
+      uploadedBytes: 0,
+      overallUploadedBytes: completedBytes,
+      message: `检查 Gitee 附件 ${index + 1}/${uploadEntries.length}：${name}`
+    });
+    const result = await gitee.ensureAsset(release.id, name, source, {
+      onProgress: ({ uploadedBytes }) => reportProgress(onProgress, {
+        ...progressBase,
+        status: "uploading",
+        uploadedBytes,
+        overallUploadedBytes: completedBytes + uploadedBytes
+      })
+    });
+    completedBytes += result.size;
+    expectedAssets.set(name, result.size);
+    (result.status === "skipped" ? skippedAssets : uploadedAssets).push(name);
+    reportProgress(onProgress, {
+      ...progressBase,
+      status: result.status,
+      uploadedBytes: result.size,
+      overallUploadedBytes: completedBytes,
+      message: result.status === "skipped"
+        ? `附件已存在且完整，跳过上传：${name}`
+        : `附件上传并校验完成：${name}`
+    });
   }
-  const manifestBuffer = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, "utf8");
-  console.log(`正在上传 Gitee Release 附件：${UPDATE_MANIFEST_NAME}`);
-  const manifestSize = await gitee.ensureAsset(release.id, UPDATE_MANIFEST_NAME, { data: manifestBuffer });
-  expectedAssets.set(UPDATE_MANIFEST_NAME, manifestSize);
+  reportProgress(onProgress, {
+    phase: "verifying",
+    overallUploadedBytes: completedBytes,
+    overallTotalBytes,
+    message: "复核 Gitee 国内镜像的附件名称与文件大小"
+  });
   await gitee.verifyNamedAssets(release.id, expectedAssets);
+  reportProgress(onProgress, {
+    phase: "completed",
+    overallUploadedBytes: overallTotalBytes,
+    overallTotalBytes,
+    message: `Gitee ${tagName} 国内更新镜像已完整就绪`
+  });
 
   return Object.freeze({
     tagName,
     version,
     releaseUrl: `https://gitee.com/${owner}/${repository}/releases/tag/${tagName}`,
-    assets: Object.freeze(uploadNames)
+    assets: Object.freeze(uploadNames),
+    uploadedAssets: Object.freeze(uploadedAssets),
+    skippedAssets: Object.freeze(skippedAssets)
   });
 }
 
-function createGiteeClient({ owner, repository, token, fetchImpl = fetch, uploadImpl = uploadMultipartAsset }) {
+function createGiteeClient({ owner, repository, token, fetchImpl = fetch, uploadImpl = uploadMultipartAsset, signal }) {
   const baseUrl = `https://gitee.com/api/v5/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}`;
 
   async function request(pathname, init = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const response = await fetchImpl(`${baseUrl}${pathname}`, { ...init, signal: controller.signal });
+      const response = await fetchWithTimeout(
+        fetchImpl,
+        `${baseUrl}${pathname}`,
+        init,
+        timeoutMs,
+        signal,
+        `Gitee API ${pathname}`
+      );
       if (!response.ok) {
         const detail = (await response.text()).slice(0, 500).replace(/\s+/g, " ").trim();
         throw new Error(`Gitee API ${pathname} 返回 HTTP ${response.status}${detail ? `：${detail}` : ""}`);
@@ -169,19 +253,14 @@ function createGiteeClient({ owner, repository, token, fetchImpl = fetch, upload
       const responseText = await response.text();
       return responseText ? JSON.parse(responseText) : null;
     } catch (error) {
-      if (controller.signal.aborted) {
-        throw new Error(`Gitee API ${pathname} 请求超时。`);
-      }
       throw error;
-    } finally {
-      clearTimeout(timeoutId);
     }
   }
 
   async function findRelease(tagName) {
     const url = new URL(`${baseUrl}/releases/tags/${encodeURIComponent(tagName)}`);
     url.searchParams.set("access_token", token);
-    const response = await fetchImpl(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+    const response = await fetchWithTimeout(fetchImpl, url, {}, REQUEST_TIMEOUT_MS, signal, "读取 Gitee 发行版");
     if (response.status === 404) {
       return null;
     }
@@ -194,7 +273,7 @@ function createGiteeClient({ owner, repository, token, fetchImpl = fetch, upload
   async function listAssets(releaseId) {
     const url = new URL(`${baseUrl}/releases/${releaseId}/attach_files`);
     url.searchParams.set("access_token", token);
-    const response = await fetchImpl(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+    const response = await fetchWithTimeout(fetchImpl, url, {}, REQUEST_TIMEOUT_MS, signal, "读取 Gitee 附件列表");
     if (!response.ok) {
       throw new Error(`读取 Gitee v5 Release 附件失败（HTTP ${response.status}）。`);
     }
@@ -230,19 +309,20 @@ function createGiteeClient({ owner, repository, token, fetchImpl = fetch, upload
       });
     },
 
-    async ensureAsset(releaseId, filename, source) {
+    async ensureAsset(releaseId, filename, source, progressOptions = {}) {
       const expectedSize = await assetSourceSize(filename, source);
       const assets = await listAssets(releaseId);
       const namedAssets = assets.filter((asset) => asset?.name === filename);
-      const reusableAsset = namedAssets.find((asset) => Number(asset?.size) === expectedSize);
+      const reusableAsset = await findCompleteAsset(namedAssets, expectedSize, fetchImpl, signal);
       if (reusableAsset) {
         console.log(`Gitee Release 附件已存在且大小一致，跳过重传：${filename}`);
-        return expectedSize;
+        return { size: expectedSize, status: "skipped" };
       }
 
       for (const asset of namedAssets) {
-        if (Number.isSafeInteger(asset?.id)) {
-          await request(`/releases/${releaseId}/attach_files/${asset.id}`, {
+        const assetId = numericAssetId(asset?.id);
+        if (assetId !== null) {
+          await request(`/releases/${releaseId}/attach_files/${assetId}`, {
             method: "DELETE",
             headers: { Accept: "application/json", "Content-Type": "application/json" },
             body: JSON.stringify({ access_token: token })
@@ -250,39 +330,61 @@ function createGiteeClient({ owner, repository, token, fetchImpl = fetch, upload
         }
       }
 
-      for (let attempt = 1; attempt <= UPLOAD_MAX_ATTEMPTS; attempt += 1) {
-        try {
-          await uploadImpl({
-            url: `${baseUrl}/releases/${releaseId}/attach_files`,
-            token,
-            filename,
-            source,
-            timeoutMs: UPLOAD_TIMEOUT_MS,
-            idleTimeoutMs: UPLOAD_IDLE_TIMEOUT_MS
-          });
-          console.log(`Gitee Release 附件上传完成：${filename}`);
-          return expectedSize;
-        } catch (error) {
-          const completedAfterError = await listAssets(releaseId)
-            .then((assets) => assets.some((asset) => asset?.name === filename && Number(asset?.size) === expectedSize))
-            .catch(() => false);
-          if (completedAfterError) {
-            console.log(`Gitee Release 已在连接中断后确认附件完整：${filename}`);
-            return expectedSize;
-          }
-          if (attempt >= UPLOAD_MAX_ATTEMPTS || !isRetryableUploadError(error)) {
-            throw error;
-          }
-          console.warn(`Gitee Release 附件上传中断，${Math.round(UPLOAD_RETRY_DELAY_MS / 1_000)} 秒后重试（${attempt + 1}/${UPLOAD_MAX_ATTEMPTS}）：${filename}`);
-          await delay(UPLOAD_RETRY_DELAY_MS);
+      try {
+        await uploadImpl({
+          url: `${baseUrl}/releases/${releaseId}/attach_files`,
+          token,
+          filename,
+          source,
+          timeoutMs: UPLOAD_TIMEOUT_MS,
+          idleTimeoutMs: UPLOAD_IDLE_TIMEOUT_MS,
+          responseTimeoutMs: UPLOAD_RESPONSE_TIMEOUT_MS,
+          signal,
+          onProgress: progressOptions.onProgress
+        });
+      } catch (error) {
+        throwIfAborted(signal);
+        const completedAfterError = await verifyAssetWithPolling(
+          () => listAssets(releaseId),
+          filename,
+          expectedSize,
+          fetchImpl,
+          signal
+        ).catch(() => false);
+        if (completedAfterError) {
+          console.log(`Gitee Release 已在连接中断后确认附件完整：${filename}`);
+          return { size: expectedSize, status: "uploaded" };
         }
+        throw error;
       }
-      throw new Error(`Gitee Release 附件 ${filename} 未能完成上传。`);
+      const verified = await verifyAssetWithPolling(
+        () => listAssets(releaseId),
+        filename,
+        expectedSize,
+        fetchImpl,
+        signal
+      );
+      if (!verified) {
+        throw new Error(`Gitee Release 附件 ${filename} 上传后无法确认完整大小，已停止发布更新清单。`);
+      }
+      console.log(`Gitee Release 附件上传完成：${filename}`);
+      return { size: expectedSize, status: "uploaded" };
     },
 
     async verifyNamedAssets(releaseId, expectedAssets) {
       const assets = await listAssets(releaseId);
-      const invalid = [...expectedAssets].filter(([name, size]) => !assets.some((asset) => asset?.name === name && Number(asset?.size) === size));
+      const invalid = [];
+      for (const [name, size] of expectedAssets) {
+        const complete = await findCompleteAsset(
+          assets.filter((asset) => asset?.name === name),
+          size,
+          fetchImpl,
+          signal
+        );
+        if (!complete) {
+          invalid.push([name, size]);
+        }
+      }
       if (invalid.length > 0) {
         throw new Error(`Gitee Release 附件上传后校验失败，缺少或大小不一致：${invalid.map(([name]) => name).join("、")}。`);
       }
@@ -298,21 +400,186 @@ async function assetSourceSize(filename, source) {
   return size;
 }
 
-function isRetryableUploadError(error) {
-  const message = error instanceof Error ? error.message : String(error);
-  const status = /HTTP\s+(\d{3})/i.exec(message);
-  if (!status) {
-    return true;
+function reportProgress(onProgress, event) {
+  onProgress(Object.freeze({ ...event }));
+  if (event.message) {
+    console.log(event.message);
   }
-  const statusCode = Number(status[1]);
-  return statusCode === 408 || statusCode === 429 || statusCode >= 500;
 }
 
-function delay(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+function createAbortError() {
+  const error = new Error("Gitee 国内镜像同步已取消。");
+  error.name = "AbortError";
+  error.code = "ABORT_ERR";
+  return error;
 }
 
-async function uploadMultipartAsset({ url, token, filename, source, timeoutMs, idleTimeoutMs }) {
+function throwIfAborted(signal) {
+  if (signal?.aborted) {
+    throw createAbortError();
+  }
+}
+
+async function fetchWithTimeout(fetchImpl, url, init, timeoutMs, parentSignal, label) {
+  throwIfAborted(parentSignal);
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  const handleAbort = () => controller.abort();
+  parentSignal?.addEventListener("abort", handleAbort, { once: true });
+  try {
+    return await fetchImpl(url, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (parentSignal?.aborted) {
+      throw createAbortError();
+    }
+    if (timedOut || controller.signal.aborted) {
+      throw new Error(`${label}请求超过 ${Math.ceil(timeoutMs / 1_000)} 秒。`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+    parentSignal?.removeEventListener("abort", handleAbort);
+  }
+}
+
+function numericAssetId(value) {
+  const id = Number(value);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
+function declaredAssetSize(asset) {
+  for (const value of [asset?.size, asset?.file_size, asset?.filesize]) {
+    const size = Number(value);
+    if (Number.isSafeInteger(size) && size > 0) {
+      return size;
+    }
+  }
+  return null;
+}
+
+function trustedGiteeAssetUrl(value) {
+  if (typeof value !== "string" || !value.trim()) {
+    return null;
+  }
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.toLowerCase();
+    if (url.protocol !== "https:" || (hostname !== "gitee.com" && !hostname.endsWith(".gitee.com"))) {
+      return null;
+    }
+    return url;
+  } catch {
+    return null;
+  }
+}
+
+function responseAssetSize(response) {
+  const contentRange = response.headers.get("content-range");
+  const rangedSize = contentRange ? Number(/\/(\d+)$/.exec(contentRange)?.[1]) : NaN;
+  if (Number.isSafeInteger(rangedSize) && rangedSize > 0) {
+    return rangedSize;
+  }
+  const contentLength = Number(response.headers.get("content-length"));
+  return Number.isSafeInteger(contentLength) && contentLength > 0 ? contentLength : null;
+}
+
+async function probeAssetSize(asset, fetchImpl, signal) {
+  const declaredSize = declaredAssetSize(asset);
+  if (declaredSize !== null) {
+    return declaredSize;
+  }
+  const url = trustedGiteeAssetUrl(asset?.browser_download_url ?? asset?.download_url);
+  if (!url) {
+    return null;
+  }
+
+  for (const init of [
+    { method: "HEAD", redirect: "follow", headers: { Accept: "application/octet-stream" } },
+    { method: "GET", redirect: "follow", headers: { Accept: "application/octet-stream", Range: "bytes=0-0" } }
+  ]) {
+    try {
+      const response = await fetchWithTimeout(
+        fetchImpl,
+        url,
+        init,
+        ASSET_PROBE_TIMEOUT_MS,
+        signal,
+        `校验 Gitee 附件 ${asset?.name ?? ""}`
+      );
+      const size = response.ok ? responseAssetSize(response) : null;
+      await response.body?.cancel().catch(() => {});
+      if (size !== null) {
+        return size;
+      }
+    } catch (error) {
+      throwIfAborted(signal);
+      if (init.method === "GET") {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
+async function findCompleteAsset(assets, expectedSize, fetchImpl, signal) {
+  for (const asset of assets) {
+    if (await probeAssetSize(asset, fetchImpl, signal) === expectedSize) {
+      return asset;
+    }
+  }
+  return null;
+}
+
+async function verifyAssetWithPolling(listAssets, filename, expectedSize, fetchImpl, signal) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    throwIfAborted(signal);
+    const assets = await listAssets();
+    const complete = await findCompleteAsset(
+      assets.filter((asset) => asset?.name === filename),
+      expectedSize,
+      fetchImpl,
+      signal
+    );
+    if (complete) {
+      return true;
+    }
+    if (attempt < 2) {
+      await abortableDelay(1_000, signal);
+    }
+  }
+  return false;
+}
+
+function abortableDelay(milliseconds, signal) {
+  throwIfAborted(signal);
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      signal?.removeEventListener("abort", handleAbort);
+      resolve();
+    }, milliseconds);
+    const handleAbort = () => {
+      clearTimeout(timeoutId);
+      reject(createAbortError());
+    };
+    signal?.addEventListener("abort", handleAbort, { once: true });
+  });
+}
+
+async function uploadMultipartAsset({
+  url,
+  token,
+  filename,
+  source,
+  timeoutMs,
+  idleTimeoutMs,
+  responseTimeoutMs,
+  signal,
+  onProgress = () => {}
+}) {
   const boundary = `----git-ui-pro-${randomUUID()}`;
   const safeFilename = filename.replace(/["\r\n]/g, "_");
   const prefix = Buffer.from(
@@ -332,16 +599,36 @@ async function uploadMultipartAsset({ url, token, filename, source, timeoutMs, i
   await new Promise((resolve, reject) => {
     let fileStream;
     let uploadedBytes = 0;
-    let nextProgressPercent = 10;
+    let nextProgressPercent = 1;
     let settled = false;
+    let idleTimeoutId = null;
+    let responseTimeoutId = null;
+    const clearTimers = () => {
+      clearTimeout(timeoutId);
+      clearTimeout(idleTimeoutId);
+      clearTimeout(responseTimeoutId);
+    };
     const finish = (callback, value) => {
       if (settled) {
         return;
       }
       settled = true;
-      clearTimeout(timeoutId);
+      clearTimers();
+      signal?.removeEventListener("abort", handleAbort);
       callback(value);
     };
+    const resetIdleTimeout = () => {
+      clearTimeout(idleTimeoutId);
+      idleTimeoutId = setTimeout(() => {
+        request.destroy(
+          new Error(
+            `上传 Gitee Release 附件 ${filename} 连续 ${Math.round(idleTimeoutMs / 60_000)} 分钟无传输进度` +
+              `（已传输 ${formatMegabytes(uploadedBytes)} / ${formatMegabytes(fileSize)}）。`
+          )
+        );
+      }, idleTimeoutMs);
+    };
+    const handleAbort = () => request.destroy(createAbortError());
     const request = httpsRequest(url, {
       method: "POST",
       headers: {
@@ -354,6 +641,7 @@ async function uploadMultipartAsset({ url, token, filename, source, timeoutMs, i
       const chunks = [];
       let responseSize = 0;
       response.on("data", (chunk) => {
+        resetIdleTimeout();
         responseSize += chunk.length;
         if (responseSize <= 16_384) {
           chunks.push(chunk);
@@ -382,39 +670,71 @@ async function uploadMultipartAsset({ url, token, filename, source, timeoutMs, i
         )
       );
     }, timeoutMs);
-    request.setTimeout(idleTimeoutMs, () => {
-      request.destroy(
-        new Error(
-          `上传 Gitee Release 附件 ${filename} 连续 ${Math.round(idleTimeoutMs / 60_000)} 分钟无网络进度` +
-            `（已传输 ${formatMegabytes(uploadedBytes)} / ${formatMegabytes(fileSize)}）。`
-        )
-      );
-    });
     request.on("error", (error) => {
       fileStream?.destroy();
-      finish(reject, new Error(`上传 Gitee Release 附件 ${filename} 失败：${error.message}`));
+      const uploadError = error?.name === "AbortError" || signal?.aborted
+        ? createAbortError()
+        : new Error(`上传 Gitee Release 附件 ${filename} 失败：${error.message}`);
+      finish(reject, uploadError);
     });
-    request.write(prefix);
-    if (source.filePath) {
-      fileStream = createReadStream(source.filePath);
-      fileStream.on("error", (error) => request.destroy(error));
-      fileStream.on("data", (chunk) => {
-        uploadedBytes += chunk.length;
-        const progressPercent = Math.floor((uploadedBytes / fileSize) * 100);
-        if (progressPercent >= nextProgressPercent) {
+    signal?.addEventListener("abort", handleAbort, { once: true });
+    resetIdleTimeout();
+    if (signal?.aborted) {
+      handleAbort();
+      return;
+    }
+
+    const writeChunk = (chunk) => new Promise((writeResolve, writeReject) => {
+      request.write(chunk, (error) => error ? writeReject(error) : writeResolve());
+    });
+    const publishProgress = () => {
+      const progressPercent = Math.min(100, Math.floor((uploadedBytes / fileSize) * 100));
+      onProgress({ filename, uploadedBytes, totalBytes: fileSize, percent: progressPercent });
+      if (progressPercent >= nextProgressPercent) {
+        if (progressPercent % 10 === 0 || progressPercent === 100) {
           console.log(
             `Gitee Release 附件传输进度：${filename} ${progressPercent}%` +
               `（${formatMegabytes(uploadedBytes)} / ${formatMegabytes(fileSize)}）`
           );
-          nextProgressPercent = Math.min(100, progressPercent + 10);
         }
-      });
-      fileStream.on("end", () => request.end(suffix));
-      fileStream.pipe(request, { end: false });
-      return;
-    }
-    uploadedBytes = source.data.length;
-    request.end(Buffer.concat([source.data, suffix]));
+        nextProgressPercent = Math.min(100, progressPercent + 1);
+      }
+    };
+    void (async () => {
+      try {
+        await writeChunk(prefix);
+        if (source.filePath) {
+          fileStream = createReadStream(source.filePath);
+          for await (const chunk of fileStream) {
+            throwIfAborted(signal);
+            await writeChunk(chunk);
+            uploadedBytes += chunk.length;
+            resetIdleTimeout();
+            publishProgress();
+          }
+        } else {
+          throwIfAborted(signal);
+          await writeChunk(source.data);
+          uploadedBytes = source.data.length;
+          resetIdleTimeout();
+          publishProgress();
+        }
+        await writeChunk(suffix);
+        request.end();
+        clearTimeout(idleTimeoutId);
+        if (!settled) {
+          responseTimeoutId = setTimeout(() => {
+            request.destroy(
+              new Error(
+                `Gitee 已接收附件 ${filename} 的全部数据，但 ${Math.round(responseTimeoutMs / 60_000)} 分钟内未返回处理结果。`
+              )
+            );
+          }, responseTimeoutMs);
+        }
+      } catch (error) {
+        request.destroy(error);
+      }
+    })();
   });
 }
 
@@ -422,25 +742,33 @@ function formatMegabytes(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-async function sha256File(filename) {
+async function sha256File(filename, signal) {
   const hash = createHash("sha256");
   for await (const chunk of createReadStream(filename)) {
+    throwIfAborted(signal);
     hash.update(chunk);
   }
   return hash.digest("hex");
 }
 
-async function fetchGithubRelease(repository, tagName, token, fetchImpl = fetch) {
+async function fetchGithubRelease(repository, tagName, token, fetchImpl = fetch, signal) {
   const url = `https://api.github.com/repos/${repository}/releases/tags/${encodeURIComponent(tagName)}`;
-  const response = await fetchImpl(url, {
-    headers: {
-      Accept: "application/vnd.github+json",
-      Authorization: `Bearer ${token}`,
-      "User-Agent": "Git-UI-Pro-Gitee-Mirror",
-      "X-GitHub-Api-Version": "2022-11-28"
-    },
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
-  });
+  const headers = {
+    Accept: "application/vnd.github+json",
+    "User-Agent": "Git-UI-Pro-Gitee-Mirror",
+    "X-GitHub-Api-Version": "2022-11-28"
+  };
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  const response = await fetchWithTimeout(
+    fetchImpl,
+    url,
+    { headers },
+    REQUEST_TIMEOUT_MS,
+    signal,
+    `读取 GitHub ${tagName} Release `
+  );
   if (!response.ok) {
     throw new Error(`读取 GitHub ${tagName} Release 失败（HTTP ${response.status}）。`);
   }

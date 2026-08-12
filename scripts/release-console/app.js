@@ -29,6 +29,20 @@ const elements = {
   jobState: document.querySelector("#jobState"),
   latestTag: document.querySelector("#latestTag"),
   logOutput: document.querySelector("#logOutput"),
+  mirrorAfterRelease: document.querySelector("#mirrorAfterRelease"),
+  mirrorCancelButton: document.querySelector("#mirrorCancelButton"),
+  mirrorFileList: document.querySelector("#mirrorFileList"),
+  mirrorProgress: document.querySelector(".mirror-progress"),
+  mirrorProgressBar: document.querySelector("#mirrorProgressBar"),
+  mirrorProgressPercent: document.querySelector("#mirrorProgressPercent"),
+  mirrorProgressText: document.querySelector("#mirrorProgressText"),
+  mirrorReleaseLink: document.querySelector("#mirrorReleaseLink"),
+  mirrorState: document.querySelector("#mirrorState"),
+  mirrorSyncButton: document.querySelector("#mirrorSyncButton"),
+  mirrorTagInput: document.querySelector("#mirrorTagInput"),
+  mirrorTokenHint: document.querySelector("#mirrorTokenHint"),
+  mirrorTokenInput: document.querySelector("#mirrorTokenInput"),
+  mirrorTokenToggle: document.querySelector("#mirrorTokenToggle"),
   noteCount: document.querySelector("#noteCount"),
   noteLimit: document.querySelector("#noteLimit"),
   publishButton: document.querySelector("#publishButton"),
@@ -47,7 +61,9 @@ const elements = {
 
 let repositoryStatus = null;
 let activeJob = null;
+let activeMirrorJob = null;
 let pollingTimer = null;
+let mirrorPollingTimer = null;
 let toastTimer = null;
 let automaticNotes = [];
 let customNotes = [];
@@ -104,6 +120,21 @@ function compareVersion(left, right) {
     return null;
   }
   return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+}
+
+function validMirrorTag(value) {
+  return /^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/.test(value.trim());
+}
+
+function mirrorTokenAvailable() {
+  return Boolean(elements.mirrorTokenInput.value.trim() || repositoryStatus?.giteeMirror?.tokenConfigured);
+}
+
+function clearMirrorToken() {
+  elements.mirrorTokenInput.value = "";
+  elements.mirrorTokenInput.type = "password";
+  elements.mirrorTokenToggle.textContent = "显示";
+  elements.mirrorTokenToggle.setAttribute("aria-label", "显示 Gitee 私人令牌");
 }
 
 function getNotes() {
@@ -210,13 +241,16 @@ function updatePublishAvailability() {
     notes.length > 0 &&
     notes.length <= 12 &&
     elements.confirmCheckbox.checked &&
-    !activeJob
+    !activeJob &&
+    !activeMirrorJob
   );
   elements.publishButton.disabled = !ready;
 
   let hint = "可开始发布";
   if (activeJob) {
     hint = "发布任务正在执行";
+  } else if (activeMirrorJob) {
+    hint = "Gitee 国内镜像正在同步";
   } else if (!repositoryStatus) {
     hint = "等待仓库检查完成";
   } else if (!repositoryStatus.ready) {
@@ -229,6 +263,28 @@ function updatePublishAvailability() {
     hint = "勾选发布确认后继续";
   }
   setText(elements.publishHint, hint);
+  updateMirrorAvailability();
+}
+
+function updateMirrorAvailability() {
+  const tagValid = validMirrorTag(elements.mirrorTagInput.value);
+  const tokenReady = mirrorTokenAvailable();
+  const busy = Boolean(activeMirrorJob || activeJob);
+  elements.mirrorSyncButton.disabled = busy || !tagValid || !tokenReady;
+  elements.mirrorTagInput.disabled = Boolean(activeMirrorJob);
+  elements.mirrorTokenInput.disabled = Boolean(activeMirrorJob);
+  elements.mirrorTokenToggle.disabled = Boolean(activeMirrorJob);
+  elements.mirrorAfterRelease.disabled = Boolean(activeJob || activeMirrorJob);
+
+  if (activeMirrorJob) {
+    elements.mirrorSyncButton.title = "镜像同步正在执行";
+  } else if (!tagValid) {
+    elements.mirrorSyncButton.title = "请输入 v加x.y.z 格式的稳定版本标签";
+  } else if (!tokenReady) {
+    elements.mirrorSyncButton.title = "请输入 Gitee 私人令牌";
+  } else {
+    elements.mirrorSyncButton.title = "校验并补齐该版本的 Gitee 更新附件";
+  }
 }
 
 function renderRemote(provider, remote) {
@@ -339,6 +395,17 @@ function renderStatus(status, preserveForm = false) {
   renderRemote("github", status.remotes.github);
   renderChanges(status.files);
   renderHistory(status.history);
+  if (!elements.mirrorTagInput.dataset.initialized) {
+    elements.mirrorTagInput.value = status.giteeMirror?.defaultTag || status.latestTag || `v${status.packageVersion}`;
+    elements.mirrorTagInput.dataset.initialized = "true";
+    elements.mirrorAfterRelease.checked = Boolean(status.giteeMirror?.tokenConfigured);
+  }
+  setText(
+    elements.mirrorTokenHint,
+    status.giteeMirror?.tokenConfigured
+      ? "已从 GITEE_TOKEN 读取本机令牌，输入框可留空"
+      : "令牌只在本机发布进程内使用，不会写入仓库或安装包"
+  );
 
   document.querySelectorAll("[data-version-kind]").forEach((button) => {
     const version = status.recommendations?.[button.dataset.versionKind] || "--";
@@ -354,6 +421,7 @@ function renderStatus(status, preserveForm = false) {
   automaticNotes = status.suggestedNotes.map(normalizeNote).filter(Boolean).slice(0, 12);
   validateVersion();
   renderNotes();
+  updateMirrorAvailability();
 }
 
 async function refreshStatus(options = {}) {
@@ -430,6 +498,73 @@ function renderJob(job) {
   updatePublishAvailability();
 }
 
+function mirrorStateLabel(state) {
+  return {
+    queued: "排队中",
+    running: "同步中",
+    completed: "已就绪",
+    failed: "需修复",
+    cancelled: "已取消"
+  }[state] || "未同步";
+}
+
+function mirrorFileStateLabel(file) {
+  return {
+    pending: "等待",
+    downloading: `${file.percent || 0}%`,
+    prepared: "已校验",
+    checking: "校验中",
+    uploading: `${file.percent || 0}%`,
+    uploaded: "已上传",
+    skipped: "已复用"
+  }[file.status] || file.status;
+}
+
+function renderMirrorJob(job) {
+  if (!job) {
+    activeMirrorJob = null;
+    elements.mirrorState.className = "job-state idle";
+    setText(elements.mirrorState, "未同步");
+    updateMirrorAvailability();
+    return;
+  }
+
+  activeMirrorJob = ["queued", "running"].includes(job.state) ? job : null;
+  const stateClass = job.state === "cancelled" ? "failed" : job.state;
+  elements.mirrorState.className = `job-state ${stateClass}`;
+  setText(elements.mirrorState, mirrorStateLabel(job.state));
+  const percent = Math.max(0, Math.min(100, Number(job.progress?.percent) || 0));
+  elements.mirrorProgressBar.style.width = `${percent}%`;
+  elements.mirrorProgress.setAttribute("aria-valuenow", String(percent));
+  setText(elements.mirrorProgressPercent, `${percent}%`);
+  setText(elements.mirrorProgressText, job.progress?.message || job.error || "等待同步");
+  elements.mirrorProgressText.title = elements.mirrorProgressText.textContent;
+
+  elements.mirrorFileList.replaceChildren();
+  elements.mirrorFileList.hidden = !job.files.length;
+  for (const file of job.files) {
+    const item = document.createElement("li");
+    item.className = file.status || "pending";
+    const name = document.createElement("span");
+    name.textContent = file.name;
+    name.title = file.name;
+    const state = document.createElement("small");
+    state.textContent = mirrorFileStateLabel(file);
+    item.append(name, state);
+    elements.mirrorFileList.append(item);
+  }
+
+  elements.mirrorCancelButton.hidden = !activeMirrorJob;
+  elements.mirrorReleaseLink.hidden = !job.releaseUrl;
+  if (job.releaseUrl) {
+    elements.mirrorReleaseLink.href = job.releaseUrl;
+  }
+  if (job.state === "completed") {
+    elements.mirrorTagInput.value = job.tag;
+  }
+  updatePublishAvailability();
+}
+
 function formatFileSize(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -449,8 +584,10 @@ async function pollJob(jobId) {
     activeJob = null;
     if (job.state === "completed") {
       showToast(`${job.tag} 发布完成`);
+      elements.mirrorTagInput.value = job.tag;
       elements.confirmCheckbox.checked = false;
       await refreshStatus();
+      await restoreMirrorJob();
     } else {
       showToast(job.error || "发布失败，请查看实时日志");
       await refreshStatus({ preserveForm: true });
@@ -463,18 +600,90 @@ async function pollJob(jobId) {
   }
 }
 
+async function pollMirrorJob() {
+  window.clearTimeout(mirrorPollingTimer);
+  try {
+    const job = await api("/api/gitee-mirror");
+    renderMirrorJob(job);
+    if (job && ["queued", "running"].includes(job.state)) {
+      mirrorPollingTimer = window.setTimeout(pollMirrorJob, 450);
+      return;
+    }
+    activeMirrorJob = null;
+    if (job?.state === "completed") {
+      showToast(`${job.tag} Gitee 国内镜像已就绪`);
+    } else if (job?.state === "failed") {
+      showToast(job.error || "Gitee 国内镜像同步失败，可直接重试修复");
+    } else if (job?.state === "cancelled") {
+      showToast("镜像同步已取消，完整附件将在下次同步时复用");
+    }
+  } catch (error) {
+    activeMirrorJob = null;
+    showToast(`读取 Gitee 镜像状态失败：${error.message}`);
+  } finally {
+    updatePublishAvailability();
+  }
+}
+
+async function startMirrorSync() {
+  try {
+    const job = await api("/api/gitee-mirror", {
+      method: "POST",
+      body: JSON.stringify({
+        tag: elements.mirrorTagInput.value.trim(),
+        giteeToken: elements.mirrorTokenInput.value.trim()
+      })
+    });
+    clearMirrorToken();
+    activeMirrorJob = job;
+    renderMirrorJob(job);
+    pollMirrorJob();
+  } catch (error) {
+    showToast(error.message);
+    updateMirrorAvailability();
+  }
+}
+
+async function cancelMirrorSync() {
+  elements.mirrorCancelButton.disabled = true;
+  try {
+    const job = await api("/api/gitee-mirror/cancel", { method: "POST", body: "{}" });
+    renderMirrorJob(job);
+    pollMirrorJob();
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    elements.mirrorCancelButton.disabled = false;
+  }
+}
+
+async function restoreMirrorJob() {
+  try {
+    const job = await api("/api/gitee-mirror");
+    renderMirrorJob(job);
+    if (job && ["queued", "running"].includes(job.state)) {
+      pollMirrorJob();
+    }
+  } catch (error) {
+    showToast(`恢复 Gitee 镜像任务失败：${error.message}`);
+  }
+}
+
 async function startRelease() {
   const payload = {
     version: elements.versionInput.value.trim(),
     notes: getNotes(),
     buildMode: getBuildMode(),
-    expectedCurrentVersion: repositoryStatus.packageVersion
+    expectedCurrentVersion: repositoryStatus.packageVersion,
+    syncGiteeMirror: elements.mirrorAfterRelease.checked,
+    giteeToken: elements.mirrorTokenInput.value.trim()
   };
   try {
     const job = await api("/api/releases", {
       method: "POST",
       body: JSON.stringify(payload)
     });
+    clearMirrorToken();
     activeJob = job;
     renderJob(job);
     pollJob(job.id);
@@ -502,7 +711,7 @@ async function restoreLatestJob() {
 
 async function initialize() {
   await refreshStatus();
-  await restoreLatestJob();
+  await Promise.all([restoreLatestJob(), restoreMirrorJob()]);
 }
 
 elements.refreshButton.addEventListener("click", () => refreshStatus({ preserveForm: true }));
@@ -518,6 +727,18 @@ elements.customNoteInput.addEventListener("keydown", (event) => {
 });
 elements.addNoteButton.addEventListener("click", addCustomNote);
 elements.confirmCheckbox.addEventListener("change", updatePublishAvailability);
+elements.mirrorTagInput.addEventListener("input", updateMirrorAvailability);
+elements.mirrorTokenInput.addEventListener("input", updateMirrorAvailability);
+elements.mirrorTokenToggle.addEventListener("click", () => {
+  const reveal = elements.mirrorTokenInput.type === "password";
+  elements.mirrorTokenInput.type = reveal ? "text" : "password";
+  elements.mirrorTokenToggle.textContent = reveal ? "隐藏" : "显示";
+  elements.mirrorTokenToggle.setAttribute("aria-label", `${reveal ? "隐藏" : "显示"} Gitee 私人令牌`);
+  elements.mirrorTokenInput.focus();
+});
+elements.mirrorAfterRelease.addEventListener("change", updateMirrorAvailability);
+elements.mirrorSyncButton.addEventListener("click", startMirrorSync);
+elements.mirrorCancelButton.addEventListener("click", cancelMirrorSync);
 
 document.querySelectorAll("[data-version-kind]").forEach((button) => {
   button.addEventListener("click", () => {

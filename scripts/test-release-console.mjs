@@ -13,6 +13,7 @@ import {
   expectedWindowsUpdateArtifacts,
   isTransientGitNetworkFailure,
   mergeReleaseNotes,
+  parseGiteeRepository,
   parseGitHubRepository,
   parseStatusPorcelain,
   parseVersion,
@@ -280,6 +281,13 @@ test("收集 Windows 安装版与 Portable 正式发布所需的四项产物", a
   }
 });
 
+test("从常见 Gitee 远端地址解析仓库", () => {
+  const expected = { owner: "example-owner", repository: "repo.name" };
+  assert.deepEqual(parseGiteeRepository("https://gitee.com/example-owner/repo.name.git"), expected);
+  assert.deepEqual(parseGiteeRepository("git@gitee.com:example-owner/repo.name.git"), expected);
+  assert.equal(parseGiteeRepository("https://github.com/example-owner/repo.name.git"), null);
+});
+
 test("Gitee 镜像清单固定绑定标签、安装包名称、大小与 SHA-256", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "git-ui-pro-gitee-mirror-"));
   const nested = path.join(directory, "windows-x64");
@@ -342,7 +350,7 @@ test("Gitee 镜像发布时先创建发行版并最后上传校验清单", async
   const portable = `Git-UI-Pro-Portable-${version}-x64.exe`;
   const uploads = [];
   const requests = [];
-  const uploadedAssets = [];
+  const uploadedAssets = [{ id: 99, name: installer, size: Buffer.byteLength("installer") }];
   try {
     await Promise.all([
       writeFile(path.join(directory, installer), "installer"),
@@ -373,36 +381,60 @@ test("Gitee 镜像发布时先创建发行版并最后上传校验清单", async
       }
       throw new Error(`未处理的镜像请求：${options.method ?? "GET"} ${url}`);
     };
-    const uploadImpl = async ({ url, token, filename, source, timeoutMs, idleTimeoutMs }) => {
+    const progressEvents = [];
+    const uploadImpl = async ({ url, token, filename, source, timeoutMs, idleTimeoutMs, responseTimeoutMs, onProgress }) => {
       assert.equal(new URL(url).pathname, "/api/v5/repos/zjx_master/git-ui-pro/releases/26/attach_files");
       assert.equal(token, "gitee-secret");
-      assert.equal(timeoutMs, 120 * 60_000);
-      assert.equal(idleTimeoutMs, 10 * 60_000);
+      assert.equal(timeoutMs, 25 * 60_000);
+      assert.equal(idleTimeoutMs, 2 * 60_000);
+      assert.equal(responseTimeoutMs, 3 * 60_000);
       assert.equal(Boolean(source.filePath) || Buffer.isBuffer(source.data), true);
       uploads.push(filename);
       const size = source.filePath ? (await stat(source.filePath)).size : source.data.length;
+      onProgress?.({ uploadedBytes: size, totalBytes: size, percent: 100 });
       uploadedAssets.push({ id: uploads.length, name: filename, size });
     };
 
     const result = await syncGiteeRelease({
       giteeToken: "gitee-secret",
-      githubToken: "github-secret",
       githubRepository: "example/repo",
       tagName,
       artifactsDirectory: directory,
       giteeOwner: "zjx_master",
       giteeRepository: "git-ui-pro",
       fetchImpl,
-      uploadImpl
+      uploadImpl,
+      onProgress: (event) => progressEvents.push(event)
     });
 
-    assert.deepEqual(uploads, [installer, `${installer}.blockmap`, portable, "latest.yml", "update-manifest.json"]);
+    assert.deepEqual(uploads, [`${installer}.blockmap`, portable, "latest.yml", "update-manifest.json"]);
+    assert.deepEqual(result.skippedAssets, [installer]);
     assert.equal(result.releaseUrl, `https://gitee.com/zjx_master/git-ui-pro/releases/tag/${tagName}`);
     assert.equal(requests.filter((request) => request.method === "POST").length, 1);
-    assert.equal(requests.filter((request) => request.path.endsWith("/attach_files")).length, 6);
+    assert.equal(requests.filter((request) => request.path.endsWith("/attach_files")).length, 10);
+    assert.equal(progressEvents.at(-1).phase, "completed");
+    assert.equal(progressEvents.at(-1).overallUploadedBytes, progressEvents.at(-1).overallTotalBytes);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("Gitee 镜像在启动前取消时不会发起任何网络或文件操作", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(
+    syncGiteeRelease({
+      giteeToken: "gitee-secret",
+      githubRepository: "example/repo",
+      tagName: "v0.1.26",
+      artifactsDirectory: ".",
+      signal: controller.signal,
+      fetchImpl: async () => {
+        throw new Error("取消后不应访问网络");
+      }
+    }),
+    /已取消/
+  );
 });
 
 test("缺少 blockmap、Portable 或 latest.yml 时拒绝发布 Windows 正式版", () => {
@@ -759,6 +791,14 @@ test("发布控制台仅凭令牌返回仓库状态", async () => {
     });
     assert.equal(noJobResponse.status, 200);
     assert.equal(await noJobResponse.json(), null);
+
+    const noMirrorResponse = await fetch(`${url}/api/gitee-mirror`, {
+      headers: { "x-release-token": token }
+    });
+    assert.equal(noMirrorResponse.status, 200);
+    assert.equal(await noMirrorResponse.json(), null);
+    assert.equal(typeof status.giteeMirror.tokenConfigured, "boolean");
+    assert.match(status.giteeMirror.defaultTag, /^v\d+\.\d+\.\d+$/);
 
     const createResponse = await fetch(`${url}/api/releases`, {
       method: "POST",
