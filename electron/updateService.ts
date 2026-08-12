@@ -30,8 +30,10 @@ import {
   parsePortableGiteeReleaseIdentity,
   parsePortableGiteeReleaseSummary,
   PortableReleaseCatalog,
+  portablePrimaryDownloadSource,
   selectPortableGiteeHistoryCandidates,
   verifyPortableGiteeRelease,
+  withPortableFallbackSource,
   type PortableGiteeReleaseSummary,
   type PortableUpdateTarget
 } from "./portableUpdate";
@@ -67,6 +69,10 @@ export type UpdateProgress = {
   transferred: number;
   total: number;
   bytesPerSecond: number;
+  sourceId?: "gitee" | "github";
+  sourceLabel?: string;
+  sourceReleaseUrl?: string;
+  resumed?: boolean;
 };
 
 export type UpdateState = {
@@ -551,7 +557,7 @@ export class UpdateService {
         this.setError(new Error("回退版本尚未通过校验，请重新选择该版本。"), "rollback");
         return this.getState();
       }
-      return this.startPortableDownload(this.portableTarget, "rollback");
+      return this.startPortableDownload(withPortableFallbackSource(this.portableTarget), "rollback");
     }
 
     if (this.state.operation === "upgrade") {
@@ -735,24 +741,38 @@ export class UpdateService {
         return this.getState();
       }
       const target = requirePortableTarget(latestRelease.target);
-      return this.startPortableDownload(target, "upgrade");
+      return this.startPortableDownload(withPortableFallbackSource(target), "upgrade");
     } catch (error) {
       this.setError(error, "upgrade");
       return this.getState();
     }
   }
 
-  private startPortableDownload(target: PortableUpdateTarget, operation: UpdateOperation): UpdateState {
+  private startPortableDownload(
+    target: PortableUpdateTarget,
+    operation: UpdateOperation,
+    additionalTarget?: Promise<PortableUpdateTarget | null>
+  ): UpdateState {
     this.disposePortableDownload();
     const controller = new AbortController();
     const generation = ++this.portableGeneration;
     this.portableAbortController = controller;
     this.portableTarget = target;
     this.portableStagedPath = null;
+    const primarySource = portablePrimaryDownloadSource(target);
     this.setState({
       ...this.stateFromPortableTarget("available", target, operation),
       phase: "downloading",
-      progress: { percent: 0, transferred: 0, total: target.size, bytesPerSecond: 0 },
+      progress: {
+        percent: 0,
+        transferred: 0,
+        total: target.size,
+        bytesPerSecond: 0,
+        sourceId: primarySource.id,
+        sourceLabel: primarySource.label,
+        sourceReleaseUrl: primarySource.releaseUrl,
+        resumed: false
+      },
       error: undefined
     });
 
@@ -760,8 +780,14 @@ export class UpdateService {
       if (generation !== this.portableGeneration || this.portableTarget !== target) {
         return;
       }
-      this.setState({ ...this.state, phase: "downloading", progress: { ...progress }, error: undefined });
-    }).then(
+      this.setState({
+        ...this.state,
+        phase: "downloading",
+        releaseUrl: progress.sourceReleaseUrl ?? this.state.releaseUrl,
+        progress: { ...progress },
+        error: undefined
+      });
+    }, { additionalTarget }).then(
       (stagedPath) => {
         if (generation !== this.portableGeneration || this.portableTarget !== target) {
           return;
@@ -770,7 +796,17 @@ export class UpdateService {
         this.portableStagedPath = stagedPath;
         this.setState({
           ...this.stateFromPortableTarget("downloaded", target, operation),
-          progress: { percent: 100, transferred: target.size, total: target.size, bytesPerSecond: 0 }
+          releaseUrl: this.state.releaseUrl ?? target.releaseUrl,
+          progress: {
+            percent: 100,
+            transferred: target.size,
+            total: target.size,
+            bytesPerSecond: 0,
+            sourceId: this.state.progress?.sourceId,
+            sourceLabel: this.state.progress?.sourceLabel,
+            sourceReleaseUrl: this.state.progress?.sourceReleaseUrl,
+            resumed: this.state.progress?.resumed
+          }
         });
       },
       (error) => {

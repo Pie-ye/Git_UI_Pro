@@ -433,7 +433,15 @@ export function AppUpdateControl() {
                   <span>{formatBytes(state.progress?.transferred)} / {formatBytes(state.progress?.total)}</span>
                 </div>
                 <div className="app-update-progress-track"><span style={{ width: `${progressPercent}%` }} /></div>
-                {state.progress?.bytesPerSecond ? <span className="app-update-progress-speed">{formatBytes(state.progress.bytesPerSecond)}/s</span> : null}
+                <div className="app-update-progress-detail">
+                  <span className="app-update-progress-source">
+                    {state.progress?.sourceLabel ?? "正在选择更新源"}
+                    {state.progress?.resumed ? " · 断点续传" : ""}
+                  </span>
+                  {state.progress?.bytesPerSecond
+                    ? <span className="app-update-progress-speed">{formatBytes(state.progress.bytesPerSecond)}/s</span>
+                    : null}
+                </div>
               </div>
             ) : null}
 
@@ -678,7 +686,16 @@ function readMockUpdateState(): UpdateState | null {
   };
 
   if (phase === "downloading") {
-    baseState.progress = { percent: 64, transferred: 53_687_091, total: 83_885_063, bytesPerSecond: 5_242_880 };
+    baseState.progress = {
+      percent: 64,
+      transferred: 53_687_091,
+      total: 83_885_063,
+      bytesPerSecond: 5_242_880,
+      sourceId: "gitee",
+      sourceLabel: "Gitee 国内源",
+      sourceReleaseUrl: baseState.releaseUrl,
+      resumed: true
+    };
   } else if (phase === "downloaded") {
     baseState.progress = { percent: 100, transferred: 83_885_063, total: 83_885_063, bytesPerSecond: 0 };
   } else if (phase === "error") {

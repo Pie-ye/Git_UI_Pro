@@ -37,8 +37,18 @@ export type PortableUpdateTarget = Readonly<{
   releaseUrl: string;
   artifactName: string;
   downloadUrl: string;
+  downloadSources?: readonly PortableDownloadSource[];
   size: number;
   sha256: string;
+}>;
+
+export type PortableDownloadSourceId = "gitee" | "github";
+
+export type PortableDownloadSource = Readonly<{
+  id: PortableDownloadSourceId;
+  label: string;
+  downloadUrl: string;
+  releaseUrl: string;
 }>;
 
 export type PortableLatestStableRelease = Readonly<{
@@ -73,7 +83,39 @@ export type PortableDownloadProgress = Readonly<{
   transferred: number;
   total: number;
   bytesPerSecond: number;
+  sourceId?: PortableDownloadSourceId;
+  sourceLabel?: string;
+  sourceReleaseUrl?: string;
+  resumed?: boolean;
 }>;
+
+type PortableFetch = (
+  url: string,
+  init: {
+    method: "GET";
+    redirect: "follow";
+    headers: Record<string, string>;
+    signal: AbortSignal;
+  }
+) => Promise<Response>;
+
+export type PortableDownloadOptions = Readonly<{
+  fetch?: PortableFetch;
+  additionalTarget?: Promise<PortableUpdateTarget | null>;
+  lowSpeedThresholdBytesPerSecond?: number;
+  lowSpeedGraceMs?: number;
+  lowSpeedWindowMs?: number;
+  minRemainingBytesForSourceSwitch?: number;
+  responseTimeoutMs?: number;
+  stallTimeoutMs?: number;
+}>;
+
+const DEFAULT_LOW_SPEED_THRESHOLD_BYTES_PER_SECOND = 192 * 1024;
+const DEFAULT_LOW_SPEED_GRACE_MS = 10_000;
+const DEFAULT_LOW_SPEED_WINDOW_MS = 8_000;
+const MIN_REMAINING_BYTES_FOR_SOURCE_SWITCH = 4 * 1024 * 1024;
+const DEFAULT_SOURCE_RESPONSE_TIMEOUT_MS = 15_000;
+const DEFAULT_SOURCE_STALL_TIMEOUT_MS = 20_000;
 
 export class PortableReleaseCatalog {
   readonly entries: readonly ReleaseHistoryItem[];
@@ -246,6 +288,9 @@ export function verifyPortableGiteeRelease(
     releaseUrl: summary.releaseUrl,
     artifactName: summary.artifactName,
     downloadUrl: summary.artifactUrl,
+    downloadSources: Object.freeze([
+      createPortableDownloadSource("gitee", summary.artifactUrl, summary.releaseUrl)
+    ]),
     size: portable.size,
     sha256: portable.sha256.toLowerCase()
   });
@@ -321,79 +366,589 @@ export function comparePortableVersions(leftValue: string, rightValue: string): 
   );
 }
 
+export function mergePortableUpdateTargets(
+  preferred: PortableUpdateTarget,
+  alternate: PortableUpdateTarget
+): PortableUpdateTarget {
+  if (
+    preferred.version !== alternate.version ||
+    preferred.tagName !== alternate.tagName ||
+    preferred.artifactName !== alternate.artifactName ||
+    preferred.size !== alternate.size ||
+    preferred.sha256 !== alternate.sha256
+  ) {
+    throw new Error("Portable 双源更新资产不一致，已拒绝合并下载来源。");
+  }
+  return Object.freeze({
+    ...preferred,
+    downloadSources: Object.freeze(uniquePortableDownloadSources([
+      ...portableDownloadSources(preferred),
+      ...portableDownloadSources(alternate)
+    ]))
+  });
+}
+
+export function portablePrimaryDownloadSource(target: PortableUpdateTarget): PortableDownloadSource {
+  return portableDownloadSources(target)[0];
+}
+
+export function withPortableFallbackSource(target: PortableUpdateTarget): PortableUpdateTarget {
+  const normalizedArtifactName = portableArtifactName(target.version);
+  if (target.tagName !== `v${target.version}` || target.artifactName !== normalizedArtifactName) {
+    throw new Error("Portable 更新目标的版本、标签与文件名不一致。");
+  }
+  const primary = portablePrimaryDownloadSource(target);
+  const fallback = primary.id === "gitee"
+    ? createPortableDownloadSource(
+      "github",
+      `https://github.com/${GITHUB_RELEASE_OWNER}/${GITHUB_RELEASE_REPOSITORY}/releases/download/${target.tagName}/${target.artifactName}`,
+      githubReleaseUrl(target.version)
+    )
+    : createPortableDownloadSource(
+      "gitee",
+      `https://gitee.com/${GITEE_RELEASE_OWNER}/${GITEE_RELEASE_REPOSITORY}/releases/download/${target.tagName}/${target.artifactName}`,
+      `https://gitee.com/${GITEE_RELEASE_OWNER}/${GITEE_RELEASE_REPOSITORY}/releases/tag/${target.tagName}`
+    );
+  return Object.freeze({
+    ...target,
+    downloadSources: Object.freeze(uniquePortableDownloadSources([
+      ...portableDownloadSources(target),
+      fallback
+    ]))
+  });
+}
+
 export async function downloadPortableUpdate(
   target: PortableUpdateTarget,
   runtime: PortableRuntime,
   signal: AbortSignal,
-  onProgress: (progress: PortableDownloadProgress) => void
+  onProgress: (progress: PortableDownloadProgress) => void,
+  options: PortableDownloadOptions = {}
 ): Promise<string> {
   const executablePath = requirePortableExecutable(runtime);
   const stagingDirectory = path.join(path.dirname(executablePath), ".git-ui-pro-updates");
   await ensureDirectoryWritable(stagingDirectory);
   const partialPath = path.join(stagingDirectory, `${target.artifactName}.partial`);
   const stagedPath = path.join(stagingDirectory, `${target.artifactName}.ready`);
-  await Promise.all([rm(partialPath, { force: true }), rm(stagedPath, { force: true })]);
+  const fetchImpl: PortableFetch = options.fetch ?? ((url, init) => net.fetch(url, init));
+  const lowSpeedThreshold = options.lowSpeedThresholdBytesPerSecond ?? DEFAULT_LOW_SPEED_THRESHOLD_BYTES_PER_SECOND;
+  const lowSpeedGraceMs = options.lowSpeedGraceMs ?? DEFAULT_LOW_SPEED_GRACE_MS;
+  const lowSpeedWindowMs = options.lowSpeedWindowMs ?? DEFAULT_LOW_SPEED_WINDOW_MS;
+  const minRemainingBytesForSourceSwitch = options.minRemainingBytesForSourceSwitch ?? MIN_REMAINING_BYTES_FOR_SOURCE_SWITCH;
+  const responseTimeoutMs = options.responseTimeoutMs ?? DEFAULT_SOURCE_RESPONSE_TIMEOUT_MS;
+  const stallTimeoutMs = options.stallTimeoutMs ?? DEFAULT_SOURCE_STALL_TIMEOUT_MS;
 
-  const response = await net.fetch(target.downloadUrl, {
-    method: "GET",
-    redirect: "follow",
-    headers: { Accept: "application/octet-stream, */*", "Cache-Control": "no-cache" },
-    signal
-  });
-  if (!response.ok || !response.body) {
-    await response.body?.cancel().catch(() => undefined);
-    throw new Error(`Portable 更新包下载失败（HTTP ${response.status}）。`);
+  throwIfPortableDownloadAborted(signal);
+  if (await validatePortableFile(stagedPath, target)) {
+    onProgress(portableProgress(target, target.size, 0, portablePrimaryDownloadSource(target), false));
+    return stagedPath;
   }
-  const contentLength = Number(response.headers.get("content-length"));
-  if (Number.isSafeInteger(contentLength) && contentLength > 0 && contentLength !== target.size) {
-    await response.body.cancel().catch(() => undefined);
-    throw new Error(`Portable 更新包大小与发行版清单不一致（预期 ${target.size}，实际 ${contentLength}）。`);
-  }
+  await rm(stagedPath, { force: true });
 
-  const handle = await open(partialPath, "wx", 0o600);
-  const reader = response.body.getReader();
-  const digest = createHash("sha256");
-  const startedAt = Date.now();
-  let transferred = 0;
-  try {
-    while (true) {
-      const chunk = await reader.read();
-      if (chunk.done) {
-        break;
-      }
-      const bytes = Buffer.from(chunk.value);
-      transferred += bytes.length;
-      if (transferred > target.size) {
-        throw new Error("Portable 更新包大小超过发行版清单，已停止下载。");
-      }
-      digest.update(bytes);
-      await handle.write(bytes);
-      const elapsedSeconds = Math.max(0.001, (Date.now() - startedAt) / 1_000);
-      onProgress(Object.freeze({
-        percent: Math.max(0, Math.min(100, (transferred / target.size) * 100)),
-        transferred,
-        total: target.size,
-        bytesPerSecond: transferred / elapsedSeconds
-      }));
+  let transferred = await portablePartialSize(partialPath, target.size);
+  if (transferred === target.size) {
+    if (await validatePortableFile(partialPath, target)) {
+      await rename(partialPath, stagedPath);
+      onProgress(portableProgress(target, target.size, 0, portablePrimaryDownloadSource(target), true));
+      return stagedPath;
     }
-  } catch (error) {
-    await reader.cancel().catch(() => undefined);
-    throw error;
-  } finally {
-    await handle.close();
+    await rm(partialPath, { force: true });
+    transferred = 0;
+  }
+  let digest = await seedPortableDigest(partialPath, transferred);
+  const initialTransferred = transferred;
+  const knownSources = new Map<string, PortableDownloadSource>();
+  const sourceQueue: PortableDownloadSource[] = [];
+  const attemptedSources = new Set<string>();
+  const failures: string[] = [];
+  let sawRangeUnsupported = false;
+  let restartedFromZero = false;
+  let forcedCompletionAttempted = false;
+  let slowSource: PortableDownloadSource | null = null;
+
+  const addSources = (candidate: PortableUpdateTarget) => {
+    const compatible = mergePortableUpdateTargets(target, candidate);
+    for (const source of portableDownloadSources(compatible)) {
+      if (knownSources.has(source.downloadUrl)) {
+        continue;
+      }
+      knownSources.set(source.downloadUrl, source);
+      if (!attemptedSources.has(source.downloadUrl)) {
+        sourceQueue.push(source);
+      }
+    }
+  };
+  addSources(target);
+
+  let additionalSettled = !options.additionalTarget;
+  const additionalRequest = options.additionalTarget
+    ? options.additionalTarget.then((candidate) => {
+      if (candidate) {
+        addSources(candidate);
+      }
+    }).catch((error) => {
+      failures.push(`备用源校验失败：${portableErrorText(error)}`);
+    }).finally(() => {
+      additionalSettled = true;
+    })
+    : Promise.resolve();
+
+  if (transferred > 0) {
+    onProgress(portableProgress(target, transferred, 0, portablePrimaryDownloadSource(target), true));
+  }
+
+  while (transferred < target.size) {
+    throwIfPortableDownloadAborted(signal);
+    let source = dequeuePortableSource(sourceQueue, attemptedSources);
+    if (!source && !additionalSettled) {
+      await additionalRequest;
+      source = dequeuePortableSource(sourceQueue, attemptedSources);
+    }
+    if (!source) {
+      if (
+        !restartedFromZero &&
+        initialTransferred > 0 &&
+        transferred === initialTransferred &&
+        sawRangeUnsupported
+      ) {
+        await rm(partialPath, { force: true });
+        transferred = 0;
+        digest = createHash("sha256");
+        restartedFromZero = true;
+        attemptedSources.clear();
+        sourceQueue.push(...knownSources.values());
+        onProgress(portableProgress(target, 0, 0, portablePrimaryDownloadSource(target), false));
+        continue;
+      }
+      if (!forcedCompletionAttempted && slowSource) {
+        await rm(partialPath, { force: true });
+        transferred = 0;
+        digest = createHash("sha256");
+        forcedCompletionAttempted = true;
+        attemptedSources.clear();
+        sourceQueue.length = 0;
+        sourceQueue.push(slowSource);
+        onProgress(portableProgress(target, 0, 0, slowSource, false));
+        continue;
+      }
+      const retained = transferred > 0 ? `，已保留 ${formatPortableBytes(transferred)} 可在重试时继续` : "";
+      throw new Error(`Portable 更新包下载失败${retained}：${failures.join("；") || "没有可用下载源"}`);
+    }
+
+    attemptedSources.add(source.downloadUrl);
+    const result = await transferPortableSource({
+      target,
+      source,
+      partialPath,
+      transferred,
+      digest,
+      signal,
+      fetchImpl,
+      lowSpeedThreshold,
+      lowSpeedGraceMs,
+      lowSpeedWindowMs,
+      minRemainingBytesForSourceSwitch,
+      responseTimeoutMs,
+      stallTimeoutMs,
+      canSwitchSource: () => !forcedCompletionAttempted &&
+        sourceQueue.some((candidate) => !attemptedSources.has(candidate.downloadUrl)),
+      onProgress
+    });
+    transferred = result.transferred;
+    if (result.kind === "complete") {
+      break;
+    }
+    if (result.kind === "range-unsupported") {
+      sawRangeUnsupported = true;
+    }
+    if (result.kind === "slow") {
+      slowSource = source;
+    }
+    failures.push(`${source.label}：${result.message}`);
   }
 
   const actualDigest = digest.digest("hex");
   if (transferred !== target.size) {
-    await rm(partialPath, { force: true });
     throw new Error(`Portable 更新包下载不完整（预期 ${target.size} 字节，实际 ${transferred} 字节）。`);
   }
   if (actualDigest !== target.sha256) {
     await rm(partialPath, { force: true });
-    throw new Error("Portable 更新包 SHA-256 校验失败，已删除下载文件。");
+    throw new Error("Portable 更新包 SHA-256 校验失败，已删除损坏的临时文件。");
   }
+  await rm(stagedPath, { force: true });
   await rename(partialPath, stagedPath);
   return stagedPath;
+}
+
+type PortableTransferResult = Readonly<{
+  kind: "complete" | "failed" | "slow" | "range-unsupported";
+  transferred: number;
+  message: string;
+}>;
+
+async function transferPortableSource(input: {
+  target: PortableUpdateTarget;
+  source: PortableDownloadSource;
+  partialPath: string;
+  transferred: number;
+  digest: ReturnType<typeof createHash>;
+  signal: AbortSignal;
+  fetchImpl: PortableFetch;
+  lowSpeedThreshold: number;
+  lowSpeedGraceMs: number;
+  lowSpeedWindowMs: number;
+  minRemainingBytesForSourceSwitch: number;
+  responseTimeoutMs: number;
+  stallTimeoutMs: number;
+  canSwitchSource: () => boolean;
+  onProgress: (progress: PortableDownloadProgress) => void;
+}): Promise<PortableTransferResult> {
+  const requestedOffset = input.transferred;
+  const headers: Record<string, string> = {
+    Accept: "application/octet-stream, */*",
+    "Cache-Control": "no-cache"
+  };
+  if (requestedOffset > 0) {
+    headers.Range = `bytes=${requestedOffset}-`;
+    headers["Accept-Encoding"] = "identity";
+  }
+
+  const requestController = new AbortController();
+  const abortRequest = () => requestController.abort();
+  input.signal.addEventListener("abort", abortRequest, { once: true });
+  const responseTimeoutId = setTimeout(abortRequest, input.responseTimeoutMs);
+  let response: Response;
+  try {
+    response = await input.fetchImpl(input.source.downloadUrl, {
+      method: "GET",
+      redirect: "follow",
+      headers,
+      signal: requestController.signal
+    });
+  } catch (error) {
+    throwIfPortableDownloadAborted(input.signal);
+    return {
+      kind: "failed",
+      transferred: input.transferred,
+      message: requestController.signal.aborted ? "连接更新源超时" : portableErrorText(error)
+    };
+  } finally {
+    clearTimeout(responseTimeoutId);
+    input.signal.removeEventListener("abort", abortRequest);
+  }
+  if (!response.ok || !response.body) {
+    await response.body?.cancel().catch(() => undefined);
+    return { kind: "failed", transferred: input.transferred, message: `HTTP ${response.status}` };
+  }
+
+  const range = parsePortableContentRange(response.headers.get("content-range"));
+  if (requestedOffset > 0 && (response.status !== 206 || !range || range.start !== requestedOffset || range.total !== input.target.size)) {
+    await response.body.cancel().catch(() => undefined);
+    return { kind: "range-unsupported", transferred: input.transferred, message: "不支持从现有进度断点续传" };
+  }
+  if (requestedOffset === 0 && response.status === 206 && (!range || range.start !== 0 || range.total !== input.target.size)) {
+    await response.body.cancel().catch(() => undefined);
+    return { kind: "failed", transferred: input.transferred, message: "返回了无效的分段响应" };
+  }
+
+  const expectedLength = input.target.size - requestedOffset;
+  const contentLength = Number(response.headers.get("content-length"));
+  if (Number.isSafeInteger(contentLength) && contentLength > 0 && contentLength !== expectedLength) {
+    await response.body.cancel().catch(() => undefined);
+    return {
+      kind: "failed",
+      transferred: input.transferred,
+      message: `文件大小不匹配（预期剩余 ${expectedLength}，实际 ${contentLength}）`
+    };
+  }
+
+  const reader = response.body.getReader();
+  const handle = await open(input.partialPath, requestedOffset > 0 ? "r+" : "w", 0o600);
+  const sourceStartedAt = Date.now();
+  let sampleStartedAt = sourceStartedAt;
+  let sampleStartedBytes = input.transferred;
+  let transferred = input.transferred;
+  try {
+    input.onProgress(portableProgress(input.target, transferred, 0, input.source, requestedOffset > 0));
+    while (true) {
+      const chunk = await withPortableTimeout(
+        reader.read(),
+        input.stallTimeoutMs,
+        "更新源长时间没有返回新数据",
+        input.signal
+      );
+      if (chunk.done) {
+        break;
+      }
+      throwIfPortableDownloadAborted(input.signal);
+      const bytes = Buffer.from(chunk.value);
+      if (transferred + bytes.length > input.target.size) {
+        await reader.cancel().catch(() => undefined);
+        return { kind: "failed", transferred, message: "返回内容超过发行版清单大小" };
+      }
+      await writePortableChunk(handle, bytes, transferred);
+      input.digest.update(bytes);
+      transferred += bytes.length;
+
+      const now = Date.now();
+      const elapsedSeconds = Math.max(0.001, (now - sourceStartedAt) / 1_000);
+      const bytesPerSecond = (transferred - requestedOffset) / elapsedSeconds;
+      input.onProgress(portableProgress(
+        input.target,
+        transferred,
+        bytesPerSecond,
+        input.source,
+        requestedOffset > 0
+      ));
+
+      const sampleElapsedMs = now - sampleStartedAt;
+      if (
+        input.canSwitchSource() &&
+        now - sourceStartedAt >= input.lowSpeedGraceMs &&
+        sampleElapsedMs >= input.lowSpeedWindowMs &&
+        input.target.size - transferred >= input.minRemainingBytesForSourceSwitch
+      ) {
+        const sampledSpeed = (transferred - sampleStartedBytes) / Math.max(0.001, sampleElapsedMs / 1_000);
+        if (sampledSpeed < input.lowSpeedThreshold) {
+          await reader.cancel().catch(() => undefined);
+          return {
+            kind: "slow",
+            transferred,
+            message: `持续低速（${formatPortableBytes(sampledSpeed)}/s），已切换备用源`
+          };
+        }
+        sampleStartedAt = now;
+        sampleStartedBytes = transferred;
+      }
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => undefined);
+    throwIfPortableDownloadAborted(input.signal);
+    return { kind: "failed", transferred, message: portableErrorText(error) };
+  } finally {
+    await handle.close();
+  }
+
+  return transferred === input.target.size
+    ? { kind: "complete", transferred, message: "下载完成" }
+    : { kind: "failed", transferred, message: "连接提前结束" };
+}
+
+function createPortableDownloadSource(
+  id: PortableDownloadSourceId,
+  downloadUrl: string,
+  releaseUrl: string
+): PortableDownloadSource {
+  return Object.freeze({
+    id,
+    label: id === "gitee" ? "Gitee 国内源" : "GitHub 备用源",
+    downloadUrl,
+    releaseUrl
+  });
+}
+
+function portableDownloadSources(target: PortableUpdateTarget): readonly PortableDownloadSource[] {
+  if (target.downloadSources?.length) {
+    return target.downloadSources;
+  }
+  let id: PortableDownloadSourceId = "github";
+  try {
+    id = new URL(target.downloadUrl).hostname === "gitee.com" ? "gitee" : "github";
+  } catch {
+    // The target was already validated by the release parser. Tests may inject a
+    // local URL, which can safely use the generic fallback label.
+  }
+  return Object.freeze([createPortableDownloadSource(id, target.downloadUrl, target.releaseUrl)]);
+}
+
+function uniquePortableDownloadSources(input: readonly PortableDownloadSource[]): PortableDownloadSource[] {
+  const unique = new Map<string, PortableDownloadSource>();
+  for (const source of input) {
+    if (!unique.has(source.downloadUrl)) {
+      unique.set(source.downloadUrl, Object.freeze({ ...source }));
+    }
+  }
+  return [...unique.values()];
+}
+
+function dequeuePortableSource(
+  queue: PortableDownloadSource[],
+  attempted: ReadonlySet<string>
+): PortableDownloadSource | undefined {
+  while (queue.length > 0) {
+    const source = queue.shift();
+    if (source && !attempted.has(source.downloadUrl)) {
+      return source;
+    }
+  }
+  return undefined;
+}
+
+function portableProgress(
+  target: PortableUpdateTarget,
+  transferred: number,
+  bytesPerSecond: number,
+  source: PortableDownloadSource,
+  resumed: boolean
+): PortableDownloadProgress {
+  return Object.freeze({
+    percent: Math.max(0, Math.min(100, (transferred / target.size) * 100)),
+    transferred,
+    total: target.size,
+    bytesPerSecond: Math.max(0, bytesPerSecond),
+    sourceId: source.id,
+    sourceLabel: source.label,
+    sourceReleaseUrl: source.releaseUrl,
+    resumed
+  });
+}
+
+async function validatePortableFile(filePath: string, target: PortableUpdateTarget): Promise<boolean> {
+  let info;
+  try {
+    info = await stat(filePath);
+  } catch (error) {
+    if (isPortableFileNotFound(error)) {
+      return false;
+    }
+    throw error;
+  }
+  if (!info.isFile() || info.size !== target.size) {
+    return false;
+  }
+  return await portableFileSha256(filePath) === target.sha256;
+}
+
+async function portablePartialSize(filePath: string, targetSize: number): Promise<number> {
+  let info;
+  try {
+    info = await stat(filePath);
+  } catch (error) {
+    if (isPortableFileNotFound(error)) {
+      return 0;
+    }
+    throw error;
+  }
+  if (!info.isFile() || info.size < 0 || info.size > targetSize) {
+    await rm(filePath, { force: true });
+    return 0;
+  }
+  return info.size;
+}
+
+async function seedPortableDigest(
+  filePath: string,
+  size: number
+): Promise<ReturnType<typeof createHash>> {
+  const digest = createHash("sha256");
+  if (size <= 0) {
+    return digest;
+  }
+  for await (const chunk of createReadStream(filePath)) {
+    digest.update(chunk);
+  }
+  return digest;
+}
+
+async function portableFileSha256(filePath: string): Promise<string> {
+  const digest = await seedPortableDigest(filePath, 1);
+  return digest.digest("hex");
+}
+
+async function writePortableChunk(
+  handle: Awaited<ReturnType<typeof open>>,
+  bytes: Buffer,
+  fileOffset: number
+): Promise<void> {
+  let written = 0;
+  while (written < bytes.length) {
+    const result = await handle.write(bytes, written, bytes.length - written, fileOffset + written);
+    if (result.bytesWritten <= 0) {
+      throw new Error("写入 Portable 临时文件失败。");
+    }
+    written += result.bytesWritten;
+  }
+}
+
+function parsePortableContentRange(value: string | null): { start: number; end: number; total: number } | null {
+  const match = value ? /^bytes (\d+)-(\d+)\/(\d+)$/.exec(value.trim()) : null;
+  if (!match) {
+    return null;
+  }
+  const start = Number(match[1]);
+  const end = Number(match[2]);
+  const total = Number(match[3]);
+  return Number.isSafeInteger(start) && Number.isSafeInteger(end) && Number.isSafeInteger(total) &&
+    start >= 0 && end >= start && total > end
+    ? { start, end, total }
+    : null;
+}
+
+function throwIfPortableDownloadAborted(signal: AbortSignal): void {
+  if (!signal.aborted) {
+    return;
+  }
+  const error = new Error("Portable 更新下载已取消。");
+  error.name = "AbortError";
+  throw error;
+}
+
+async function withPortableTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string,
+  signal?: AbortSignal
+): Promise<T> {
+  let timeoutId: NodeJS.Timeout | null = null;
+  let abortHandler: (() => void) | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
+        if (signal) {
+          abortHandler = () => {
+            const error = new Error("Portable 更新下载已取消。");
+            error.name = "AbortError";
+            reject(error);
+          };
+          signal.addEventListener("abort", abortHandler, { once: true });
+          if (signal.aborted) {
+            abortHandler();
+          }
+        }
+      })
+    ]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+    if (signal && abortHandler) {
+      signal.removeEventListener("abort", abortHandler);
+    }
+  }
+}
+
+function isPortableFileNotFound(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && "code" in error && error.code === "ENOENT");
+}
+
+function portableErrorText(error: unknown): string {
+  return error instanceof Error && error.message ? error.message : String(error);
+}
+
+function formatPortableBytes(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "0 B";
+  }
+  const units = ["B", "KB", "MB", "GB"];
+  let amount = value;
+  let unitIndex = 0;
+  while (amount >= 1024 && unitIndex < units.length - 1) {
+    amount /= 1024;
+    unitIndex += 1;
+  }
+  return `${amount >= 10 || unitIndex === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[unitIndex]}`;
 }
 
 export async function launchPortableUpdateHelper(input: {
@@ -599,6 +1154,9 @@ function parsePortableGithubRelease(value: unknown): PortableUpdateTarget | null
       releaseUrl: identity.releaseUrl,
       artifactName,
       downloadUrl,
+      downloadSources: Object.freeze([
+        createPortableDownloadSource("github", downloadUrl, identity.releaseUrl)
+      ]),
       size: item.size,
       sha256: digestMatch[1].toLowerCase()
     });

@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -36,12 +38,15 @@ const {
   buildPortableGithubReleaseHistoryCatalog,
   buildPortableUpdatePowerShellScript,
   comparePortableVersions,
+  downloadPortableUpdate,
   encodePortableUpdatePowerShellScript,
+  mergePortableUpdateTargets,
   parseLatestPortableGiteeRelease,
   parseLatestPortableGithubRelease,
   parsePortableGiteeReleaseSummary,
   portableArtifactName,
   selectPortableGiteeHistoryCandidates,
+  withPortableFallbackSource,
   verifyPortableGiteeRelease
 } = portableUpdate;
 
@@ -548,6 +553,208 @@ test("Portable Gitee 双源清单仅接受对应便携资产", () => {
   const catalog = buildPortableGiteeReleaseHistoryCatalog(targets, "0.1.31");
   assert.deepEqual(catalog.entries.map((entry) => entry.version), ["0.1.30", "0.1.29"]);
   assert.ok(parsePortableGiteeReleaseSummary(release));
+});
+
+test("Portable 同版本 Gitee 与 GitHub 资产可安全合并为双下载源", () => {
+  const giteeTarget = parseLatestPortableGiteeRelease(
+    portableGiteeRelease("0.1.32"),
+    portableManifest("0.1.32")
+  ).target;
+  const githubTarget = parseLatestPortableGithubRelease(portableGithubRelease("0.1.32")).target;
+  const merged = mergePortableUpdateTargets(giteeTarget, githubTarget);
+  const derived = withPortableFallbackSource(giteeTarget);
+
+  assert.deepEqual(merged.downloadSources.map((source) => source.id), ["gitee", "github"]);
+  assert.match(merged.downloadSources[0].downloadUrl, /^https:\/\/gitee\.com\//);
+  assert.match(merged.downloadSources[1].downloadUrl, /^https:\/\/github\.com\//);
+  assert.deepEqual(derived.downloadSources.map((source) => source.id), ["gitee", "github"]);
+  assert.equal(derived.downloadSources[1].downloadUrl, githubTarget.downloadUrl);
+  assert.throws(
+    () => mergePortableUpdateTargets(giteeTarget, { ...githubTarget, sha256: "b".repeat(64) }),
+    /双源更新资产不一致/
+  );
+});
+
+test("Portable 已有临时文件在 Gitee 不支持 Range 时切到 GitHub 断点续传", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "git-ui-pro-portable-resume-"));
+  const executablePath = path.join(directory, "Git-UI-Pro-Portable-current.exe");
+  const artifactName = "Git-UI-Pro-Portable-0.1.34-x64.exe";
+  const artifact = Buffer.alloc(192 * 1024, 0x5a);
+  const sha256 = createHash("sha256").update(artifact).digest("hex");
+  const updateDirectory = path.join(directory, ".git-ui-pro-updates");
+  const partialPath = path.join(updateDirectory, `${artifactName}.partial`);
+  const observedRanges = [];
+  const server = createServer((request, response) => {
+    const range = request.headers.range ?? "";
+    observedRanges.push({ path: request.url, range });
+    if (request.url === "/gitee") {
+      response.writeHead(200, { "content-length": artifact.length, "content-type": "application/octet-stream" });
+      response.end(artifact);
+      return;
+    }
+    const match = /^bytes=(\d+)-$/.exec(range);
+    const offset = match ? Number(match[1]) : 0;
+    response.writeHead(match ? 206 : 200, {
+      "content-length": artifact.length - offset,
+      "content-type": "application/octet-stream",
+      ...(match ? { "content-range": `bytes ${offset}-${artifact.length - 1}/${artifact.length}` } : {})
+    });
+    response.end(artifact.subarray(offset));
+  });
+
+  try {
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    await mkdir(updateDirectory, { recursive: true });
+    await Promise.all([
+      writeFile(executablePath, "current"),
+      writeFile(partialPath, artifact.subarray(0, 64 * 1024))
+    ]);
+    const baseTarget = {
+      version: "0.1.34",
+      tagName: "v0.1.34",
+      releaseName: "Git UI Pro v0.1.34",
+      releaseNotes: "resume",
+      releaseDate: "2026-08-12T00:00:00Z",
+      releaseUrl: `${baseUrl}/gitee-release`,
+      artifactName,
+      downloadUrl: `${baseUrl}/gitee`,
+      downloadSources: [{
+        id: "gitee",
+        label: "Gitee 国内源",
+        downloadUrl: `${baseUrl}/gitee`,
+        releaseUrl: `${baseUrl}/gitee-release`
+      }],
+      size: artifact.length,
+      sha256
+    };
+    const githubTarget = {
+      ...baseTarget,
+      releaseUrl: `${baseUrl}/github-release`,
+      downloadUrl: `${baseUrl}/github`,
+      downloadSources: [{
+        id: "github",
+        label: "GitHub 备用源",
+        downloadUrl: `${baseUrl}/github`,
+        releaseUrl: `${baseUrl}/github-release`
+      }]
+    };
+    const progress = [];
+    const stagedPath = await downloadPortableUpdate(
+      baseTarget,
+      { isPortable: true, executablePath, dataPath: directory, usedFallbackDataPath: false },
+      new AbortController().signal,
+      (value) => progress.push(value),
+      { fetch: globalThis.fetch, additionalTarget: Promise.resolve(githubTarget) }
+    );
+
+    assert.deepEqual(await readFile(stagedPath), artifact);
+    assert.ok(observedRanges.some((entry) => entry.path === "/gitee" && entry.range === `bytes=${64 * 1024}-`));
+    assert.ok(observedRanges.some((entry) => entry.path === "/github" && entry.range === `bytes=${64 * 1024}-`));
+    assert.ok(progress.some((entry) => entry.sourceId === "github" && entry.resumed));
+  } finally {
+    await new Promise((resolve) => server.close(() => resolve()));
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Portable 首选源持续低速时保留进度并自动切换备用源", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "git-ui-pro-portable-speed-"));
+  const executablePath = path.join(directory, "Git-UI-Pro-Portable-current.exe");
+  const artifactName = "Git-UI-Pro-Portable-0.1.34-x64.exe";
+  const artifact = Buffer.alloc(256 * 1024, 0x3c);
+  const sha256 = createHash("sha256").update(artifact).digest("hex");
+  let slowConnectionClosed = false;
+  const server = createServer((request, response) => {
+    if (request.url === "/slow") {
+      response.writeHead(200, { "content-length": artifact.length, "content-type": "application/octet-stream" });
+      let offset = 0;
+      const timer = setInterval(() => {
+        if (offset >= artifact.length) {
+          clearInterval(timer);
+          response.end();
+          return;
+        }
+        const end = Math.min(offset + 1024, artifact.length);
+        response.write(artifact.subarray(offset, end));
+        offset = end;
+      }, 25);
+      response.on("close", () => {
+        slowConnectionClosed = true;
+        clearInterval(timer);
+      });
+      return;
+    }
+    const match = /^bytes=(\d+)-$/.exec(request.headers.range ?? "");
+    const offset = match ? Number(match[1]) : 0;
+    response.writeHead(match ? 206 : 200, {
+      "content-length": artifact.length - offset,
+      "content-type": "application/octet-stream",
+      ...(match ? { "content-range": `bytes ${offset}-${artifact.length - 1}/${artifact.length}` } : {})
+    });
+    response.end(artifact.subarray(offset));
+  });
+
+  try {
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    await writeFile(executablePath, "current");
+    const base = {
+      version: "0.1.34",
+      tagName: "v0.1.34",
+      releaseName: "Git UI Pro v0.1.34",
+      releaseNotes: "speed",
+      releaseDate: "2026-08-12T00:00:00Z",
+      artifactName,
+      size: artifact.length,
+      sha256
+    };
+    const slowTarget = {
+      ...base,
+      releaseUrl: `${baseUrl}/slow-release`,
+      downloadUrl: `${baseUrl}/slow`,
+      downloadSources: [{ id: "gitee", label: "Gitee 国内源", downloadUrl: `${baseUrl}/slow`, releaseUrl: `${baseUrl}/slow-release` }]
+    };
+    const fastTarget = {
+      ...base,
+      releaseUrl: `${baseUrl}/fast-release`,
+      downloadUrl: `${baseUrl}/fast`,
+      downloadSources: [{ id: "github", label: "GitHub 备用源", downloadUrl: `${baseUrl}/fast`, releaseUrl: `${baseUrl}/fast-release` }]
+    };
+    const progress = [];
+    const stagedPath = await downloadPortableUpdate(
+      slowTarget,
+      { isPortable: true, executablePath, dataPath: directory, usedFallbackDataPath: false },
+      new AbortController().signal,
+      (value) => progress.push(value),
+      {
+        fetch: globalThis.fetch,
+        additionalTarget: Promise.resolve(fastTarget),
+        lowSpeedThresholdBytesPerSecond: 256 * 1024,
+        lowSpeedGraceMs: 45,
+        lowSpeedWindowMs: 40,
+        minRemainingBytesForSourceSwitch: 1
+      }
+    );
+
+    assert.deepEqual(await readFile(stagedPath), artifact);
+    assert.equal(slowConnectionClosed, true);
+    assert.ok(progress.some((entry) => entry.sourceId === "gitee"));
+    assert.ok(progress.some((entry) => entry.sourceId === "github" && entry.resumed));
+  } finally {
+    await new Promise((resolve) => server.close(() => resolve()));
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("Portable 运行时识别外层程序并使用独立数据目录", () => {

@@ -90,6 +90,10 @@ export interface UpdateProgress {
   transferred: number;
   total: number;
   bytesPerSecond: number;
+  sourceId?: "gitee" | "github";
+  sourceLabel?: string;
+  sourceReleaseUrl?: string;
+  resumed?: boolean;
 }
 
 export interface UpdateState {
