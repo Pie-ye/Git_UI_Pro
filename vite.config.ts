@@ -12,7 +12,14 @@ function traditionalChineseRenderer(): Plugin {
         return null;
       }
 
-      const converted = toTraditionalChinese(code);
+      const converted = toTraditionalChinese(code)
+        .replaceAll("准", "準")
+        .replaceAll("栏", "欄")
+        .replaceAll("后", "後")
+        .replaceAll("页", "頁")
+        .replaceAll("当", "當")
+        .replaceAll("钮", "鈕")
+        .replaceAll("幹淨", "乾淨");
       return converted === code ? null : { code: converted, map: null };
     }
   };
