@@ -13,13 +13,13 @@ function traditionalChineseRenderer(): Plugin {
       }
 
       const converted = toTraditionalChinese(code)
-        .replaceAll("准", "準")
-        .replaceAll("栏", "欄")
-        .replaceAll("后", "後")
-        .replaceAll("页", "頁")
-        .replaceAll("当", "當")
-        .replaceAll("钮", "鈕")
-        .replaceAll("幹淨", "乾淨");
+        .replace(/准/gu, "準")
+        .replace(/栏/gu, "欄")
+        .replace(/后/gu, "後")
+        .replace(/页/gu, "頁")
+        .replace(/当/gu, "當")
+        .replace(/钮/gu, "鈕")
+        .replace(/幹淨/gu, "乾淨");
       return converted === code ? null : { code: converted, map: null };
     }
   };
