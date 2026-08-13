@@ -2,6 +2,9 @@ import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { toTraditionalChinese } from "./scripts/zhTw";
 
+const UPSTREAM_REPOSITORY_URL = "https://github.com/zjx150504-lgtm/Git_UI_Pro";
+const FORK_REPOSITORY_URL = "https://github.com/Pie-ye/Git_UI_Pro";
+
 function traditionalChineseRenderer(): Plugin {
   return {
     name: "traditional-chinese-renderer",
@@ -19,7 +22,9 @@ function traditionalChineseRenderer(): Plugin {
         .replace(/页/gu, "頁")
         .replace(/当/gu, "當")
         .replace(/钮/gu, "鈕")
-        .replace(/幹淨/gu, "乾淨");
+        .replace(/幹淨/gu, "乾淨")
+        .split(UPSTREAM_REPOSITORY_URL)
+        .join(FORK_REPOSITORY_URL);
       return converted === code ? null : { code: converted, map: null };
     }
   };
@@ -37,4 +42,3 @@ export default defineConfig({
     port: 4173
   }
 });
-
