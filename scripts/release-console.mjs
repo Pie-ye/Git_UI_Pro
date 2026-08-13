@@ -42,6 +42,7 @@ const releaseDir = path.join(rootDir, "release");
 const gitCommand = "git";
 const maxLogEntries = 2_000;
 const remoteCheckRetryDelays = [800, 1_800];
+const gitIndexLockRetryDelays = [300, 800, 1_600, 3_200, 5_000];
 const remoteProbeTimeoutMs = 30_000;
 const remoteFetchTimeoutMs = 120_000;
 const githubReleaseReadyTimeoutMs = 15 * 60_000;
@@ -349,6 +350,15 @@ export function isTransientGitNetworkFailure(output) {
   return /(?:schannel:.*(?:failed to receive handshake|ssl\/tls connection failed|recv failure|send failure)|gnutls(?:_handshake| recv error).*?(?:pull function|non-properly terminated)|ssl_error_syscall|failed to connect|could not resolve host|connection (?:was )?(?:refused|reset|timed out)|no route to host|operation timed out|empty reply from server|recv failure|send failure|remote end hung up unexpectedly|unexpected disconnect|unexpected eof|early eof)/i.test(detail);
 }
 
+export function isTransientGitIndexLockFailure(output) {
+  const detail = String(output);
+  if (!/index\.lock/i.test(detail)) {
+    return false;
+  }
+
+  return /(?:file exists|already exists|another git process|文件已存在|另一个 git 进程)/i.test(detail);
+}
+
 function waitForRetry(delayMs) {
   return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
@@ -498,6 +508,47 @@ export async function runGitWithNetworkRetry(args, options = {}) {
     const delayMs = retryDelays[attempt];
     if (job) {
       addLog(job, "warning", `${retryLabel}连接暂时中断，${delayMs / 1_000} 秒后自动重试（${attempt + 2}/${attempts}）`);
+    }
+    await wait(delayMs);
+  }
+
+  throw new Error(`${commandLabel(gitCommand, displayArgs)} 执行失败`);
+}
+
+export async function runGitWithIndexLockRetry(args, options = {}) {
+  const {
+    job,
+    displayArgs = args,
+    retryDelays = gitIndexLockRetryDelays,
+    runCommand = runGit,
+    wait = waitForRetry,
+    ...runOptions
+  } = options;
+  const attempts = retryDelays.length + 1;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const result = await runCommand(args, {
+      ...runOptions,
+      job,
+      displayArgs,
+      allowFailure: true
+    });
+    if (result.code === 0 && !result.timedOut) {
+      return result;
+    }
+
+    const detail = result.timedOut
+      ? "命令执行超时"
+      : result.stderr.trim() || result.stdout.trim() || `退出码 ${result.code}`;
+    const transient = !result.timedOut && isTransientGitIndexLockFailure(`${result.stderr}\n${result.stdout}`);
+    if (!transient || attempt === attempts - 1) {
+      const retrySummary = transient ? `（已自动尝试 ${attempts} 次，请结束其他 Git 操作后重新发布）` : "";
+      throw new Error(`${commandLabel(gitCommand, displayArgs)} 执行失败：${detail}${retrySummary}`);
+    }
+
+    const delayMs = retryDelays[attempt];
+    if (job) {
+      addLog(job, "warning", `Git 索引暂时被占用，${delayMs / 1_000} 秒后自动重试（${attempt + 2}/${attempts}）`);
     }
     await wait(delayMs);
   }
@@ -1853,7 +1904,7 @@ async function executeRelease(job, options = {}) {
     setStage(job, "build", "completed");
 
     setStage(job, "commit", "running");
-    await runGit(["add", "-A", "--", "."], { job });
+    await runGitWithIndexLockRetry(["add", "-A", "--", "."], { job });
     changesStaged = true;
     const filesResult = await runGit(["diff", "--cached", "--name-only", "-z"], { job });
     const files = filesResult.stdout.split("\0").map((file) => file.trim()).filter(Boolean);
@@ -1866,7 +1917,7 @@ async function executeRelease(job, options = {}) {
     const messagePath = path.resolve(rootDir, gitDir, `release-message-${job.id}.txt`);
     await writeFile(messagePath, message, "utf8");
     try {
-      await runGit(["commit", "-F", messagePath], {
+      await runGitWithIndexLockRetry(["commit", "-F", messagePath], {
         job,
         displayArgs: ["commit", "-F", "<release-message>"]
       });
@@ -1874,7 +1925,7 @@ async function executeRelease(job, options = {}) {
       await unlink(messagePath).catch(() => {});
     }
     commitCreated = true;
-    await runGit(["tag", "-a", job.tag, "-m", title], { job });
+    await runGitWithIndexLockRetry(["tag", "-a", job.tag, "-m", title], { job });
     tagCreated = true;
     job.canRetryPush = true;
     setStage(job, "commit", "completed");

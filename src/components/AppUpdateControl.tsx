@@ -255,6 +255,7 @@ export function AppUpdateControl() {
         mockTimerRef.current = undefined;
       }
       setState({ revision: state.revision + 1, phase: "idle", operation: "upgrade", currentVersion: state.currentVersion });
+      setSelectedHistoryVersion("");
       setActionPending(false);
       return;
     }
@@ -265,6 +266,7 @@ export function AppUpdateControl() {
       }
       const nextState = await window.gitUI.cancelRollback();
       setState((current) => acceptAuthoritativeUpdateState(current, nextState));
+      setSelectedHistoryVersion("");
     } catch (error) {
       setRecoverableError(error, "rollback");
     } finally {
@@ -303,6 +305,41 @@ export function AppUpdateControl() {
         throw new Error(UPDATE_BRIDGE_UNAVAILABLE);
       }
       const nextState = await window.gitUI.downloadUpdate();
+      setState((current) => acceptAuthoritativeUpdateState(current, nextState));
+    } catch (error) {
+      setRecoverableError(error, state.operation);
+    } finally {
+      setActionPending(false);
+    }
+  }
+
+  async function cancelUpdateDownload() {
+    if (actionPending || state.phase !== "downloading") {
+      return;
+    }
+
+    setActionPending(true);
+    if (isMock) {
+      if (mockTimerRef.current !== undefined) {
+        window.clearTimeout(mockTimerRef.current);
+        mockTimerRef.current = undefined;
+      }
+      setState((current) => ({
+        ...current,
+        revision: current.revision + 1,
+        phase: "available",
+        progress: undefined,
+        error: undefined
+      }));
+      setActionPending(false);
+      return;
+    }
+
+    try {
+      if (!window.gitUI?.cancelUpdateDownload) {
+        throw new Error(UPDATE_BRIDGE_UNAVAILABLE);
+      }
+      const nextState = await window.gitUI.cancelUpdateDownload();
       setState((current) => acceptAuthoritativeUpdateState(current, nextState));
     } catch (error) {
       setRecoverableError(error, state.operation);
@@ -433,7 +470,15 @@ export function AppUpdateControl() {
                   <span>{formatBytes(state.progress?.transferred)} / {formatBytes(state.progress?.total)}</span>
                 </div>
                 <div className="app-update-progress-track"><span style={{ width: `${progressPercent}%` }} /></div>
-                {state.progress?.bytesPerSecond ? <span className="app-update-progress-speed">{formatBytes(state.progress.bytesPerSecond)}/s</span> : null}
+                <div className="app-update-progress-detail">
+                  <span className="app-update-progress-source">
+                    {state.progress?.sourceLabel ?? "正在选择更新源"}
+                    {state.progress?.resumed ? " · 断点续传" : ""}
+                  </span>
+                  {state.progress?.bytesPerSecond
+                    ? <span className="app-update-progress-speed">{formatBytes(state.progress.bytesPerSecond)}/s</span>
+                    : null}
+                </div>
               </div>
             ) : null}
 
@@ -506,7 +551,11 @@ export function AppUpdateControl() {
 
           {hasTarget || state.operation === "rollback" ? (
             <div className="app-update-actions">
-              {state.operation === "rollback" ? (
+              {state.phase === "downloading" ? (
+                <button type="button" className="app-update-secondary" disabled={actionPending} onClick={() => void cancelUpdateDownload()}>
+                  <X size={14} />取消下载
+                </button>
+              ) : state.operation === "rollback" ? (
                 <button type="button" className="app-update-secondary" disabled={actionPending || state.phase === "installing"} onClick={() => void cancelRollback()}>
                   <X size={14} />取消
                 </button>
@@ -678,7 +727,16 @@ function readMockUpdateState(): UpdateState | null {
   };
 
   if (phase === "downloading") {
-    baseState.progress = { percent: 64, transferred: 53_687_091, total: 83_885_063, bytesPerSecond: 5_242_880 };
+    baseState.progress = {
+      percent: 64,
+      transferred: 53_687_091,
+      total: 83_885_063,
+      bytesPerSecond: 5_242_880,
+      sourceId: "gitee",
+      sourceLabel: "Gitee 国内源",
+      sourceReleaseUrl: baseState.releaseUrl,
+      resumed: true
+    };
   } else if (phase === "downloaded") {
     baseState.progress = { percent: 100, transferred: 83_885_063, total: 83_885_063, bytesPerSecond: 0 };
   } else if (phase === "error") {

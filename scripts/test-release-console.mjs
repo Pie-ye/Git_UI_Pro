@@ -11,6 +11,7 @@ import {
   createGitHubProxyTransport,
   detectProvider,
   expectedWindowsUpdateArtifacts,
+  isTransientGitIndexLockFailure,
   isTransientGitNetworkFailure,
   mergeReleaseNotes,
   parseGiteeRepository,
@@ -21,6 +22,7 @@ import {
   retryPush,
   resolveGitHubProxy,
   resolveNpmInvocation,
+  runGitWithIndexLockRetry,
   runGitWithNetworkRetry,
   runProcess,
   startReleaseConsole,
@@ -215,6 +217,66 @@ test("非网络错误不会重试，连续网络错误最多尝试三次", async
     /已自动尝试 3 次/
   );
   assert.equal(calls, 3);
+});
+
+test("只把 Git index.lock 临时占用识别为可重试错误", () => {
+  assert.equal(
+    isTransientGitIndexLockFailure(
+      "fatal: Unable to create 'E:/Projects/Git-UI-Pro/.git/index.lock': File exists. Another git process seems to be running"
+    ),
+    true
+  );
+  assert.equal(isTransientGitIndexLockFailure("fatal: could not lock index file .git/index.lock: File exists"), true);
+  assert.equal(isTransientGitIndexLockFailure("fatal: Unable to create '.git/index.lock': Permission denied"), false);
+  assert.equal(isTransientGitIndexLockFailure("fatal: not a git repository"), false);
+});
+
+test("Git 索引锁释放后继续执行且保留安全的显示参数", async () => {
+  const results = [
+    {
+      code: 128,
+      stdout: "",
+      stderr: "fatal: Unable to create 'E:/repo/.git/index.lock': File exists.",
+      timedOut: false
+    },
+    { code: 0, stdout: "ok", stderr: "", timedOut: false }
+  ];
+  const calls = [];
+  const waits = [];
+  const job = { logs: [] };
+  const result = await runGitWithIndexLockRetry(["commit", "-F", "secret-path"], {
+    job,
+    displayArgs: ["commit", "-F", "<release-message>"],
+    retryDelays: [25],
+    runCommand: async (args, options) => {
+      calls.push({ args, options });
+      return results[calls.length - 1];
+    },
+    wait: async (delayMs) => waits.push(delayMs)
+  });
+
+  assert.equal(result.stdout, "ok");
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[0].options.displayArgs, ["commit", "-F", "<release-message>"]);
+  assert.equal(calls[0].options.allowFailure, true);
+  assert.deepEqual(waits, [25]);
+  assert.deepEqual(job.logs.map((entry) => entry.message), ["Git 索引暂时被占用，0.025 秒后自动重试（2/2）"]);
+});
+
+test("Git 索引非锁错误立即失败且不重试", async () => {
+  let calls = 0;
+  await assert.rejects(
+    runGitWithIndexLockRetry(["add", "-A"], {
+      retryDelays: [0, 0],
+      runCommand: async () => {
+        calls += 1;
+        return { code: 128, stdout: "", stderr: "fatal: not a git repository", timedOut: false };
+      },
+      wait: async () => {}
+    }),
+    /not a git repository/
+  );
+  assert.equal(calls, 1);
 });
 
 test("命令超时会终止包含子进程的进程树", { timeout: 10_000 }, async () => {
