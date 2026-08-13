@@ -284,7 +284,7 @@ function findAssetSize(rawReleases: unknown, tagName: string, name: string): num
   if (!release || !Array.isArray(release.assets)) {
     return 0;
   }
-  const asset = release.assets.find((value) => isRecord(value) && value.name === name);
+  const asset = release.assets.find((value: unknown) => isRecord(value) && value.name === name);
   return asset && typeof asset.size === "number" && Number.isSafeInteger(asset.size) && asset.size > 0 ? asset.size : 0;
 }
 
@@ -389,7 +389,7 @@ function parseStableVersion(value: string): StableVersion | null {
   }
   return Object.freeze({
     value,
-    parts: [BigInt(match[1]), BigInt(match[2]), BigInt(match[3])]
+    parts: [BigInt(match[1]), BigInt(match[2]), BigInt(match[3])] as const
   });
 }
 
