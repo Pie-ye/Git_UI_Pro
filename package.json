@@ -4,9 +4,8 @@
   "private": true,
   "description": "中文桌面 Git 可视化管理软件",
   "author": {
-    "name": "Git UI Pro",
-    "email": "zjx150504-lgtm@users.noreply.github.com",
-    "url": "https://github.com/zjx150504-lgtm"
+    "name": "Pie-ye",
+    "url": "https://github.com/Pie-ye"
   },
   "license": "MIT",
   "keywords": [
@@ -19,15 +18,15 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/zjx150504-lgtm/Git_UI_Pro.git"
+    "url": "https://github.com/Pie-ye/Git_UI_Pro.git"
   },
   "bugs": {
-    "url": "https://github.com/zjx150504-lgtm/Git_UI_Pro/issues"
+    "url": "https://github.com/Pie-ye/Git_UI_Pro/issues"
   },
-  "homepage": "https://github.com/zjx150504-lgtm/Git_UI_Pro#readme",
-  "main": "dist-electron/main.js",
+  "homepage": "https://github.com/Pie-ye/Git_UI_Pro#readme",
+  "main": "dist-electron/forkRuntime.js",
   "scripts": {
-    "dev": "concurrently -k -n renderer,electron-ts,electron -c cyan,magenta,green \"vite --host 127.0.0.1\" \"tsc -p electron/tsconfig.json --watch --preserveWatchOutput\" \"wait-on dist-electron/main.js http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
+    "dev": "concurrently -k -n renderer,electron-ts,electron -c cyan,magenta,green \"vite --host 127.0.0.1\" \"tsc -p electron/tsconfig.json --watch --preserveWatchOutput\" \"wait-on dist-electron/main.js dist-electron/forkRuntime.js http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
     "dev:web": "vite --host 127.0.0.1",
     "build": "npm run build:electron && npm run build:renderer",
     "build:electron": "tsc -p electron/tsconfig.json",
@@ -36,10 +35,10 @@
     "test:config": "npm run build:electron && node --test scripts/test-config-store.mjs",
     "test:terminal": "npm run build:electron && node --test scripts/test-terminal-history.mjs",
     "test:release": "node --test scripts/test-release-console.mjs",
-    "test:update": "npm run build:electron && node --test scripts/test-update-utils.mjs",
+    "test:update": "npm run build:electron && node --test scripts/test-update-utils.mjs scripts/test-fork-update-source.mjs",
     "test:capabilities": "npm run build:electron && node --test scripts/test-repository-capabilities.mjs",
     "test:ui": "playwright test",
-    "test": "npm run build:electron && node --test scripts/test-config-store.mjs scripts/test-terminal-history.mjs scripts/test-update-utils.mjs scripts/test-repository-capabilities.mjs scripts/test-hosting-service.mjs && node scripts/test-merge-service.mjs && node --test scripts/test-release-console.mjs",
+    "test": "npm run build:electron && node --test scripts/test-config-store.mjs scripts/test-terminal-history.mjs scripts/test-update-utils.mjs scripts/test-fork-update-source.mjs scripts/test-repository-capabilities.mjs scripts/test-hosting-service.mjs && node scripts/test-merge-service.mjs && node --test scripts/test-release-console.mjs",
     "icons": "node scripts/generate-icons.mjs",
     "release:win": "node scripts/release-console.mjs",
     "dist": "npm run icons && npm run build && electron-builder",
@@ -93,7 +92,7 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "zjx150504-lgtm",
+        "owner": "Pie-ye",
         "repo": "Git_UI_Pro",
         "releaseType": "release"
       }
@@ -182,7 +181,7 @@
       ],
       "icon": "build/icons",
       "category": "Development",
-      "maintainer": "Git UI Pro <zjx150504-lgtm@users.noreply.github.com>",
+      "maintainer": "Pie-ye <149685044+Pie-ye@users.noreply.github.com>",
       "artifactName": "Git-UI-Pro-${version}-${os}-${arch}.${ext}"
     }
   }
