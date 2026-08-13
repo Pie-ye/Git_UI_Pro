@@ -28,7 +28,6 @@ type RuntimeUpdateService = {
 
 type UpdateServicePrototype = {
   checkForUpdates(this: RuntimeUpdateService): Promise<RuntimeUpdateState>;
-  stop(this: RuntimeUpdateService): void;
   [key: string]: any;
 };
 
@@ -85,31 +84,6 @@ function installAutomaticUpdatePolicy(prototype: UpdateServicePrototype): void {
       }
       return state;
     });
-  };
-
-  const originalStop = prototype.stop;
-  prototype.stop = function (this: RuntimeUpdateService): void {
-    const state = this.getState();
-    const shouldKeepDownloadedInstaller = !this.portable &&
-      state.operation === "upgrade" &&
-      state.phase === "downloaded" &&
-      Boolean(this.upgradeUpdater);
-
-    if (!shouldKeepDownloadedInstaller) {
-      originalStop.call(this);
-      return;
-    }
-
-    const retainedUpdater = this.upgradeUpdater;
-    const retainedCancellationToken = this.upgradeCancellationToken;
-    this.upgradeUpdater = null;
-    this.upgradeCancellationToken = null;
-    try {
-      originalStop.call(this);
-    } finally {
-      this.upgradeUpdater = retainedUpdater;
-      this.upgradeCancellationToken = retainedCancellationToken;
-    }
   };
 }
 
