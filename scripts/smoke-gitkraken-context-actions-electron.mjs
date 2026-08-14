@@ -48,8 +48,13 @@ async function seedFixture() {
   await writeFile(path.join(fixtureRoot, "master.txt"), "MASTER_WORK\n", "utf8");
   git(["add", "master.txt"]);
   git(["commit", "-m", "master work"]);
-  git(["branch", "temp/rename"]);
-  git(["tag", "existing-context-tag"]);
+  git(["tag", "existing-context-tag", "HEAD~1"]);
+
+  git(["switch", "-c", "temp/rename"]);
+  await writeFile(path.join(fixtureRoot, "temp.txt"), "TEMP_RENAME\n", "utf8");
+  git(["add", "temp.txt"]);
+  git(["commit", "-m", "temp rename work"]);
+  git(["switch", "master"]);
 }
 
 async function waitForWindow(app, timeoutMs = 20_000) {
@@ -129,6 +134,7 @@ try {
 
   // Rename from the branch chip itself.
   const temp = branchChip("temp/rename");
+  await temp.waitFor({ state: "visible", timeout: 10_000 });
   await temp.click({ button: "right" });
   const tempMenu = page.locator(".gitkraken-context-menu", { hasText: "temp/rename" }).first();
   await tempMenu.getByRole("menuitem", { name: "重新命名分支…" }).click();
