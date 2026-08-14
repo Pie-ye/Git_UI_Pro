@@ -42,20 +42,15 @@ jobs:
       - name: Run Electron UI smoke
         run: xvfb-run -a node scripts/smoke-trellis-electron.mjs
 
-      - name: Capture smoke diagnostic
-        id: diagnose
-        if: always()
-        shell: bash
-        run: |
-          reason="$(node -e 'const fs=require("fs"); try { const r=JSON.parse(fs.readFileSync("test-results/trellis-electron-smoke.json","utf8")); const m=String(r?.error?.message ?? r?.error ?? "ok"); process.stdout.write(Buffer.from(m.slice(0,120),"utf8").toString("base64url")); } catch { process.stdout.write("report-unavailable"); }')"
-          printf 'reason=%s\n' "${reason:-ok}" >> "$GITHUB_OUTPUT"
-          cat test-results/trellis-electron-smoke.json || true
+      - name: Print smoke report on failure
+        if: failure()
+        run: cat test-results/trellis-electron-smoke.json || true
 
       - name: Upload smoke artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: trellis-electron-smoke-${{ steps.diagnose.outputs.reason || 'ok' }}
+          name: trellis-electron-smoke
           path: |
             test-results/trellis-electron-smoke.png
             test-results/trellis-electron-smoke.json
