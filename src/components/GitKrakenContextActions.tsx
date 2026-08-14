@@ -141,13 +141,13 @@ export function GitKrakenContextActions() {
     };
 
     document.addEventListener("contextmenu", handleContextMenu, true);
-    document.addEventListener("drop", handleDrop, true);
+    window.addEventListener("drop", handleDrop, true);
     document.addEventListener("pointerdown", handlePointerDown, true);
     document.addEventListener("keydown", handleKeyDown, true);
 
     return () => {
       document.removeEventListener("contextmenu", handleContextMenu, true);
-      document.removeEventListener("drop", handleDrop, true);
+      window.removeEventListener("drop", handleDrop, true);
       document.removeEventListener("pointerdown", handlePointerDown, true);
       document.removeEventListener("keydown", handleKeyDown, true);
     };
@@ -230,8 +230,8 @@ export function GitKrakenContextActions() {
 
   function openCommitTagDialog(target: string, annotated: boolean) {
     commitTargetRef.current = "";
+    document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
     setTagDialog({ target, annotated });
-    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   }
 
   async function requestCheckout(branchName: string) {
