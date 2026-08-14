@@ -42,6 +42,10 @@ jobs:
       - name: Run Electron UI smoke
         run: xvfb-run -a node scripts/smoke-trellis-electron.mjs
 
+      - name: Print smoke report on failure
+        if: failure()
+        run: cat test-results/trellis-electron-smoke.json || true
+
       - name: Upload smoke artifacts
         if: always()
         uses: actions/upload-artifact@v4
