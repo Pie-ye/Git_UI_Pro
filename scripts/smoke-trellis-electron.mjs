@@ -49,12 +49,12 @@ async function seedFixture(root) {
 async function waitForWindow(app, timeoutMs = 20_000) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
-    const state = await app.evaluate(({ app: electronRuntime, BrowserWindow, process: electronProcess }) => ({
+    const state = await app.evaluate(({ app: electronRuntime, BrowserWindow }) => ({
       ready: electronRuntime.isReady(),
       windows: BrowserWindow.getAllWindows().length,
       appPath: electronRuntime.getAppPath(),
       userData: electronRuntime.getPath("userData"),
-      argv: electronProcess.argv
+      argv: process.argv
     }));
     mainStates.push(state);
     console.log(`SMOKE main state: ready=${state.ready} windows=${state.windows} appPath=${state.appPath}`);
