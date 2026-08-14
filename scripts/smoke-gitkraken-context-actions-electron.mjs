@@ -29,6 +29,20 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function waitForGit(predicate, timeoutMs = 15_000) {
+  const startedAt = Date.now();
+  let lastError;
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      if (predicate()) return;
+    } catch (error) {
+      lastError = error;
+    }
+    await delay(250);
+  }
+  throw lastError ?? new Error("Timed out waiting for Git state");
+}
+
 async function seedFixture() {
   git(["init"]);
   git(["branch", "-M", "master"]);
@@ -120,7 +134,6 @@ try {
   await showAllRefs();
   check("Context action layer mounted");
 
-  // Branch context menu exposes GitKraken-style actions.
   const feature = branchChip("feature/rebase");
   await feature.waitFor({ state: "visible", timeout: 10_000 });
   await feature.click({ button: "right" });
@@ -132,7 +145,6 @@ try {
   check("Branch right-click actions rendered");
   await page.keyboard.press("Escape");
 
-  // Rename from the branch chip itself.
   const temp = branchChip("temp/rename");
   await temp.waitFor({ state: "visible", timeout: 10_000 });
   await temp.click({ button: "right" });
@@ -150,7 +162,6 @@ try {
   assert.match(git(["branch", "--list", "temp/renamed"]), /temp\/renamed/);
   check("Branch rename works from context menu");
 
-  // Preserve the native commit menu while extending it with React-rendered Tag actions.
   const masterCommit = page.locator(".graph-commit-row", { hasText: "master work" }).first();
   await masterCommit.click({ button: "right" });
   const commitMenu = page.locator(".graph-commit-menu");
@@ -158,8 +169,7 @@ try {
   await commitMenu.getByRole("menuitem", { name: "Cherry-pick 此提交" }).waitFor({ state: "visible" });
   const commitExtension = page.locator(".gitkraken-commit-extension-menu");
   await commitExtension.waitFor({ state: "visible", timeout: 5_000 });
-  const createTagHere = commitExtension.getByRole("menuitem", { name: "建立 Tag", exact: true });
-  await createTagHere.click();
+  await commitExtension.getByRole("menuitem", { name: "建立 Tag", exact: true }).click();
   const tagDialog = page.locator(".gitkraken-action-dialog", { hasText: "建立 Tag" });
   await tagDialog.waitFor({ state: "visible", timeout: 8_000 });
   await tagDialog.locator("input").fill("context-smoke-tag");
@@ -172,7 +182,6 @@ try {
   assert.equal(git(["rev-parse", "context-smoke-tag"]), git(["rev-parse", "master"]));
   check("Commit context extension creates tag");
 
-  // Tag context menu creates and checks out a branch at the tagged commit.
   await showAllRefs();
   const existingTag = page.locator(".ref-chip.tag", { hasText: "existing-context-tag" }).first();
   await existingTag.waitFor({ state: "visible", timeout: 10_000 });
@@ -190,7 +199,6 @@ try {
   assert.equal(git(["rev-parse", "from/context-tag"]), git(["rev-parse", "existing-context-tag"]));
   check("Tag context menu creates branch");
 
-  // Return to master using branch context action, then drag feature onto master and choose Rebase.
   await showAllRefs();
   const master = branchChip("master");
   await master.click({ button: "right" });
@@ -211,11 +219,10 @@ try {
   const rebaseConfirm = page.locator(".gitkraken-action-dialog", { hasText: "Rebase feature/rebase onto master" });
   await rebaseConfirm.waitFor({ state: "visible", timeout: 5_000 });
   await rebaseConfirm.getByRole("button", { name: "開始 Rebase" }).click();
-  await page.waitForFunction(async (fixturePath) => {
-    if (!window.gitUI) return false;
-    const status = await window.gitUI.getProjectStatus({ path: fixturePath });
-    return status.currentBranch === "feature/rebase" && !status.operationState && !status.hasConflicts;
-  }, fixtureRoot, { timeout: 15_000 });
+  await waitForGit(() => {
+    if (git(["branch", "--show-current"]) !== "feature/rebase") return false;
+    return git(["rev-parse", "feature/rebase^"]) === git(["rev-parse", "master"]);
+  });
   assert.equal(git(["rev-parse", "feature/rebase^"]), git(["rev-parse", "master"]));
   check("Drag action chooser rebase works", "feature/rebase onto master");
 
