@@ -1,4 +1,4 @@
-import { app, ipcMain, net, session } from "electron";
+import { app, net, session } from "electron";
 import path from "node:path";
 import { NsisUpdater } from "electron-updater";
 import {
@@ -33,89 +33,25 @@ type UpdateServicePrototype = {
   [key: string]: any;
 };
 
-recordSmokeStep("entry");
-installSmokeDiagnostics();
-recordSmokeStep("diagnostics-installed");
+installElectronSmokeHarness();
 installForkModuleOverrides();
-recordSmokeStep("fork-overrides-installed");
 installTrellisRuntime();
-recordSmokeStep("trellis-runtime-installed");
-recordSmokeStep("before-update-service-require");
 const updateServiceModule = require("./updateService") as { UpdateService: { prototype: UpdateServicePrototype } };
-recordSmokeStep("after-update-service-require");
 installAutomaticUpdatePolicy(updateServiceModule.UpdateService.prototype);
-recordSmokeStep("update-policy-installed");
-recordSmokeStep("before-main-require");
 require("./main");
-recordSmokeStep("after-main-require");
 
-function recordSmokeStep(step: string): void {
-  if (process.env.GIT_UI_PRO_ELECTRON_SMOKE !== "1") {
-    return;
-  }
-  const globalRecord = globalThis as typeof globalThis & { __GIT_UI_PRO_SMOKE_STEPS?: string[] };
-  const steps = globalRecord.__GIT_UI_PRO_SMOKE_STEPS ?? [];
-  steps.push(step);
-  globalRecord.__GIT_UI_PRO_SMOKE_STEPS = steps;
-  console.log(`[smoke startup] step=${step}`);
-}
-
-function installSmokeDiagnostics(): void {
+function installElectronSmokeHarness(): void {
   if (process.env.GIT_UI_PRO_ELECTRON_SMOKE !== "1") {
     return;
   }
 
-  const errorText = (value: unknown) => value instanceof Error ? value.stack ?? value.message : String(value);
-  const originalWhenReady = app.whenReady.bind(app);
-  const originalIpcHandle = ipcMain.handle.bind(ipcMain);
-  let whenReadyCalls = 0;
-  let ipcRegistrations = 0;
-
-  installSmokeModuleMocks();
-
-  (app as typeof app & { whenReady: typeof app.whenReady }).whenReady = () => {
-    whenReadyCalls += 1;
-    console.log(`[smoke startup] whenReady requested #${whenReadyCalls}`);
-    return originalWhenReady();
-  };
-  (app as typeof app & { requestSingleInstanceLock: typeof app.requestSingleInstanceLock }).requestSingleInstanceLock = () => {
-    console.log("[smoke startup] requestSingleInstanceLock bypassed=true");
-    return true;
-  };
-  ipcMain.handle = ((channel: string, listener: Parameters<typeof ipcMain.handle>[1]) => {
-    ipcRegistrations += 1;
-    if (ipcRegistrations <= 12 || channel.startsWith("app:") || channel.startsWith("projects:")) {
-      console.log(`[smoke startup] ipc handle #${ipcRegistrations} ${channel}`);
-    }
-    return originalIpcHandle(channel, listener);
-  }) as typeof ipcMain.handle;
-
-  process.on("unhandledRejection", (reason) => {
-    console.error(`[smoke startup] unhandledRejection: ${errorText(reason)}`);
-  });
-  process.on("uncaughtException", (error) => {
-    console.error(`[smoke startup] uncaughtException: ${errorText(error)}`);
-  });
-  app.on("browser-window-created", (_event, window) => {
-    console.log(`[smoke startup] browser-window-created id=${window.id}`);
-  });
-  app.on("will-quit", () => {
-    console.log("[smoke startup] will-quit");
-  });
-  void app.whenReady().then(() => {
-    console.log(`[smoke startup] ready userData=${app.getPath("userData")} whenReadyCalls=${whenReadyCalls} ipcRegistrations=${ipcRegistrations}`);
-    setTimeout(() => {
-      console.log(`[smoke startup] ready+1000ms whenReadyCalls=${whenReadyCalls} ipcRegistrations=${ipcRegistrations}`);
-    }, 1_000);
-  });
-}
-
-function installSmokeModuleMocks(): void {
+  // The Linux CI runner cannot load the terminal native addon reliably under
+  // Electron/Xvfb. Trellis smoke tests do not exercise terminal sessions, so
+  // replace only this module while leaving the real desktop runtime untouched.
   const Module = require("node:module") as any;
   const originalLoad = Module._load as (request: string, parent: unknown, isMain: boolean) => unknown;
   Module._load = function (request: string, parent: unknown, isMain: boolean): unknown {
     if (request === "@homebridge/node-pty-prebuilt-multiarch") {
-      recordSmokeStep("mock-node-pty");
       return {
         spawn(): never {
           throw new Error("Terminal process creation is disabled during Trellis Electron smoke tests.");
