@@ -112,7 +112,7 @@ try {
     if (message.type() === "error") runtimeErrors.push(`console.error: ${message.text()}`);
   });
 
-  await page.waitForSelector(".trellis-launcher", { timeout: 20_000 });
+  await page.waitForSelector(".app-shell", { timeout: 20_000 });
   check("Electron main window rendered");
 
   const bridgeState = await page.evaluate(() => ({
@@ -130,13 +130,27 @@ try {
   assert.equal(addedProject.path, fixtureRoot);
   check("Fixture repository added", addedProject.name);
 
-  await page.locator(".trellis-launcher").click();
-  await page.locator(".trellis-drawer").waitFor({ state: "visible", timeout: 10_000 });
-  check("Trellis Drawer opened");
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.locator(".project-rail-item.active", { hasText: addedProject.name }).waitFor({ state: "visible", timeout: 15_000 });
+  await page.locator(".trellis-workspace").waitFor({ state: "visible", timeout: 15_000 });
+  check("Trellis mounted in empty editor canvas");
 
-  await page.locator(".trellis-task-row", { hasText: "Trellis Smoke Task" }).waitFor({ state: "visible", timeout: 10_000 });
+  const themeSurfaces = await page.evaluate(() => {
+    const workspace = document.querySelector(".trellis-workspace");
+    const editor = document.querySelector(".editor-detail-panel");
+    if (!(workspace instanceof HTMLElement) || !(editor instanceof HTMLElement)) return null;
+    return {
+      workspace: getComputedStyle(workspace).backgroundColor,
+      editor: getComputedStyle(editor).backgroundColor
+    };
+  });
+  assert.ok(themeSurfaces, "Trellis/editor theme surfaces are missing");
+  assert.equal(themeSurfaces.workspace, themeSurfaces.editor, "Trellis does not use the editor panel theme surface");
+  check("Trellis follows Git UI theme surface", themeSurfaces.workspace);
+
+  await page.locator(".trellis-task-control", { hasText: "Trellis Smoke Task" }).waitFor({ state: "visible", timeout: 10_000 });
   await page.locator(".trellis-title-block", { hasText: "Trellis Smoke Task" }).waitFor({ state: "visible", timeout: 10_000 });
-  const activeTaskCount = await page.locator(".trellis-progress-card strong").first().textContent();
+  const activeTaskCount = await page.locator(".trellis-workspace-count").textContent();
   assert.equal(activeTaskCount?.trim(), "1");
   check("Active task overview rendered", "1 task");
 
