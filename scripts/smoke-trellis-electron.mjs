@@ -82,7 +82,8 @@ try {
     env: {
       ...process.env,
       ELECTRON_DISABLE_SECURITY_WARNINGS: "1",
-      ELECTRON_ENABLE_LOGGING: "1"
+      ELECTRON_ENABLE_LOGGING: "1",
+      GIT_UI_PRO_ELECTRON_SMOKE: "1"
     },
     timeout: 30_000
   });
