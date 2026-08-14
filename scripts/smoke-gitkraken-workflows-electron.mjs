@@ -175,16 +175,19 @@ try {
   check("Local branch chips are draggable");
 
   await featureChip.dragTo(masterChip);
-  const mergeDialog = page.locator(".gitkraken-merge-dialog");
-  await mergeDialog.waitFor({ state: "visible", timeout: 8_000 });
-  await mergeDialog.locator(".gitkraken-merge-route", { hasText: "feature/drag-merge" }).waitFor({ state: "visible" });
-  await mergeDialog.locator(".primary").click();
-  await mergeDialog.waitFor({ state: "detached", timeout: 15_000 });
+  const dropMenu = page.locator(".gitkraken-context-menu", { hasText: "選擇拖放操作" }).first();
+  await dropMenu.waitFor({ state: "visible", timeout: 8_000 });
+  await dropMenu.getByRole("menuitem", { name: "Merge feature/drag-merge into master" }).click();
+  await page.waitForFunction(async (fixturePath) => {
+    if (!window.gitUI) return false;
+    const status = await window.gitUI.getProjectStatus({ path: fixturePath });
+    return status.currentBranch === "master" && !status.operationState && !status.hasConflicts;
+  }, fixtureRoot, { timeout: 15_000 });
 
   assert.equal(git(["merge-base", "--is-ancestor", "feature/drag-merge", "master"], { stdio: ["ignore", "pipe", "pipe"] }), "");
   assert.equal(git(["branch", "--show-current"]), "master");
   assert.match(git(["log", "master", "--format=%s", "-n", "5"]), /feature work/);
-  check("Drag merge works", "feature/drag-merge → master");
+  check("Drag action chooser merge works", "feature/drag-merge → master");
 
   // Create a tag through the graph toolbar manager.
   await page.locator(".gitkraken-tag-button").click();
