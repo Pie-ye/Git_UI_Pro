@@ -1,0 +1,53 @@
+name: Trellis Electron Smoke
+
+on:
+  pull_request:
+    paths:
+      - "electron/trellis/**"
+      - "electron/forkRuntime.ts"
+      - "src/api/trellisClient.ts"
+      - "src/components/trellis/**"
+      - "src/types/trellis*.ts"
+      - "src/main.tsx"
+      - "src/styles/trellis.css"
+      - "scripts/smoke-trellis-electron.mjs"
+      - ".github/workflows/trellis-electron-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Electron UI smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build desktop app
+        run: npm run build
+
+      - name: Run Electron UI smoke
+        run: xvfb-run -a node scripts/smoke-trellis-electron.mjs
+
+      - name: Upload smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trellis-electron-smoke
+          path: |
+            test-results/trellis-electron-smoke.png
+            test-results/trellis-electron-smoke.json
+          if-no-files-found: warn
