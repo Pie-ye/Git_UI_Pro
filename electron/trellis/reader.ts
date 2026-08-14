@@ -1,5 +1,5 @@
 import { constants, type Dirent } from "node:fs";
-import { access, readFile, readdir, stat } from "node:fs/promises";
+import { access, readFile, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { computeReadiness } from "./readiness";
 import type {
@@ -40,6 +40,19 @@ export function resolveUnder(root: string, candidate: string): string {
     throw new TrellisReaderError("Path escapes allowed directory", 400);
   }
   return candidateResolved;
+}
+
+async function resolveExistingUnder(root: string, candidate: string): Promise<string> {
+  const lexicalCandidate = resolveUnder(root, candidate);
+  try {
+    const [realRoot, realCandidate] = await Promise.all([realpath(root), realpath(lexicalCandidate)]);
+    return resolveUnder(realRoot, realCandidate);
+  } catch (error) {
+    if (error instanceof TrellisReaderError) {
+      throw error;
+    }
+    return lexicalCandidate;
+  }
 }
 
 async function pathExists(target: string): Promise<boolean> {
@@ -134,7 +147,7 @@ export async function listActiveTasks(projectRoot: string): Promise<TrellisTaskS
 
 export async function summarizeTask(projectRoot: string, dirName: string): Promise<TrellisTaskSummary> {
   const root = path.resolve(projectRoot);
-  const directory = resolveUnder(tasksDir(root), path.join(tasksDir(root), dirName));
+  const directory = await resolveExistingUnder(tasksDir(root), path.join(tasksDir(root), dirName));
   if (!(await isDirectory(directory))) {
     throw new TrellisReaderError(`Task not found: ${dirName}`, 404);
   }
@@ -172,7 +185,7 @@ export async function summarizeTask(projectRoot: string, dirName: string): Promi
 export async function getTaskDetail(projectRoot: string, dirName: string): Promise<TrellisTaskDetail> {
   const root = path.resolve(projectRoot);
   const summary = await summarizeTask(root, dirName);
-  const directory = resolveUnder(tasksDir(root), path.join(tasksDir(root), dirName));
+  const directory = await resolveExistingUnder(tasksDir(root), path.join(tasksDir(root), dirName));
   const documents: Record<string, TrellisMarkdownDocument> = {};
 
   for (const fileName of MARKDOWN_DOCUMENTS) {
@@ -256,7 +269,7 @@ export async function readSpecFile(projectRoot: string, relativePath: string): P
   if (!(await isDirectory(directory))) {
     throw new TrellisReaderError("No .trellis/spec directory", 404);
   }
-  const target = resolveUnder(directory, path.join(directory, ...cleaned.split("/")));
+  const target = await resolveExistingUnder(directory, path.join(directory, ...cleaned.split("/")));
   if (!(await isFile(target))) {
     throw new TrellisReaderError(`Spec file not found: ${cleaned}`, 404);
   }
