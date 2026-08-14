@@ -7,13 +7,20 @@ import type { CommitNode, GitProject } from "../types/domain";
 const ACTIVE_PROJECT_SELECTOR = ".project-rail-item.active";
 const COMMIT_ROW_SELECTOR = ".graph-panel .graph-commit-row";
 const COMMIT_MENU_SELECTOR = ".graph-commit-menu";
-const INJECTED_SELECTOR = "[data-gitkraken-commit-tag-action='true']";
+const EXTENSION_WIDTH = 230;
+const EXTENSION_GAP = 6;
 
 type CommitDescriptor = {
   subject: string;
   author: string;
   refs: string[];
   occurrence: number;
+};
+
+type ExtensionMenuState = {
+  descriptor: CommitDescriptor;
+  left: number;
+  top: number;
 };
 
 type TagDialogState = {
@@ -24,6 +31,7 @@ type TagDialogState = {
 
 export function GitKrakenCommitTagActions() {
   const descriptorRef = useRef<CommitDescriptor>();
+  const [extension, setExtension] = useState<ExtensionMenuState>();
   const [dialog, setDialog] = useState<TagDialogState>();
   const [busy, setBusy] = useState(false);
 
@@ -32,61 +40,62 @@ export function GitKrakenCommitTagActions() {
       const row = (event.target as Element | null)?.closest<HTMLElement>(COMMIT_ROW_SELECTOR);
       if (!row) return;
       descriptorRef.current = describeCommitRow(row);
-      window.setTimeout(injectCommitTagActions, 0);
+      setExtension(undefined);
+      window.requestAnimationFrame(syncExtensionMenu);
     };
 
-    const observer = new MutationObserver(() => injectCommitTagActions());
+    const handlePointerDown = (event: PointerEvent) => {
+      const element = event.target as Element | null;
+      if (element?.closest(".gitkraken-commit-extension-menu, .graph-commit-menu, .gitkraken-action-dialog")) return;
+      setExtension(undefined);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setExtension(undefined);
+    };
+
+    const observer = new MutationObserver(syncExtensionMenu);
     document.addEventListener("contextmenu", handleContextMenu, true);
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    document.addEventListener("keydown", handleKeyDown, true);
     observer.observe(document.body, { childList: true, subtree: true });
     return () => {
       document.removeEventListener("contextmenu", handleContextMenu, true);
+      document.removeEventListener("pointerdown", handlePointerDown, true);
+      document.removeEventListener("keydown", handleKeyDown, true);
       observer.disconnect();
     };
   }, []);
 
-  function injectCommitTagActions() {
+  function syncExtensionMenu() {
     const descriptor = descriptorRef.current;
     const host = document.querySelector<HTMLElement>(COMMIT_MENU_SELECTOR);
-    if (!descriptor || !host) return;
-
-    const existing = host.querySelectorAll(INJECTED_SELECTOR);
-    if (existing.length === 2) return;
-    existing.forEach((node) => node.remove());
-
-    const separators = host.querySelectorAll<HTMLElement>(".menu-separator");
-    const anchor = separators[1] ?? separators[0] ?? null;
-    const lightweight = createInjectedButton("建立 Tag", false);
-    const annotated = createInjectedButton("建立 Annotated Tag", true);
-    if (anchor) {
-      host.insertBefore(lightweight, anchor);
-      host.insertBefore(annotated, anchor);
-    } else {
-      host.append(lightweight, annotated);
+    if (!descriptor || !host) {
+      setExtension((current) => current ? undefined : current);
+      return;
     }
-  }
 
-  function createInjectedButton(label: string, annotated: boolean) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.setAttribute("role", "menuitem");
-    button.dataset.gitkrakenCommitTagAction = "true";
+    const rect = host.getBoundingClientRect();
+    const left = rect.right + EXTENSION_GAP + EXTENSION_WIDTH <= window.innerWidth
+      ? rect.right + EXTENSION_GAP
+      : Math.max(8, rect.left - EXTENSION_WIDTH - EXTENSION_GAP);
+    const top = Math.max(8, Math.min(rect.top, window.innerHeight - 150));
 
-    const glyph = document.createElement("span");
-    glyph.className = "gitkraken-context-glyph";
-    glyph.textContent = "TAG";
-    button.append(glyph, document.createTextNode(label));
-    button.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      void openTagDialog(annotated);
+    setExtension((current) => {
+      if (
+        current
+        && sameDescriptor(current.descriptor, descriptor)
+        && Math.abs(current.left - left) < 1
+        && Math.abs(current.top - top) < 1
+      ) return current;
+      return { descriptor, left, top };
     });
-    return button;
   }
 
-  async function openTagDialog(annotated: boolean) {
-    const descriptor = descriptorRef.current;
-    if (!descriptor || !window.gitUI) return;
+  async function openTagDialog(descriptor: CommitDescriptor, annotated: boolean) {
+    if (!window.gitUI) return;
 
+    setExtension(undefined);
     closeNativeCommitMenu();
     const toastId = toast.loading("正在解析提交…");
     try {
@@ -121,6 +130,7 @@ export function GitKrakenCommitTagActions() {
       }
       toast.success(`已建立 Tag ${name}`, { id: toastId });
       setDialog(undefined);
+      descriptorRef.current = undefined;
       requestHostRefresh();
     } catch (error) {
       toast.error(errorText(error, "建立 Tag 失敗"), { id: toastId });
@@ -130,15 +140,42 @@ export function GitKrakenCommitTagActions() {
   }
 
   const portalHost = typeof document !== "undefined" ? document.querySelector(".app-shell") ?? document.body : null;
-  if (!portalHost || !dialog) return null;
+  if (!portalHost) return null;
 
   return createPortal(
-    <CommitTagDialog
-      state={dialog}
-      busy={busy}
-      onClose={() => setDialog(undefined)}
-      onSubmit={(name, message) => void createTag(name, message)}
-    />,
+    <>
+      {extension ? (
+        <div
+          className="gitkraken-context-menu gitkraken-commit-extension-menu"
+          role="menu"
+          aria-label="Commit Tag Actions"
+          style={{ left: extension.left, top: extension.top, width: EXTENSION_WIDTH }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <div className="gitkraken-context-heading">
+            <strong>Tag</strong>
+            <span>{extension.descriptor.subject || "Selected commit"}</span>
+          </div>
+          <button type="button" role="menuitem" onClick={() => void openTagDialog(extension.descriptor, false)}>
+            <Tag size={14} />
+            <span>建立 Tag</span>
+          </button>
+          <button type="button" role="menuitem" onClick={() => void openTagDialog(extension.descriptor, true)}>
+            <Tag size={14} />
+            <span>建立 Annotated Tag</span>
+          </button>
+        </div>
+      ) : null}
+
+      {dialog ? (
+        <CommitTagDialog
+          state={dialog}
+          busy={busy}
+          onClose={() => setDialog(undefined)}
+          onSubmit={(name, message) => void createTag(name, message)}
+        />
+      ) : null}
+    </>,
     portalHost
   );
 }
@@ -229,6 +266,13 @@ function resolveCommitFromHistory(history: CommitNode[], descriptor: CommitDescr
 
   if (candidates.length === 1) return candidates[0];
   return candidates[descriptor.occurrence];
+}
+
+function sameDescriptor(left: CommitDescriptor, right: CommitDescriptor) {
+  return left.subject === right.subject
+    && left.author === right.author
+    && left.occurrence === right.occurrence
+    && left.refs.join("\u0000") === right.refs.join("\u0000");
 }
 
 async function resolveActiveProject(): Promise<GitProject | undefined> {
