@@ -1,0 +1,46 @@
+name: Trellis CI
+
+on:
+  pull_request:
+    paths:
+      - "electron/trellis/**"
+      - "electron/forkRuntime.ts"
+      - "electron/tsconfig.json"
+      - "src/api/trellisClient.ts"
+      - "src/components/trellis/**"
+      - "src/types/trellis*.ts"
+      - "src/main.tsx"
+      - "src/styles/trellis.css"
+      - "scripts/test-trellis-*.mjs"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/trellis-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Typecheck and Trellis tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Trellis tests
+        run: npm run test:trellis
