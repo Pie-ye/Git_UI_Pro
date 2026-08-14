@@ -193,10 +193,13 @@ export function GitKrakenContextActions() {
     const target = commitTargetRef.current;
     if (!target) return;
     const host = document.querySelector<HTMLElement>(COMMIT_MENU_SELECTOR);
-    if (!host || host.dataset.gitkrakenTagActions === target) return;
+    if (!host) return;
+
+    const injected = host.querySelectorAll("[data-gitkraken-injected='tag-action']");
+    if (host.dataset.gitkrakenTagActions === target && injected.length === 2) return;
 
     host.dataset.gitkrakenTagActions = target;
-    host.querySelectorAll("[data-gitkraken-injected='tag-action']").forEach((node) => node.remove());
+    injected.forEach((node) => node.remove());
 
     const separators = host.querySelectorAll<HTMLElement>(".menu-separator");
     const anchor = separators[1] ?? separators[0] ?? null;
