@@ -47,8 +47,9 @@ jobs:
         shell: bash
         run: |
           cat test-results/trellis-electron-smoke.json || true
-          message="$(node -e 'const fs=require("fs"); try { const r=JSON.parse(fs.readFileSync("test-results/trellis-electron-smoke.json","utf8")); process.stdout.write(String(r?.error?.message ?? r?.error ?? "Trellis Electron smoke failed").replace(/[\r\n]+/g," ").slice(0,1800)); } catch { process.stdout.write("Trellis Electron smoke failed; report unavailable"); }')"
-          echo "::error title=Trellis Electron smoke::${message}"
+          message="$(node -e 'const fs=require("fs"); try { const r=JSON.parse(fs.readFileSync("test-results/trellis-electron-smoke.json","utf8")); process.stdout.write(String(r?.error?.message ?? r?.error ?? "Trellis Electron smoke failed").replace(/[\r\n]+/g," ").replace(/%/g,"%25").slice(0,1800)); } catch { process.stdout.write("Trellis Electron smoke failed; report unavailable"); }')"
+          echo "::error file=scripts/smoke-trellis-electron.mjs,line=1,title=Trellis Electron smoke::${message}"
+          exit 1
 
       - name: Upload smoke artifacts
         if: always()
