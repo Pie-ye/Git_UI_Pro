@@ -75,6 +75,8 @@ export function GitKrakenCommitTagActions() {
       return;
     }
 
+    host.querySelectorAll("[data-gitkraken-injected='tag-action']").forEach((node) => node.remove());
+
     const rect = host.getBoundingClientRect();
     const left = rect.right + EXTENSION_GAP + EXTENSION_WIDTH <= window.innerWidth
       ? rect.right + EXTENSION_GAP
