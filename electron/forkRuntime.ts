@@ -1,4 +1,5 @@
-import { net } from "electron";
+import { app, net, session } from "electron";
+import path from "node:path";
 import { NsisUpdater } from "electron-updater";
 import {
   buildForkReleaseHistoryCatalog,
@@ -10,6 +11,7 @@ import {
   forkReleaseUrl,
   parseForkLatestRelease
 } from "./forkUpdateSource";
+import { registerTrellisIpc } from "./trellis/ipc";
 
 const REQUEST_TIMEOUT_MS = 20_000;
 const MAX_RELEASE_RESPONSE_LENGTH = 5_000_000;
@@ -31,10 +33,34 @@ type UpdateServicePrototype = {
   [key: string]: any;
 };
 
+installElectronSmokeHarness();
 installForkModuleOverrides();
+installTrellisRuntime();
 const updateServiceModule = require("./updateService") as { UpdateService: { prototype: UpdateServicePrototype } };
 installAutomaticUpdatePolicy(updateServiceModule.UpdateService.prototype);
 require("./main");
+
+function installElectronSmokeHarness(): void {
+  if (process.env.GIT_UI_PRO_ELECTRON_SMOKE !== "1") {
+    return;
+  }
+
+  // The Linux CI runner cannot load the terminal native addon reliably under
+  // Electron/Xvfb. Trellis smoke tests do not exercise terminal sessions, so
+  // replace only this module while leaving the real desktop runtime untouched.
+  const Module = require("node:module") as any;
+  const originalLoad = Module._load as (request: string, parent: unknown, isMain: boolean) => unknown;
+  Module._load = function (request: string, parent: unknown, isMain: boolean): unknown {
+    if (request === "@homebridge/node-pty-prebuilt-multiarch") {
+      return {
+        spawn(): never {
+          throw new Error("Terminal process creation is disabled during Trellis Electron smoke tests.");
+        }
+      };
+    }
+    return originalLoad.call(this, request, parent, isMain);
+  };
+}
 
 function installForkModuleOverrides(): void {
   const releaseHistory = require("./releaseHistory") as Record<string, unknown>;
@@ -42,6 +68,17 @@ function installForkModuleOverrides(): void {
 
   const updateUtils = require("./updateUtils") as Record<string, unknown>;
   updateUtils.githubReleaseUrl = forkReleaseUrl;
+}
+
+function installTrellisRuntime(): void {
+  registerTrellisIpc();
+  void app.whenReady().then(() => {
+    const trellisPreloadPath = path.join(__dirname, "trellis", "preload.js");
+    const currentPreloads = session.defaultSession.getPreloads();
+    if (!currentPreloads.includes(trellisPreloadPath)) {
+      session.defaultSession.setPreloads([...currentPreloads, trellisPreloadPath]);
+    }
+  });
 }
 
 function installAutomaticUpdatePolicy(prototype: UpdateServicePrototype): void {
