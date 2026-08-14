@@ -139,7 +139,8 @@ try {
   check("Fixture repository added", addedProject.name);
 
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.locator(".project-rail-item.active", { hasText: addedProject.name }).waitFor({ state: "visible", timeout: 15_000 });
+  const activeProject = page.locator(".project-rail-item.active", { hasText: addedProject.name });
+  await activeProject.waitFor({ state: "visible", timeout: 15_000 });
   await page.locator(".trellis-workspace").waitFor({ state: "visible", timeout: 15_000 });
   check("Trellis mounted in empty editor canvas");
 
@@ -198,6 +199,21 @@ try {
   await specButton.click();
   await page.locator(".trellis-spec-document pre", { hasText: "SMOKE_SPEC" }).waitFor({ state: "visible", timeout: 5_000 });
   check("Spec tree and file rendered");
+
+  await writeFile(path.join(fixtureRoot, "README.md"), "# Trellis Smoke Fixture\n\nSMOKE_FILE_CHANGE\n", "utf8");
+  await activeProject.click();
+  const changedFile = page.locator(".scm-file-row", { hasText: "README.md" });
+  await changedFile.waitFor({ state: "visible", timeout: 10_000 });
+  await changedFile.click();
+  await page.locator(".editor-detail-panel:not(.empty)").waitFor({ state: "visible", timeout: 10_000 });
+  await page.locator(".trellis-workspace").waitFor({ state: "detached", timeout: 10_000 });
+  await page.locator(".editor-diff-panel", { hasText: "SMOKE_FILE_CHANGE" }).waitFor({ state: "visible", timeout: 10_000 });
+  check("Selected file replaces Trellis canvas with diff preview");
+
+  await page.locator(".editor-tab-close").click();
+  await page.locator(".editor-detail-panel.empty").waitFor({ state: "visible", timeout: 10_000 });
+  await page.locator(".trellis-workspace").waitFor({ state: "visible", timeout: 10_000 });
+  check("Closing file restores Trellis canvas");
 
   await page.screenshot({ path: screenshotPath, fullPage: true });
   check("Screenshot captured", path.basename(screenshotPath));
