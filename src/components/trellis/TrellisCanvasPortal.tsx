@@ -16,8 +16,9 @@ export function TrellisCanvasPortal() {
     let disposed = false;
 
     const sync = () => {
-      window.cancelAnimationFrame(syncFrameRef.current ?? 0);
+      if (syncFrameRef.current !== undefined) return;
       syncFrameRef.current = window.requestAnimationFrame(() => {
+        syncFrameRef.current = undefined;
         if (disposed) return;
 
         const nextTarget = document.querySelector<HTMLElement>(EDITOR_EMPTY_SELECTOR);
@@ -50,7 +51,10 @@ export function TrellisCanvasPortal() {
     return () => {
       disposed = true;
       observer.disconnect();
-      window.cancelAnimationFrame(syncFrameRef.current ?? 0);
+      if (syncFrameRef.current !== undefined) {
+        window.cancelAnimationFrame(syncFrameRef.current);
+        syncFrameRef.current = undefined;
+      }
     };
   }, []);
 
