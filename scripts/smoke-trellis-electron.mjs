@@ -13,12 +13,17 @@ const reportPath = path.join(resultsDir, "trellis-electron-smoke.json");
 const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "git-ui-pro-trellis-smoke-"));
 const runtimeErrors = [];
 const checks = [];
+const mainStates = [];
 let electronApp;
 let page;
 
 function check(name, detail = "ok") {
   checks.push({ name, detail });
   console.log(`SMOKE ✓ ${name}: ${detail}`);
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function seedFixture(root) {
@@ -41,27 +46,65 @@ async function seedFixture(root) {
   await writeFile(path.join(specDir, "smoke.md"), "# Smoke Spec\n\nSMOKE_SPEC\n", "utf8");
 }
 
+async function waitForWindow(app, timeoutMs = 20_000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const state = await app.evaluate(({ app: electronRuntime, BrowserWindow, process: electronProcess }) => ({
+      ready: electronRuntime.isReady(),
+      windows: BrowserWindow.getAllWindows().length,
+      appPath: electronRuntime.getAppPath(),
+      userData: electronRuntime.getPath("userData"),
+      argv: electronProcess.argv
+    }));
+    mainStates.push(state);
+    console.log(`SMOKE main state: ready=${state.ready} windows=${state.windows} appPath=${state.appPath}`);
+    if (state.windows > 0) {
+      const windows = app.windows();
+      if (windows.length > 0) return windows[0];
+      try {
+        return await app.firstWindow({ timeout: 1_000 });
+      } catch {
+        // BrowserWindow exists; give Playwright one more polling turn to observe it.
+      }
+    }
+    await delay(500);
+  }
+  throw new Error(`Electron did not create a BrowserWindow. Last main state: ${JSON.stringify(mainStates.at(-1))}`);
+}
+
 try {
   await mkdir(resultsDir, { recursive: true });
   await seedFixture(fixtureRoot);
 
   electronApp = await electron.launch({
-    args: [repoRoot],
+    args: ["--disable-gpu", repoRoot],
     cwd: repoRoot,
     env: {
       ...process.env,
-      ELECTRON_DISABLE_SECURITY_WARNINGS: "1"
+      ELECTRON_DISABLE_SECURITY_WARNINGS: "1",
+      ELECTRON_ENABLE_LOGGING: "1"
     },
     timeout: 30_000
   });
 
+  electronApp.on("console", (message) => {
+    const text = `[electron main ${message.type()}] ${message.text()}`;
+    console.log(text);
+    if (message.type() === "error") runtimeErrors.push(text);
+  });
+
   const child = electronApp.process();
+  child.stdout?.on("data", (chunk) => {
+    const text = String(chunk).trim();
+    if (text) console.log(`[electron stdout] ${text}`);
+  });
   child.stderr?.on("data", (chunk) => {
     const text = String(chunk).trim();
     if (text) console.error(`[electron stderr] ${text}`);
   });
+  child.on("exit", (code, signal) => console.log(`SMOKE electron exit: code=${code} signal=${signal}`));
 
-  page = await electronApp.firstWindow({ timeout: 20_000 });
+  page = await waitForWindow(electronApp);
   page.on("pageerror", (error) => runtimeErrors.push(`pageerror: ${error.message}`));
   page.on("console", (message) => {
     if (message.type() === "error") runtimeErrors.push(`console.error: ${message.text()}`);
@@ -123,10 +166,10 @@ try {
   await page.screenshot({ path: screenshotPath, fullPage: true });
   check("Screenshot captured", path.basename(screenshotPath));
 
-  assert.deepEqual(runtimeErrors, [], `Renderer errors detected:\n${runtimeErrors.join("\n")}`);
-  check("No renderer pageerror/console.error detected");
+  assert.deepEqual(runtimeErrors, [], `Runtime errors detected:\n${runtimeErrors.join("\n")}`);
+  check("No Electron/renderer console errors detected");
 
-  await writeFile(reportPath, JSON.stringify({ ok: true, checks, runtimeErrors }, null, 2), "utf8");
+  await writeFile(reportPath, JSON.stringify({ ok: true, checks, runtimeErrors, mainStates }, null, 2), "utf8");
   console.log("SMOKE RESULT: PASS");
 } catch (error) {
   if (page) {
@@ -141,6 +184,7 @@ try {
     ok: false,
     checks,
     runtimeErrors,
+    mainStates,
     error: error instanceof Error ? { message: error.message, stack: error.stack } : String(error)
   }, null, 2), "utf8");
   console.error("SMOKE RESULT: FAIL", error);
