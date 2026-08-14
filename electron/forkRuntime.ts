@@ -67,7 +67,6 @@ function installSmokeDiagnostics(): void {
 
   const errorText = (value: unknown) => value instanceof Error ? value.stack ?? value.message : String(value);
   const originalWhenReady = app.whenReady.bind(app);
-  const originalRequestSingleInstanceLock = app.requestSingleInstanceLock.bind(app);
   const originalIpcHandle = ipcMain.handle.bind(ipcMain);
   let whenReadyCalls = 0;
   let ipcRegistrations = 0;
@@ -77,10 +76,9 @@ function installSmokeDiagnostics(): void {
     console.log(`[smoke startup] whenReady requested #${whenReadyCalls}`);
     return originalWhenReady();
   };
-  (app as typeof app & { requestSingleInstanceLock: typeof app.requestSingleInstanceLock }).requestSingleInstanceLock = (...args: Parameters<typeof app.requestSingleInstanceLock>) => {
-    const result = originalRequestSingleInstanceLock(...args);
-    console.log(`[smoke startup] requestSingleInstanceLock=${result}`);
-    return result;
+  (app as typeof app & { requestSingleInstanceLock: typeof app.requestSingleInstanceLock }).requestSingleInstanceLock = () => {
+    console.log("[smoke startup] requestSingleInstanceLock bypassed=true");
+    return true;
   };
   ipcMain.handle = ((channel: string, listener: Parameters<typeof ipcMain.handle>[1]) => {
     ipcRegistrations += 1;
