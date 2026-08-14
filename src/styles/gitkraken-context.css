@@ -1,0 +1,275 @@
+.gitkraken-context-menu {
+  position: fixed;
+  z-index: 260;
+  width: min(320px, calc(100vw - 16px));
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  color: var(--text);
+  box-shadow: 0 14px 38px rgb(0 0 0 / 24%);
+  backdrop-filter: blur(18px) saturate(1.15);
+}
+
+.gitkraken-context-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 9px 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  margin-bottom: 4px;
+  min-width: 0;
+}
+
+.gitkraken-context-heading strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.gitkraken-context-heading span {
+  color: var(--muted-text);
+  font-size: 10px;
+}
+
+.gitkraken-context-menu > button,
+.graph-commit-menu > button[data-gitkraken-injected="tag-action"] {
+  width: 100%;
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font: inherit;
+  font-size: 12px;
+  cursor: default;
+}
+
+.gitkraken-context-menu > button:hover:not(:disabled),
+.gitkraken-context-menu > button:focus-visible:not(:disabled),
+.graph-commit-menu > button[data-gitkraken-injected="tag-action"]:hover,
+.graph-commit-menu > button[data-gitkraken-injected="tag-action"]:focus-visible {
+  background: color-mix(in srgb, var(--accent) 13%, var(--surface));
+  outline: none;
+}
+
+.gitkraken-context-menu > button:disabled {
+  opacity: 0.45;
+}
+
+.gitkraken-context-menu > button.danger,
+.graph-commit-menu > button.danger {
+  color: var(--danger, #e06c75);
+}
+
+.gitkraken-context-menu > button svg {
+  flex: 0 0 auto;
+  opacity: 0.86;
+}
+
+.gitkraken-context-menu > button span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gitkraken-context-separator {
+  height: 1px;
+  margin: 5px 4px;
+  background: color-mix(in srgb, var(--border) 75%, transparent);
+}
+
+.gitkraken-context-glyph {
+  min-width: 20px;
+  padding: 1px 3px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: 4px;
+  color: var(--accent);
+  font-size: 7px;
+  font-weight: 800;
+  line-height: 11px;
+  text-align: center;
+  letter-spacing: 0.02em;
+}
+
+.gitkraken-action-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 280;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(0 0 0 / 34%);
+  backdrop-filter: blur(3px);
+}
+
+.gitkraken-action-dialog {
+  width: min(480px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 24px 70px rgb(0 0 0 / 30%);
+}
+
+.gitkraken-action-dialog.compact {
+  width: min(430px, calc(100vw - 32px));
+}
+
+.gitkraken-action-dialog header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.gitkraken-action-dialog header h3 {
+  margin: 2px 0 0;
+  font-size: 16px;
+  font-weight: 680;
+}
+
+.gitkraken-action-dialog header p {
+  margin: 5px 0 0;
+  color: var(--muted-text);
+  font-size: 11px;
+}
+
+.gitkraken-action-dialog header code {
+  color: var(--accent);
+}
+
+.gitkraken-dialog-kicker {
+  color: var(--accent);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.gitkraken-dialog-kicker.danger {
+  color: var(--danger, #e06c75);
+}
+
+.gitkraken-dialog-close {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted-text);
+}
+
+.gitkraken-dialog-close:hover {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.gitkraken-action-dialog label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--muted-text);
+  font-size: 11px;
+}
+
+.gitkraken-action-dialog input,
+.gitkraken-action-dialog textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 9px 10px;
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.gitkraken-action-dialog input:focus,
+.gitkraken-action-dialog textarea:focus {
+  border-color: color-mix(in srgb, var(--accent) 70%, var(--border));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 13%, transparent);
+}
+
+.gitkraken-action-dialog textarea {
+  resize: vertical;
+  min-height: 84px;
+}
+
+.gitkraken-action-dialog footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.gitkraken-action-dialog footer button {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 12px;
+}
+
+.gitkraken-action-dialog footer button.secondary {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.gitkraken-action-dialog footer button.primary {
+  border-color: color-mix(in srgb, var(--accent) 64%, var(--border));
+  background: color-mix(in srgb, var(--accent) 22%, var(--surface));
+  color: var(--text);
+}
+
+.gitkraken-action-dialog footer button.danger-primary {
+  border-color: color-mix(in srgb, var(--danger, #e06c75) 62%, var(--border));
+  background: color-mix(in srgb, var(--danger, #e06c75) 17%, var(--surface));
+  color: var(--danger, #e06c75);
+}
+
+.gitkraken-action-dialog footer button:disabled {
+  opacity: 0.48;
+}
+
+.gitkraken-confirm-copy {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 11px;
+  border: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--surface) 80%, transparent);
+  color: var(--muted-text);
+}
+
+.gitkraken-confirm-copy svg {
+  margin-top: 1px;
+  color: var(--accent);
+}
+
+.gitkraken-confirm-copy p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+}
