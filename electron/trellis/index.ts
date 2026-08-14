@@ -4,3 +4,4 @@ export * from "./readiness";
 export * from "./progress";
 export * from "./reader";
 export * from "./review";
+export * from "./service";
