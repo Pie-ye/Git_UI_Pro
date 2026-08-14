@@ -71,6 +71,8 @@ function installSmokeDiagnostics(): void {
   let whenReadyCalls = 0;
   let ipcRegistrations = 0;
 
+  installSmokeModuleMocks();
+
   (app as typeof app & { whenReady: typeof app.whenReady }).whenReady = () => {
     whenReadyCalls += 1;
     console.log(`[smoke startup] whenReady requested #${whenReadyCalls}`);
@@ -106,6 +108,22 @@ function installSmokeDiagnostics(): void {
       console.log(`[smoke startup] ready+1000ms whenReadyCalls=${whenReadyCalls} ipcRegistrations=${ipcRegistrations}`);
     }, 1_000);
   });
+}
+
+function installSmokeModuleMocks(): void {
+  const Module = require("node:module") as any;
+  const originalLoad = Module._load as (request: string, parent: unknown, isMain: boolean) => unknown;
+  Module._load = function (request: string, parent: unknown, isMain: boolean): unknown {
+    if (request === "@homebridge/node-pty-prebuilt-multiarch") {
+      recordSmokeStep("mock-node-pty");
+      return {
+        spawn(): never {
+          throw new Error("Terminal process creation is disabled during Trellis Electron smoke tests.");
+        }
+      };
+    }
+    return originalLoad.call(this, request, parent, isMain);
+  };
 }
 
 function installForkModuleOverrides(): void {
