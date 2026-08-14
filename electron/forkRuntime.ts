@@ -33,12 +33,32 @@ type UpdateServicePrototype = {
   [key: string]: any;
 };
 
+recordSmokeStep("entry");
 installSmokeDiagnostics();
+recordSmokeStep("diagnostics-installed");
 installForkModuleOverrides();
+recordSmokeStep("fork-overrides-installed");
 installTrellisRuntime();
+recordSmokeStep("trellis-runtime-installed");
+recordSmokeStep("before-update-service-require");
 const updateServiceModule = require("./updateService") as { UpdateService: { prototype: UpdateServicePrototype } };
+recordSmokeStep("after-update-service-require");
 installAutomaticUpdatePolicy(updateServiceModule.UpdateService.prototype);
+recordSmokeStep("update-policy-installed");
+recordSmokeStep("before-main-require");
 require("./main");
+recordSmokeStep("after-main-require");
+
+function recordSmokeStep(step: string): void {
+  if (process.env.GIT_UI_PRO_ELECTRON_SMOKE !== "1") {
+    return;
+  }
+  const globalRecord = globalThis as typeof globalThis & { __GIT_UI_PRO_SMOKE_STEPS?: string[] };
+  const steps = globalRecord.__GIT_UI_PRO_SMOKE_STEPS ?? [];
+  steps.push(step);
+  globalRecord.__GIT_UI_PRO_SMOKE_STEPS = steps;
+  console.log(`[smoke startup] step=${step}`);
+}
 
 function installSmokeDiagnostics(): void {
   if (process.env.GIT_UI_PRO_ELECTRON_SMOKE !== "1") {
