@@ -1,4 +1,5 @@
-import { net } from "electron";
+import { app, net, session } from "electron";
+import path from "node:path";
 import { NsisUpdater } from "electron-updater";
 import {
   buildForkReleaseHistoryCatalog,
@@ -10,6 +11,7 @@ import {
   forkReleaseUrl,
   parseForkLatestRelease
 } from "./forkUpdateSource";
+import { registerTrellisIpc } from "./trellis/ipc";
 
 const REQUEST_TIMEOUT_MS = 20_000;
 const MAX_RELEASE_RESPONSE_LENGTH = 5_000_000;
@@ -32,6 +34,7 @@ type UpdateServicePrototype = {
 };
 
 installForkModuleOverrides();
+installTrellisRuntime();
 const updateServiceModule = require("./updateService") as { UpdateService: { prototype: UpdateServicePrototype } };
 installAutomaticUpdatePolicy(updateServiceModule.UpdateService.prototype);
 require("./main");
@@ -42,6 +45,17 @@ function installForkModuleOverrides(): void {
 
   const updateUtils = require("./updateUtils") as Record<string, unknown>;
   updateUtils.githubReleaseUrl = forkReleaseUrl;
+}
+
+function installTrellisRuntime(): void {
+  registerTrellisIpc();
+  void app.whenReady().then(() => {
+    const trellisPreloadPath = path.join(__dirname, "trellis", "preload.js");
+    const currentPreloads = session.defaultSession.getPreloads();
+    if (!currentPreloads.includes(trellisPreloadPath)) {
+      session.defaultSession.setPreloads([...currentPreloads, trellisPreloadPath]);
+    }
+  });
 }
 
 function installAutomaticUpdatePolicy(prototype: UpdateServicePrototype): void {
