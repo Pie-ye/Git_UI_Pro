@@ -28,10 +28,14 @@ function delay(ms) {
 
 async function seedFixture(root) {
   execFileSync("git", ["init"], { cwd: root, stdio: "pipe" });
+  execFileSync("git", ["config", "user.name", "Trellis Smoke Runner"], { cwd: root, stdio: "pipe" });
+  execFileSync("git", ["config", "user.email", "trellis-smoke@example.invalid"], { cwd: root, stdio: "pipe" });
+
   const taskDir = path.join(root, ".trellis", "tasks", "01-01-smoke");
   const specDir = path.join(root, ".trellis", "spec", "guide");
   await mkdir(taskDir, { recursive: true });
   await mkdir(specDir, { recursive: true });
+  await writeFile(path.join(root, "README.md"), "# Trellis Smoke Fixture\n", "utf8");
   await writeFile(path.join(taskDir, "task.json"), JSON.stringify({
     id: "smoke",
     title: "Trellis Smoke Task",
@@ -44,6 +48,9 @@ async function seedFixture(root) {
   await writeFile(path.join(taskDir, "design.md"), "# Smoke Design\n\nSMOKE_DESIGN\n", "utf8");
   await writeFile(path.join(taskDir, "implement.md"), "# Smoke Implement\n\n- [x] SMOKE_IMPLEMENT\n", "utf8");
   await writeFile(path.join(specDir, "smoke.md"), "# Smoke Spec\n\nSMOKE_SPEC\n", "utf8");
+
+  execFileSync("git", ["add", "."], { cwd: root, stdio: "pipe" });
+  execFileSync("git", ["commit", "-m", "seed Trellis smoke fixture"], { cwd: root, stdio: "pipe" });
 }
 
 async function waitForWindow(app, timeoutMs = 20_000) {
@@ -112,7 +119,7 @@ try {
     if (message.type() === "error") runtimeErrors.push(`console.error: ${message.text()}`);
   });
 
-  await page.waitForSelector(".trellis-launcher", { timeout: 20_000 });
+  await page.waitForSelector(".app-shell", { timeout: 20_000 });
   check("Electron main window rendered");
 
   const bridgeState = await page.evaluate(() => ({
@@ -125,18 +132,46 @@ try {
 
   const addedProject = await page.evaluate(async (fixturePath) => {
     if (!window.gitUI) throw new Error("gitUI bridge unavailable");
+    await window.gitUI.updateUiPreferences({ bottomConsoleVisible: false });
     return window.gitUI.addProject(fixturePath);
   }, fixtureRoot);
   assert.equal(addedProject.path, fixtureRoot);
   check("Fixture repository added", addedProject.name);
 
-  await page.locator(".trellis-launcher").click();
-  await page.locator(".trellis-drawer").waitFor({ state: "visible", timeout: 10_000 });
-  check("Trellis Drawer opened");
+  await page.reload({ waitUntil: "domcontentloaded" });
+  const activeProject = page.locator(".project-rail-item.active", { hasText: addedProject.name });
+  await activeProject.waitFor({ state: "visible", timeout: 15_000 });
+  await page.locator(".trellis-workspace").waitFor({ state: "visible", timeout: 15_000 });
+  check("Trellis mounted in empty editor canvas");
 
-  await page.locator(".trellis-task-row", { hasText: "Trellis Smoke Task" }).waitFor({ state: "visible", timeout: 10_000 });
+  const themeContext = await page.evaluate(() => {
+    const workspace = document.querySelector(".trellis-workspace");
+    const editor = document.querySelector(".editor-detail-panel");
+    const shell = document.querySelector(".app-shell");
+    if (!(workspace instanceof HTMLElement) || !(editor instanceof HTMLElement) || !(shell instanceof HTMLElement)) return null;
+    const workspaceStyle = getComputedStyle(workspace);
+    const editorStyle = getComputedStyle(editor);
+    return {
+      shellClass: shell.className,
+      workspacePanel: workspaceStyle.getPropertyValue("--panel").trim(),
+      editorPanel: editorStyle.getPropertyValue("--panel").trim(),
+      workspaceText: workspaceStyle.getPropertyValue("--text").trim(),
+      editorText: editorStyle.getPropertyValue("--text").trim(),
+      workspaceAccent: workspaceStyle.getPropertyValue("--accent").trim(),
+      editorAccent: editorStyle.getPropertyValue("--accent").trim()
+    };
+  });
+  assert.ok(themeContext, "Trellis/editor theme context is missing");
+  assert.match(themeContext.shellClass, /theme-(light|dark)/, "App theme class is missing");
+  assert.ok(themeContext.workspacePanel, "--panel theme token is missing");
+  assert.equal(themeContext.workspacePanel, themeContext.editorPanel, "Trellis does not inherit the editor --panel token");
+  assert.equal(themeContext.workspaceText, themeContext.editorText, "Trellis does not inherit the editor --text token");
+  assert.equal(themeContext.workspaceAccent, themeContext.editorAccent, "Trellis does not inherit the editor --accent token");
+  check("Trellis inherits Git UI theme tokens", `${themeContext.workspacePanel} / ${themeContext.workspaceAccent}`);
+
+  await page.locator(".trellis-task-control", { hasText: "Trellis Smoke Task" }).waitFor({ state: "visible", timeout: 10_000 });
   await page.locator(".trellis-title-block", { hasText: "Trellis Smoke Task" }).waitFor({ state: "visible", timeout: 10_000 });
-  const activeTaskCount = await page.locator(".trellis-progress-card strong").first().textContent();
+  const activeTaskCount = await page.locator(".trellis-workspace-count").textContent();
   assert.equal(activeTaskCount?.trim(), "1");
   check("Active task overview rendered", "1 task");
 
@@ -164,6 +199,21 @@ try {
   await specButton.click();
   await page.locator(".trellis-spec-document pre", { hasText: "SMOKE_SPEC" }).waitFor({ state: "visible", timeout: 5_000 });
   check("Spec tree and file rendered");
+
+  await writeFile(path.join(fixtureRoot, "README.md"), "# Trellis Smoke Fixture\n\nSMOKE_FILE_CHANGE\n", "utf8");
+  await activeProject.click();
+  const changedFile = page.locator(".scm-file-row", { hasText: "README.md" });
+  await changedFile.waitFor({ state: "visible", timeout: 10_000 });
+  await changedFile.click();
+  await page.locator(".editor-detail-panel:not(.empty)").waitFor({ state: "visible", timeout: 10_000 });
+  await page.locator(".trellis-workspace").waitFor({ state: "detached", timeout: 10_000 });
+  await page.locator(".editor-diff-panel", { hasText: "SMOKE_FILE_CHANGE" }).waitFor({ state: "visible", timeout: 10_000 });
+  check("Selected file replaces Trellis canvas with diff preview");
+
+  await page.locator(".editor-tab-close").click();
+  await page.locator(".editor-detail-panel.empty").waitFor({ state: "visible", timeout: 10_000 });
+  await page.locator(".trellis-workspace").waitFor({ state: "visible", timeout: 10_000 });
+  check("Closing file restores Trellis canvas");
 
   await page.screenshot({ path: screenshotPath, fullPage: true });
   check("Screenshot captured", path.basename(screenshotPath));
