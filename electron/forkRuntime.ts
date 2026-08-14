@@ -1,4 +1,4 @@
-import { app, net, session } from "electron";
+import { app, ipcMain, net, session } from "electron";
 import path from "node:path";
 import { NsisUpdater } from "electron-updater";
 import {
@@ -46,6 +46,30 @@ function installSmokeDiagnostics(): void {
   }
 
   const errorText = (value: unknown) => value instanceof Error ? value.stack ?? value.message : String(value);
+  const originalWhenReady = app.whenReady.bind(app);
+  const originalRequestSingleInstanceLock = app.requestSingleInstanceLock.bind(app);
+  const originalIpcHandle = ipcMain.handle.bind(ipcMain);
+  let whenReadyCalls = 0;
+  let ipcRegistrations = 0;
+
+  (app as typeof app & { whenReady: typeof app.whenReady }).whenReady = () => {
+    whenReadyCalls += 1;
+    console.log(`[smoke startup] whenReady requested #${whenReadyCalls}`);
+    return originalWhenReady();
+  };
+  (app as typeof app & { requestSingleInstanceLock: typeof app.requestSingleInstanceLock }).requestSingleInstanceLock = (...args: Parameters<typeof app.requestSingleInstanceLock>) => {
+    const result = originalRequestSingleInstanceLock(...args);
+    console.log(`[smoke startup] requestSingleInstanceLock=${result}`);
+    return result;
+  };
+  ipcMain.handle = ((channel: string, listener: Parameters<typeof ipcMain.handle>[1]) => {
+    ipcRegistrations += 1;
+    if (ipcRegistrations <= 12 || channel.startsWith("app:") || channel.startsWith("projects:")) {
+      console.log(`[smoke startup] ipc handle #${ipcRegistrations} ${channel}`);
+    }
+    return originalIpcHandle(channel, listener);
+  }) as typeof ipcMain.handle;
+
   process.on("unhandledRejection", (reason) => {
     console.error(`[smoke startup] unhandledRejection: ${errorText(reason)}`);
   });
@@ -59,7 +83,10 @@ function installSmokeDiagnostics(): void {
     console.log("[smoke startup] will-quit");
   });
   void app.whenReady().then(() => {
-    console.log(`[smoke startup] ready userData=${app.getPath("userData")}`);
+    console.log(`[smoke startup] ready userData=${app.getPath("userData")} whenReadyCalls=${whenReadyCalls} ipcRegistrations=${ipcRegistrations}`);
+    setTimeout(() => {
+      console.log(`[smoke startup] ready+1000ms whenReadyCalls=${whenReadyCalls} ipcRegistrations=${ipcRegistrations}`);
+    }, 1_000);
   });
 }
 
