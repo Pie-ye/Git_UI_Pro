@@ -1,0 +1,57 @@
+name: GitKraken Workflows Smoke
+
+on:
+  pull_request:
+    paths:
+      - "src/components/GitKrakenGraphInteractions.tsx"
+      - "src/styles/gitkraken.css"
+      - "src/main.tsx"
+      - "src/types/domain.ts"
+      - "src/types/electron.d.ts"
+      - "electron/gitService.ts"
+      - "electron/preload.ts"
+      - "electron/forkRuntime.ts"
+      - "scripts/smoke-gitkraken-workflows-electron.mjs"
+      - ".github/workflows/gitkraken-workflows-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Branch switch, drag merge and tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build desktop app
+        run: npm run build
+
+      - name: Run Electron workflow smoke
+        run: xvfb-run -a node scripts/smoke-gitkraken-workflows-electron.mjs
+
+      - name: Upload smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitkraken-workflows-electron-smoke
+          path: |
+            test-results/gitkraken-workflows-electron-smoke.png
+            test-results/gitkraken-workflows-electron-smoke.json
+          if-no-files-found: warn
