@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { parseChecklist, type TrellisChecklistResult } from "./checklist";
 import { MAX_TRELLIS_FILE_BYTES, TrellisReaderError, summarizeTask } from "./reader";
@@ -210,7 +210,7 @@ export async function reviewTask(projectRoot: string, dirName: string): Promise<
   const task = await summarizeTask(root, dirName);
   const taskDir = path.join(root, ".trellis", "tasks", dirName);
   try {
-    const metadata = await import("node:fs/promises").then(({ stat }) => stat(taskDir));
+    const metadata = await stat(taskDir);
     if (!metadata.isDirectory()) throw new Error("not a directory");
   } catch {
     throw new TrellisReaderError(`Task not found: ${dirName}`, 404);
