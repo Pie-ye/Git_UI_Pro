@@ -1,4 +1,4 @@
-import { constants } from "node:fs";
+import { constants, type Dirent } from "node:fs";
 import { access, readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { computeReadiness } from "./readiness";
@@ -200,7 +200,7 @@ export async function getTaskDetail(projectRoot: string, dirName: string): Promi
 }
 
 async function walkSpec(directory: string, relativePath: string): Promise<TrellisSpecNode> {
-  let entries: Awaited<ReturnType<typeof readdir>> = [];
+  let entries: Dirent[] = [];
   try {
     entries = await readdir(directory, { withFileTypes: true });
   } catch {
