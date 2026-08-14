@@ -33,11 +33,35 @@ type UpdateServicePrototype = {
   [key: string]: any;
 };
 
+installSmokeDiagnostics();
 installForkModuleOverrides();
 installTrellisRuntime();
 const updateServiceModule = require("./updateService") as { UpdateService: { prototype: UpdateServicePrototype } };
 installAutomaticUpdatePolicy(updateServiceModule.UpdateService.prototype);
 require("./main");
+
+function installSmokeDiagnostics(): void {
+  if (process.env.GIT_UI_PRO_ELECTRON_SMOKE !== "1") {
+    return;
+  }
+
+  const errorText = (value: unknown) => value instanceof Error ? value.stack ?? value.message : String(value);
+  process.on("unhandledRejection", (reason) => {
+    console.error(`[smoke startup] unhandledRejection: ${errorText(reason)}`);
+  });
+  process.on("uncaughtException", (error) => {
+    console.error(`[smoke startup] uncaughtException: ${errorText(error)}`);
+  });
+  app.on("browser-window-created", (_event, window) => {
+    console.log(`[smoke startup] browser-window-created id=${window.id}`);
+  });
+  app.on("will-quit", () => {
+    console.log("[smoke startup] will-quit");
+  });
+  void app.whenReady().then(() => {
+    console.log(`[smoke startup] ready userData=${app.getPath("userData")}`);
+  });
+}
 
 function installForkModuleOverrides(): void {
   const releaseHistory = require("./releaseHistory") as Record<string, unknown>;
