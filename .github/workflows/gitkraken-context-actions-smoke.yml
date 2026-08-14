@@ -3,6 +3,7 @@ name: GitKraken Context Actions Smoke
 on:
   pull_request:
     paths:
+      - "src/components/GitKrakenCommitTagActions.tsx"
       - "src/components/GitKrakenContextActions.tsx"
       - "src/components/GitKrakenGraphInteractions.tsx"
       - "src/styles/gitkraken-context.css"
