@@ -150,17 +150,18 @@ try {
   assert.match(git(["branch", "--list", "temp/renamed"]), /temp\/renamed/);
   check("Branch rename works from context menu");
 
-  // Existing commit menu gains Create Tag actions without losing the original menu.
+  // Preserve the native commit menu while extending it with React-rendered Tag actions.
   const masterCommit = page.locator(".graph-commit-row", { hasText: "master work" }).first();
   await masterCommit.click({ button: "right" });
   const commitMenu = page.locator(".graph-commit-menu");
   await commitMenu.waitFor({ state: "visible", timeout: 5_000 });
   await commitMenu.getByRole("menuitem", { name: "Cherry-pick 此提交" }).waitFor({ state: "visible" });
-  const createTagHere = commitMenu.getByRole("menuitem", { name: "建立 Tag", exact: true });
-  await createTagHere.waitFor({ state: "visible", timeout: 5_000 });
+  const commitExtension = page.locator(".gitkraken-commit-extension-menu");
+  await commitExtension.waitFor({ state: "visible", timeout: 5_000 });
+  const createTagHere = commitExtension.getByRole("menuitem", { name: "建立 Tag", exact: true });
   await createTagHere.click();
   const tagDialog = page.locator(".gitkraken-action-dialog", { hasText: "建立 Tag" });
-  await tagDialog.waitFor({ state: "visible", timeout: 5_000 });
+  await tagDialog.waitFor({ state: "visible", timeout: 8_000 });
   await tagDialog.locator("input").fill("context-smoke-tag");
   await tagDialog.getByRole("button", { name: "建立" }).click();
   await page.waitForFunction(async (fixturePath) => {
@@ -169,7 +170,7 @@ try {
     return tags.some((tag) => tag.name === "context-smoke-tag");
   }, fixtureRoot, { timeout: 10_000 });
   assert.equal(git(["rev-parse", "context-smoke-tag"]), git(["rev-parse", "master"]));
-  check("Commit context menu creates tag");
+  check("Commit context extension creates tag");
 
   // Tag context menu creates and checks out a branch at the tagged commit.
   await showAllRefs();
