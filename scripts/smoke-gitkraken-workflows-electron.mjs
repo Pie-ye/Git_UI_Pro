@@ -30,6 +30,20 @@ function git(args, options = {}) {
   return execFileSync("git", args, { cwd: fixtureRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], ...options }).trim();
 }
 
+async function waitForGit(predicate, timeoutMs = 15_000) {
+  const startedAt = Date.now();
+  let lastError;
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      if (predicate()) return;
+    } catch (error) {
+      lastError = error;
+    }
+    await delay(250);
+  }
+  throw lastError ?? new Error("Timed out waiting for Git state");
+}
+
 async function seedFixture() {
   git(["init"]);
   git(["branch", "-M", "master"]);
@@ -175,16 +189,18 @@ try {
   check("Local branch chips are draggable");
 
   await featureChip.dragTo(masterChip);
-  const mergeDialog = page.locator(".gitkraken-merge-dialog");
-  await mergeDialog.waitFor({ state: "visible", timeout: 8_000 });
-  await mergeDialog.locator(".gitkraken-merge-route", { hasText: "feature/drag-merge" }).waitFor({ state: "visible" });
-  await mergeDialog.locator(".primary").click();
-  await mergeDialog.waitFor({ state: "detached", timeout: 15_000 });
+  const dropMenu = page.locator(".gitkraken-context-menu", { hasText: "選擇拖放操作" }).first();
+  await dropMenu.waitFor({ state: "visible", timeout: 8_000 });
+  await dropMenu.getByRole("menuitem", { name: "Merge feature/drag-merge into master" }).click();
+  await waitForGit(() => {
+    git(["merge-base", "--is-ancestor", "feature/drag-merge", "master"], { stdio: ["ignore", "pipe", "pipe"] });
+    return git(["branch", "--show-current"]) === "master";
+  });
 
   assert.equal(git(["merge-base", "--is-ancestor", "feature/drag-merge", "master"], { stdio: ["ignore", "pipe", "pipe"] }), "");
   assert.equal(git(["branch", "--show-current"]), "master");
   assert.match(git(["log", "master", "--format=%s", "-n", "5"]), /feature work/);
-  check("Drag merge works", "feature/drag-merge → master");
+  check("Drag action chooser merge works", "feature/drag-merge → master");
 
   // Create a tag through the graph toolbar manager.
   await page.locator(".gitkraken-tag-button").click();

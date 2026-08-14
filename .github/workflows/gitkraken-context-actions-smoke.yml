@@ -1,0 +1,59 @@
+name: GitKraken Context Actions Smoke
+
+on:
+  pull_request:
+    paths:
+      - "src/components/GitKrakenCommitTagActions.tsx"
+      - "src/components/GitKrakenContextActions.tsx"
+      - "src/components/GitKrakenGraphInteractions.tsx"
+      - "src/styles/gitkraken-context.css"
+      - "src/styles/gitkraken.css"
+      - "src/main.tsx"
+      - "scripts/smoke-gitkraken-context-actions-electron.mjs"
+      - ".github/workflows/gitkraken-context-actions-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Branch, tag and drag context actions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build desktop app
+        run: npm run build
+
+      - name: Run context actions Electron smoke
+        run: xvfb-run -a node scripts/smoke-gitkraken-context-actions-electron.mjs
+
+      - name: Print smoke report on failure
+        if: failure()
+        run: cat test-results/gitkraken-context-actions-electron-smoke.json || true
+
+      - name: Upload smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitkraken-context-actions-electron-smoke
+          path: |
+            test-results/gitkraken-context-actions-electron-smoke.png
+            test-results/gitkraken-context-actions-electron-smoke.json
+          if-no-files-found: warn
