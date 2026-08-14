@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -113,6 +113,15 @@ test("spec reader rejects path traversal", async () => withTempDir(async (root) 
   await seedProject(root);
   await assert.rejects(() => readSpecFile(root, "../tasks/01-01-demo/prd.md"), TrellisReaderError);
   await assert.rejects(() => readSpecFile(root, "../../etc/passwd"), TrellisReaderError);
+}));
+
+test("spec reader rejects symlink escapes", { skip: process.platform === "win32" }, async () => withTempDir(async (root) => {
+  await seedProject(root);
+  const outside = path.join(root, "outside.md");
+  const link = path.join(root, ".trellis", "spec", "escape.md");
+  await writeFile(outside, "outside", "utf8");
+  await symlink(outside, link);
+  await assert.rejects(() => readSpecFile(root, "escape.md"), TrellisReaderError);
 }));
 
 test("progress aggregation matches trellis-window", () => {
