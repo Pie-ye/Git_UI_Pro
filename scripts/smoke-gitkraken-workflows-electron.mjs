@@ -30,6 +30,20 @@ function git(args, options = {}) {
   return execFileSync("git", args, { cwd: fixtureRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], ...options }).trim();
 }
 
+async function waitForGit(predicate, timeoutMs = 15_000) {
+  const startedAt = Date.now();
+  let lastError;
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      if (predicate()) return;
+    } catch (error) {
+      lastError = error;
+    }
+    await delay(250);
+  }
+  throw lastError ?? new Error("Timed out waiting for Git state");
+}
+
 async function seedFixture() {
   git(["init"]);
   git(["branch", "-M", "master"]);
@@ -178,11 +192,10 @@ try {
   const dropMenu = page.locator(".gitkraken-context-menu", { hasText: "選擇拖放操作" }).first();
   await dropMenu.waitFor({ state: "visible", timeout: 8_000 });
   await dropMenu.getByRole("menuitem", { name: "Merge feature/drag-merge into master" }).click();
-  await page.waitForFunction(async (fixturePath) => {
-    if (!window.gitUI) return false;
-    const status = await window.gitUI.getProjectStatus({ path: fixturePath });
-    return status.currentBranch === "master" && !status.operationState && !status.hasConflicts;
-  }, fixtureRoot, { timeout: 15_000 });
+  await waitForGit(() => {
+    git(["merge-base", "--is-ancestor", "feature/drag-merge", "master"], { stdio: ["ignore", "pipe", "pipe"] });
+    return git(["branch", "--show-current"]) === "master";
+  });
 
   assert.equal(git(["merge-base", "--is-ancestor", "feature/drag-merge", "master"], { stdio: ["ignore", "pipe", "pipe"] }), "");
   assert.equal(git(["branch", "--show-current"]), "master");
